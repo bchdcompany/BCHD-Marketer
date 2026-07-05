@@ -350,14 +350,34 @@ appliance repair бизнеса в США. Ты работаешь как авт
             return {"trend": "unknown", "insights": [], "key_metrics": {}, "_error": result["_error"]}
         return result
 
-    async def answer_question(self, question: str) -> str:
-        """Свободный вопрос — агент отвечает как эксперт"""
+    async def answer_question(self, question: str, context_data: dict = None) -> str:
+        """
+        Свободный вопрос — агент отвечает как эксперт.
+        Если передан context_data (актуальные данные аккаунта), отвечает
+        на основе реальных цифр, а не общих рассуждений.
+        """
+        if context_data:
+            prompt = f"""
+Вот актуальные данные рекламных аккаунтов (последние 30 дней):
+
+{json.dumps(context_data, ensure_ascii=False, indent=2)}
+
+Вопрос от владельца бизнеса: {question}
+
+Ответь на вопрос, ОПИРАЯСЬ ТОЛЬКО на цифры из данных выше. Если для ответа
+не хватает конкретных данных (например, вопрос про ключевые слова, а в
+данных есть только уровень кампаний) — честно скажи, каких данных не хватает,
+и не выдумывай цифры, которых нет в JSON выше.
+"""
+        else:
+            prompt = f"Вопрос по Google Ads: {question}"
+
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=800,
+                max_tokens=1200,
                 system=self.system_prompt + "\n\nОтвечай кратко и по делу. Используй Markdown форматирование для Telegram.",
-                messages=[{"role": "user", "content": f"Вопрос по Google Ads: {question}"}]
+                messages=[{"role": "user", "content": prompt}]
             )
             if not response.content:
                 log.error("answer_question: пустой content от Claude")
