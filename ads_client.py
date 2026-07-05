@@ -459,6 +459,96 @@ class GoogleAdsClient:
             raise ValueError(f"Неизвестный тип действия: {action_type}")
         return await handler(action, customer_id)
 
+    async def verify_action(self, action: dict) -> dict:
+        """
+        Перепроверяет, что действие РЕАЛЬНО применилось, заново запрашивая
+        актуальное состояние из Google Ads API (а не полагаясь только на то,
+        что вызов API не вернул ошибку). Возвращает {'verified': True/False/None, ...}.
+        verified=None означает, что для этого типа действия автоматическая
+        перепроверка не поддерживается.
+        """
+        action_type = action.get('type')
+        account = action.get('account', 'ads')
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+
+        try:
+            if action_type in ('pause_campaign', 'enable_campaign'):
+                expected = 'PAUSED' if action_type == 'pause_campaign' else 'ENABLED'
+                query = f"SELECT campaign.status FROM campaign WHERE campaign.id = {action['campaign_id']}"
+                rows = await self._search(customer_id, query)
+                actual = rows[0].campaign.status.name if rows else None
+                return {'verified': actual == expected, 'actual_status': actual, 'expected_status': expected}
+
+            elif action_type == 'budget_change':
+                query = f"SELECT campaign_budget.amount_micros FROM campaign_budget WHERE campaign_budget.id = {action['budget_id']}"
+                rows = await self._search(customer_id, query)
+                actual = rows[0].campaign_budget.amount_micros / 1_000_000 if rows else None
+                expected = action.get('proposed_budget')
+                verified = actual is not None and expected is not None and abs(actual - expected) < 0.01
+                return {'verified': verified, 'actual_budget': actual, 'expected_budget': expected}
+
+            elif action_type in ('pause_keywords', 'enable_keywords'):
+                expected = 'PAUSED' if action_type == 'pause_keywords' else 'ENABLED'
+                keywords = action.get('keywords', [])
+                if not keywords:
+                    return {'verified': None, 'note': 'Нет ключей для перепроверки'}
+                results = []
+                for kw in keywords:
+                    rn = kw.get('resource_name')
+                    if not rn:
+                        results.append(False)
+                        continue
+                    query = f"SELECT ad_group_criterion.status FROM ad_group_criterion WHERE ad_group_criterion.resource_name = '{rn}'"
+                    rows = await self._search(customer_id, query)
+                    actual = rows[0].ad_group_criterion.status.name if rows else None
+                    results.append(actual == expected)
+                return {'verified': all(results), 'verified_count': sum(results), 'total': len(results)}
+
+            elif action_type == 'update_bid':
+                rn = action.get('resource_name')
+                if not rn:
+                    return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
+                query = f"SELECT ad_group_criterion.cpc_bid_micros FROM ad_group_criterion WHERE ad_group_criterion.resource_name = '{rn}'"
+                rows = await self._search(customer_id, query)
+                actual = rows[0].ad_group_criterion.cpc_bid_micros / 1_000_000 if rows else None
+                expected = action.get('new_bid')
+                verified = actual is not None and expected is not None and abs(actual - expected) < 0.01
+                return {'verified': verified, 'actual_bid': actual, 'expected_bid': expected}
+
+            elif action_type == 'pause_ad':
+                rn = action.get('resource_name')
+                if not rn:
+                    return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
+                query = f"SELECT ad_group_ad.status FROM ad_group_ad WHERE ad_group_ad.resource_name = '{rn}'"
+                rows = await self._search(customer_id, query)
+                actual = rows[0].ad_group_ad.status.name if rows else None
+                return {'verified': actual == 'PAUSED', 'actual_status': actual}
+
+            elif action_type == 'seasonal_adjustments':
+                adjustments = action.get('adjustments', [])
+                if not adjustments:
+                    return {'verified': None, 'note': 'Нет корректировок для перепроверки'}
+                results = []
+                for adj in adjustments:
+                    query = f"SELECT campaign_budget.amount_micros FROM campaign_budget WHERE campaign_budget.id = {adj['budget_id']}"
+                    rows = await self._search(customer_id, query)
+                    actual = rows[0].campaign_budget.amount_micros / 1_000_000 if rows else None
+                    expected = adj['current_budget'] * (1 + adj['adjustment_pct'] / 100)
+                    results.append(actual is not None and abs(actual - expected) < 0.5)
+                return {'verified': all(results), 'verified_count': sum(results), 'total': len(results)}
+
+            elif action_type == 'add_negative_keywords':
+                # Минус-слова сложно точно сверить по тексту через GAQL сразу после mutate —
+                # автоматическая перепроверка не поддерживается для этого типа.
+                return {'verified': None, 'note': 'Автоматическая перепроверка минус-слов не поддерживается'}
+
+            else:
+                return {'verified': None, 'note': f'Перепроверка не поддерживается для типа {action_type}'}
+
+        except Exception as e:
+            log.error(f"verify_action({action_type}) error: {e}")
+            return {'verified': False, 'error': str(e)}
+
     async def _pause_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         client = self._get_client()
