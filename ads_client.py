@@ -254,8 +254,7 @@ class GoogleAdsClient:
                 local_services_lead.creation_date_time,
                 local_services_lead.lead_charged,
                 local_services_lead.credit_details.credit_state,
-                local_services_lead.credit_details.credit_reason,
-                local_services_lead.contact_details.phone_number
+                local_services_lead.contact_details
             FROM local_services_lead
             WHERE local_services_lead.creation_date_time BETWEEN '{date_from}' AND '{date_to}'
             ORDER BY local_services_lead.creation_date_time DESC
@@ -267,6 +266,11 @@ class GoogleAdsClient:
             leads = []
             for row in rows:
                 lead = row.local_services_lead
+                phone = None
+                try:
+                    phone = lead.contact_details.phone_number
+                except Exception:
+                    phone = None  # contact_details бывает null, если lead_status == WIPED_OUT
                 leads.append({
                     'id': lead.id,
                     'category_id': lead.category_id,
@@ -276,8 +280,7 @@ class GoogleAdsClient:
                     'created': lead.creation_date_time,
                     'charged': lead.lead_charged,
                     'credit_state': lead.credit_details.credit_state.name if hasattr(lead.credit_details.credit_state, 'name') else str(lead.credit_details.credit_state),
-                    'credit_reason': lead.credit_details.credit_reason.name if hasattr(lead.credit_details.credit_reason, 'name') else str(lead.credit_details.credit_reason),
-                    'phone': lead.contact_details.phone_number,
+                    'phone': phone,
                 })
             return {'leads': leads, 'total': len(leads), 'days': days, 'account': account}
         except Exception as e:
