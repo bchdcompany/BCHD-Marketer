@@ -568,14 +568,40 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"⏳ Применяю: {action['description']}...")
             try:
                 result = await ads_client.execute_action(action)
-                await _safe_edit(
-                    query,
-                    f"✅ *Выполнено:* {action['description']}\n\n{result.get('summary', str(result))}",
-                    parse_mode="Markdown",
-                )
             except Exception as e:
                 log.error(f"Ошибка выполнения {param}: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
+                return
+
+            await query.edit_message_text(f"🔍 Перепроверяю фактическое состояние...")
+            try:
+                verification = await ads_client.verify_action(action)
+            except Exception as e:
+                log.error(f"Ошибка перепроверки {param}: {e}")
+                verification = {"verified": None, "note": f"Ошибка перепроверки: {e}"}
+
+            verified = verification.get("verified")
+            if verified is True:
+                text = (
+                    f"✅ *Выполнено и перепроверено:* {action['description']}\n\n"
+                    f"{result.get('summary', str(result))}\n\n"
+                    f"_Подтверждено повторным запросом к Google Ads API — изменение реально применилось._"
+                )
+            elif verified is False:
+                text = (
+                    f"⚠️ *Внимание — расхождение после выполнения:* {action['description']}\n\n"
+                    f"API не вернул ошибку при выполнении, но при перепроверке фактическое состояние "
+                    f"НЕ совпадает с ожидаемым:\n`{verification}`\n\n"
+                    f"Рекомендую проверить вручную в Google Ads перед тем, как считать задачу выполненной."
+                )
+            else:
+                text = (
+                    f"✅ *Выполнено:* {action['description']}\n\n"
+                    f"{result.get('summary', str(result))}\n\n"
+                    f"_Автоматическая перепроверка для этого типа действия не поддерживается "
+                    f"({verification.get('note', 'н/д')}) — рекомендую проверить вручную при необходимости._"
+                )
+            await _safe_edit(query, text, parse_mode="Markdown")
             return
 
         elif cmd == "reject":
