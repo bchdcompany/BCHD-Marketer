@@ -304,7 +304,12 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Свободные текстовые вопросы к агенту (не команды) — с подтягиванием живых данных"""
+    """
+    Свободные текстовые сообщения (не команды).
+    Классифицирует запрос, подтягивает только нужные данные и,
+    если это явная просьба выполнить действие, создаёт карточку одобрения
+    (ничего не выполняется автоматически).
+    """
     if not _is_owner(update):
         return
     question = update.message.text
@@ -317,20 +322,75 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
         return
 
-    thinking_msg = await update.message.reply_text("📊 Собираю актуальные данные... (~30-40 сек)")
+    thinking_msg = await update.message.reply_text("🧭 Определяю, что нужно...")
     try:
-        context_data = await ads_client.get_both_accounts_summary()
+        classification = await ai_analyst.classify_request(question)
     except Exception as e:
-        log.error(f"Ошибка получения данных для свободного вопроса: {e}")
-        context_data = None
+        log.error(f"Ошибка классификации запроса: {e}")
+        classification = {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
+
+    data_needed = classification.get("data_needed", "campaigns")
+    account_scope = classification.get("account", "both")
+    accounts = ["ads", "lsa"] if account_scope == "both" else [account_scope]
+
+    # Быстрый путь: обычный вопрос без нужды в данных аккаунта
+    if data_needed == "none":
+        await _safe_edit(thinking_msg, "🤔 Думаю...")
+        answer = await ai_analyst.answer_question(question)
+        await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+        return
+
+    await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-40 сек)")
+    context_data = {}
+    try:
+        if data_needed == "campaigns":
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
+        elif data_needed == "budgets":
+            context_data["budgets"] = {}
+            for acc in accounts:
+                context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
+        elif data_needed == "keywords":
+            context_data["keywords"] = {}
+            for acc in accounts:
+                context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc)
+        elif data_needed == "search_terms":
+            context_data["search_terms"] = {}
+            for acc in accounts:
+                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
+        elif data_needed == "seasonal":
+            context_data["season"] = ads_client.get_current_season_recommendations()
+            context_data["budgets"] = {}
+            for acc in accounts:
+                context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
+        else:
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
+    except Exception as e:
+        log.error(f"Ошибка сбора данных для чата: {e}")
+        await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
+        return
 
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
+    action_type = classification.get("action_type", "none")
     try:
-        answer = await ai_analyst.answer_question(question, context_data=context_data)
-        await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+        result = await ai_analyst.chat_action(question, context_data, action_type)
     except Exception as e:
-        log.error(f"Ошибка обработки свободного вопроса: {e}")
+        log.error(f"Ошибка chat_action: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    reply = result.get("reply", "Не удалось получить ответ.")
+    await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
+
+    for action in result.get("proposed_actions", []):
+        try:
+            action.setdefault("account", accounts[0])
+            action.setdefault("data_summary", action.get("reasoning", ""))
+            action.setdefault("expected_impact", "")
+            action.setdefault("requires_approval", True)
+            action_id = pending.add(action)
+            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        except Exception as e:
+            log.error(f"Ошибка создания карточки одобрения из чата: {e}")
 
 
 # ── Обработка кнопок ────────────────────────────────────
