@@ -254,6 +254,7 @@ class GoogleAdsClient:
                 local_services_lead.lead_status,
                 local_services_lead.creation_date_time,
                 local_services_lead.lead_charged,
+                local_services_lead.lead_feedback_submitted,
                 local_services_lead.credit_details.credit_state,
                 local_services_lead.contact_details
             FROM local_services_lead
@@ -280,6 +281,7 @@ class GoogleAdsClient:
                     'lead_status': lead.lead_status.name if hasattr(lead.lead_status, 'name') else str(lead.lead_status),
                     'created': lead.creation_date_time,
                     'charged': lead.lead_charged,
+                    'feedback_submitted': lead.lead_feedback_submitted,
                     'credit_state': lead.credit_details.credit_state.name if hasattr(lead.credit_details.credit_state, 'name') else str(lead.credit_details.credit_state),
                     'phone': phone,
                 })
@@ -287,6 +289,21 @@ class GoogleAdsClient:
         except Exception as e:
             log.error(f"get_lsa_leads({account}) error: {e}")
             return {'error': str(e), 'leads': [], 'account': account}
+
+    async def get_lsa_lead_feedback_status(self, lead_id, account: str = "lsa") -> dict:
+        """Быстрая проверка одного лида: был ли уже отправлен фидбэк (feedback_submitted)"""
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен'}
+        query = f"SELECT local_services_lead.lead_feedback_submitted FROM local_services_lead WHERE local_services_lead.id = {lead_id}"
+        try:
+            rows = await self._search(customer_id, query)
+            if not rows:
+                return {'found': False}
+            return {'found': True, 'feedback_submitted': rows[0].local_services_lead.lead_feedback_submitted}
+        except Exception as e:
+            log.error(f"get_lsa_lead_feedback_status({lead_id}) error: {e}")
+            return {'error': str(e)}
 
     async def get_lsa_lead_conversations(self, lead_id, account: str = "lsa") -> dict:
         """
