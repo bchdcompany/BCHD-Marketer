@@ -27,17 +27,14 @@ class GoogleAdsClient:
                 "refresh_token": self.config.GOOGLE_ADS_REFRESH_TOKEN,
                 "login_customer_id": self.config.GOOGLE_ADS_LOGIN_CUSTOMER_ID,
                 "use_proto_plus": True,
-            }, version="v17")
+            })
         return self._client
 
     def _search(self, customer_id: str, query: str) -> list:
-        """Универсальный поиск — совместим с v24"""
+        """Универсальный поиск"""
         client = self._get_client()
         ga_service = client.get_service("GoogleAdsService")
-        request = client.get_type("SearchGoogleAdsRequest")
-        request.customer_id = customer_id
-        request.query = query
-        response = ga_service.search(request=request)
+        response = ga_service.search(customer_id=customer_id, query=query)
         return list(response)
 
     async def get_both_accounts_summary(self) -> dict:
