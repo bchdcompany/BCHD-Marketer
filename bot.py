@@ -17,6 +17,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from ads_client import GoogleAdsClient
@@ -294,6 +296,22 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for action in actions[:5]:
         action_id = action["id"]
         await _send_approval_card(update.get_bot(), config.OWNER_CHAT_ID, action_id, action)
+
+
+async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Свободные текстовые вопросы к агенту (не команды)"""
+    if not _is_owner(update):
+        return
+    question = update.message.text
+    if not question or not question.strip():
+        return
+    thinking_msg = await update.message.reply_text("🤔 Думаю...")
+    try:
+        answer = await ai_analyst.answer_question(question)
+        await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка обработки свободного вопроса: {e}")
+        await thinking_msg.edit_text(f"❌ Ошибка: {e}")
 
 
 # ── Обработка кнопок ────────────────────────────────────
@@ -755,6 +773,7 @@ def main():
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     scheduler = AsyncIOScheduler(timezone=NY_TZ)
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
