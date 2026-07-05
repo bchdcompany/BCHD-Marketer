@@ -111,68 +111,67 @@ API, без ручной работы владельца в интерфейсе
         """
         Общий метод вызова Claude с диагностикой и защитой от пустых/некорректных ответов.
         Если передан history (предыдущие сообщения диалога), включает его для контекста.
-        Возвращает распарсенный JSON или {"_error": "..."} при неудаче.
+
+        Использует tool use (function calling) вместо парсинга свободного текста как JSON:
+        Anthropic API сам гарантирует, что содержимое tool_use.input — валидный JSON-объект,
+        так что нам не нужно вручную парсить текст и ловить json.JSONDecodeError на
+        "Extra data" / "Unterminated string" / "Expecting delimiter" и т.п.
+
+        Возвращает распарсенный JSON (dict) или {"_error": "..."} при неудаче.
         """
         messages = list(history) if history else []
         messages.append({"role": "user", "content": prompt})
+
+        tools = [{
+            "name": "submit_result",
+            "description": "Верни результат анализа в виде структурированного JSON-объекта, "
+                            "согласно формату, описанному в тексте запроса выше.",
+            "input_schema": {"type": "object"},
+        }]
+
         try:
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=self.system_prompt,
                 messages=messages,
+                tools=tools,
+                tool_choice={"type": "tool", "name": "submit_result"},
             )
         except Exception as e:
             log.error(f"Ошибка вызова Claude API: {e}")
             return {"_error": f"api_error: {e}"}
 
-        # Диагностика: логируем stop_reason и состав content на случай проблем
+        # Диагностика: логируем stop_reason на случай проблем
         stop_reason = getattr(response, "stop_reason", None)
-        if stop_reason not in ("end_turn", "stop_sequence", None):
-            log.warning(f"Claude ответил с stop_reason={stop_reason} (не end_turn)")
+        if stop_reason not in ("tool_use", "end_turn", "stop_sequence", None):
+            log.warning(f"Claude ответил с stop_reason={stop_reason} (не tool_use/end_turn) — возможно, ответ обрезан по max_tokens")
 
         if not response.content:
             log.error(f"Claude вернул пустой content. stop_reason={stop_reason}, usage={getattr(response, 'usage', None)}")
             return {"_error": "empty_content"}
 
-        # Ищем первый текстовый блок (на случай, если первым идёт не text-блок)
-        text = None
+        # Ищем tool_use блок — его input уже гарантированно валидный dict, распарсенный SDK
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use":
+                return block.input
+
+        # Fallback на случай, если модель почему-то не использовала tool (не должно случаться
+        # при forced tool_choice, но на всякий случай пробуем распарсить текстовый блок)
         for block in response.content:
             if getattr(block, "type", None) == "text":
-                text = block.text
-                break
-
-        if text is None:
-            log.error(f"Claude не вернул текстовый блок. content types={[getattr(b, 'type', '?') for b in response.content]}")
-            return {"_error": "no_text_block"}
-
-        text = text.strip()
-
-        if not text:
-            log.error(f"Claude вернул пустой текст. stop_reason={stop_reason}, usage={getattr(response, 'usage', None)}")
-            return {"_error": "empty_text"}
-
-        # На случай если модель всё же обернула в markdown ```json ... ```
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text).strip()
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            # Частый случай: модель вернула валидный JSON, а после него добавила
-            # ещё текст/повтор ("Extra data"). Пробуем взять только первый
-            # валидный JSON-объект и проигнорировать хвост.
-            if "Extra data" in str(e):
+                text = block.text.strip()
+                if text.startswith("```"):
+                    text = re.sub(r"^```(?:json)?\s*", "", text)
+                    text = re.sub(r"\s*```$", "", text).strip()
                 try:
-                    decoder = json.JSONDecoder()
-                    obj, end_idx = decoder.raw_decode(text)
-                    log.warning(f"JSON содержал лишние данные после позиции {end_idx}, использую только первый объект")
-                    return obj
-                except json.JSONDecodeError:
-                    pass
-            log.error(f"Ошибка парсинга JSON от Claude: {e}. Сырой ответ (первые 500 симв.): {text[:500]!r}")
-            return {"_error": f"json_decode_error: {e}", "_raw": text[:500]}
+                    return json.loads(text)
+                except json.JSONDecodeError as e:
+                    log.error(f"Ошибка парсинга fallback-текста от Claude: {e}. Сырой ответ (первые 500 симв.): {text[:500]!r}")
+                    return {"_error": f"json_decode_error: {e}", "_raw": text[:500]}
+
+        log.error(f"Claude не вернул ни tool_use, ни текстовый блок. content types={[getattr(b, 'type', '?') for b in response.content]}")
+        return {"_error": "no_tool_use_or_text_block"}
 
     async def analyze_campaigns(self, data: dict) -> dict:
         """Полный анализ кампаний + рекомендации"""
