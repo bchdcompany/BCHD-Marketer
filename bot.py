@@ -648,13 +648,49 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         classification = await ai_analyst.classify_request(question, history=history)
     except Exception as e:
         log.error(f"Ошибка классификации запроса: {e}")
-        classification = {"intent": "chat", "action_type": "none", "data_needed": ["campaigns"], "account": "both"}
+        classification = {"intent": "chat", "action_type": "none", "days": 0, "data_needed": ["campaigns"], "account": "both"}
 
     data_needed = classification.get("data_needed", ["campaigns"])
     if isinstance(data_needed, str):
         data_needed = [data_needed] if data_needed != "none" else []
     account_scope = classification.get("account", "both")
     accounts = ["ads", "lsa"] if account_scope == "both" else [account_scope]
+
+    # Явная просьба прослушать/проанализировать звонки LSA за период
+    if classification.get("action_type") == "audit_lsa_calls":
+        if not config.lsa_configured:
+            await thinking_msg.edit_text("⚠️ LSA аккаунт не настроен.")
+            return
+        days = classification.get("days") or 7
+        try:
+            days = max(1, min(90, int(days)))
+        except (TypeError, ValueError):
+            days = 7
+        limit = 50 if days > 7 else 20
+
+        await _safe_edit(thinking_msg, f"🎧 Собираю оплаченные лиды LSA за последние {days} дней...")
+        try:
+            stats = await _run_lsa_audit(ctx.bot, progress_msg=thinking_msg, days=days, limit=limit)
+        except Exception as e:
+            log.error(f"Ошибка аудита LSA из чата: {e}")
+            await thinking_msg.edit_text(f"❌ Ошибка: {e}")
+            return
+
+        if stats['total_charged'] == 0:
+            text = f"✅ За последние {days} дней нет оплаченных LSA-лидов для проверки."
+        else:
+            text = (
+                f"🎧 *Аудит LSA-звонков завершён*\n\n"
+                f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
+                f"Предложено к оспариванию: {stats['disputed']}."
+            )
+            if stats['total_charged'] > limit:
+                text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Повтори запрос, чтобы проверить остальные."
+            if stats['disputed'] > 0:
+                text += "\n\nКарточки одобрения отправлены выше."
+        await _safe_edit(thinking_msg, text, parse_mode="Markdown")
+        await _append_history(ctx, chat_id, question, text)
+        return
 
     # Быстрый путь: обычный вопрос без нужды в данных аккаунта
     if not data_needed:
