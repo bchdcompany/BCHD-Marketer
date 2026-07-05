@@ -3,6 +3,7 @@ Google Ads API клиент
 v5 — совместимость с google-ads==31.1.0 (API v24)
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -30,12 +31,15 @@ class GoogleAdsClient:
             })
         return self._client
 
-    def _search(self, customer_id: str, query: str) -> list:
-        """Универсальный поиск"""
-        client = self._get_client()
-        ga_service = client.get_service("GoogleAdsService")
-        response = ga_service.search(customer_id=customer_id, query=query)
-        return list(response)
+    async def _search(self, customer_id: str, query: str) -> list:
+        """Универсальный поиск. Блокирующий вызов Google Ads API выполняется
+        в отдельном потоке, чтобы не морозить event loop всего бота."""
+        def _do_search():
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            response = ga_service.search(customer_id=customer_id, query=query)
+            return list(response)
+        return await asyncio.to_thread(_do_search)
 
     async def get_both_accounts_summary(self) -> dict:
         ads_data = await self.get_full_audit_data(account="ads")
@@ -87,7 +91,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             campaigns = []
             for row in rows:
                 campaigns.append({
@@ -151,7 +155,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             keywords = []
             for row in rows:
                 keywords.append({
@@ -200,7 +204,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             terms = []
             for row in rows:
                 terms.append({
@@ -242,7 +246,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             daily = []
             for row in rows:
                 daily.append({
@@ -292,7 +296,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             budgets = []
             for row in rows:
                 budgets.append({
@@ -336,7 +340,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             competitors = {}
             for row in rows:
                 domain = row.auction_insight.domain
@@ -392,7 +396,7 @@ class GoogleAdsClient:
         """
 
         try:
-            rows = self._search(customer_id, query)
+            rows = await self._search(customer_id, query)
             ads = []
             for row in rows:
                 rsa = row.ad_group_ad.ad.responsive_search_ad
@@ -464,7 +468,7 @@ class GoogleAdsClient:
             op.update.status = client.enums.AdGroupCriterionStatusEnum.PAUSED
             op.update_mask.paths.append("status")
             ops.append(op)
-        if ops: svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
+        if ops: await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
         return {'summary': f"Поставлено на паузу: {len(ops)} ключей"}
 
     async def _enable_keywords(self, action: dict, customer_id: str = None) -> dict:
@@ -478,7 +482,7 @@ class GoogleAdsClient:
             op.update.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
             op.update_mask.paths.append("status")
             ops.append(op)
-        if ops: svc.mutate_ad_group_criteria(customer_id=customer_id, operations=ops)
+        if ops: await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
         return {'summary': f"Активировано ключей: {len(ops)}"}
 
     async def _add_negative_keywords(self, action: dict, customer_id: str = None) -> dict:
@@ -496,7 +500,7 @@ class GoogleAdsClient:
                 op.create.keyword.text = neg['term']
                 op.create.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
                 ops.append(op)
-        if ops: svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+        if ops: await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=ops)
         return {'summary': f"Добавлено минус-слов: {len(action.get('negatives', []))}"}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
@@ -507,7 +511,7 @@ class GoogleAdsClient:
         op.update.resource_name = f"customers/{customer_id}/campaignBudgets/{action.get('budget_id')}"
         op.update.amount_micros = int(action.get('proposed_budget', 0) * 1_000_000)
         op.update_mask.paths.append("amount_micros")
-        svc.mutate_campaign_budgets(customer_id=customer_id, operations=[op])
+        await asyncio.to_thread(svc.mutate_campaign_budgets, customer_id=customer_id, operations=[op])
         return {'summary': f"Бюджет изменён на ${action.get('proposed_budget'):.2f}/день"}
 
     async def _update_bid(self, action: dict, customer_id: str = None) -> dict:
@@ -518,7 +522,7 @@ class GoogleAdsClient:
         op.update.resource_name = action.get('resource_name')
         op.update.cpc_bid_micros = int(action.get('new_bid', 0) * 1_000_000)
         op.update_mask.paths.append("cpc_bid_micros")
-        svc.mutate_ad_group_criteria(customer_id=customer_id, operations=[op])
+        await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
         return {'summary': f"Ставка обновлена: ${action.get('new_bid'):.2f}"}
 
     async def _pause_campaign(self, action: dict, customer_id: str = None) -> dict:
@@ -529,7 +533,7 @@ class GoogleAdsClient:
         op.update.resource_name = f"customers/{customer_id}/campaigns/{action['campaign_id']}"
         op.update.status = client.enums.CampaignStatusEnum.PAUSED
         op.update_mask.paths.append("status")
-        svc.mutate_campaigns(customer_id=customer_id, operations=[op])
+        await asyncio.to_thread(svc.mutate_campaigns, customer_id=customer_id, operations=[op])
         return {'summary': f"Кампания {action.get('campaign_name')} поставлена на паузу"}
 
     async def _enable_campaign(self, action: dict, customer_id: str = None) -> dict:
@@ -540,7 +544,7 @@ class GoogleAdsClient:
         op.update.resource_name = f"customers/{customer_id}/campaigns/{action['campaign_id']}"
         op.update.status = client.enums.CampaignStatusEnum.ENABLED
         op.update_mask.paths.append("status")
-        svc.mutate_campaigns(customer_id=customer_id, operations=[op])
+        await asyncio.to_thread(svc.mutate_campaigns, customer_id=customer_id, operations=[op])
         return {'summary': f"Кампания {action.get('campaign_name')} активирована"}
 
     async def _apply_seasonal_adjustments(self, action: dict, customer_id: str = None) -> dict:
@@ -555,7 +559,7 @@ class GoogleAdsClient:
                 op.update.resource_name = f"customers/{customer_id}/campaignBudgets/{adj['budget_id']}"
                 op.update.amount_micros = int(new_budget * 1_000_000)
                 op.update_mask.paths.append("amount_micros")
-                svc.mutate_campaign_budgets(customer_id=customer_id, operations=[op])
+                await asyncio.to_thread(svc.mutate_campaign_budgets, customer_id=customer_id, operations=[op])
                 applied += 1
             except Exception as e:
                 errors.append(f"{adj.get('campaign_name', '?')}: {e}")
@@ -571,5 +575,5 @@ class GoogleAdsClient:
         op.update.resource_name = action.get('resource_name')
         op.update.status = client.enums.AdGroupAdStatusEnum.PAUSED
         op.update_mask.paths.append("status")
-        svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
+        await asyncio.to_thread(svc.mutate_ad_group_ads, customer_id=customer_id, operations=[op])
         return {'summary': f"Объявление поставлено на паузу: {action.get('ad_id')}"}
