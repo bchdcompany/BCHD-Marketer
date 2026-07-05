@@ -450,27 +450,28 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
 
-async def _run_lsa_audit(bot, progress_msg=None) -> dict:
+async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20) -> dict:
     """
-    Общая логика аудита LSA-звонков: проверяет оплаченные лиды за 7 дней,
-    слушает звонки, предлагает оспаривание при явном несоответствии категории.
-    Используется и в еженедельной задаче, и в команде /auditcalls по запросу.
+    Общая логика аудита LSA-звонков: проверяет оплаченные лиды за указанный
+    период, слушает звонки, предлагает оспаривание при явном несоответствии
+    категории. Используется и в еженедельной задаче, и в команде /auditcalls.
     Если передан progress_msg — обновляет его статусом прогресса.
-    Возвращает {'checked': int, 'disputed': int, 'total_charged': int}.
+    Возвращает {'checked': int, 'disputed': int, 'total_charged': int, 'days': int}.
     """
-    leads_data = await ads_client.get_lsa_leads(days=7, account="lsa")
+    leads_data = await ads_client.get_lsa_leads(days=days, account="lsa")
     leads = leads_data.get('leads', [])
     charged_leads = [l for l in leads if l.get('charged')]
     if not charged_leads:
-        return {'checked': 0, 'disputed': 0, 'total_charged': 0}
+        return {'checked': 0, 'disputed': 0, 'total_charged': 0, 'days': days}
 
+    to_process = charged_leads[:limit]
     disputed_count = 0
     checked_count = 0
-    for i, lead in enumerate(charged_leads[:20]):  # ограничение, чтобы не перегружать за один прогон
+    for i, lead in enumerate(to_process):
         lead_id = lead['id']
         if progress_msg:
             try:
-                await progress_msg.edit_text(f"🎧 Проверяю звонки... ({i + 1}/{min(len(charged_leads), 20)})")
+                await progress_msg.edit_text(f"🎧 Проверяю звонки... ({i + 1}/{len(to_process)})")
             except Exception:
                 pass
         try:
@@ -505,34 +506,53 @@ async def _run_lsa_audit(bot, progress_msg=None) -> dict:
             log.error(f"Ошибка обработки лида {lead_id} в аудите LSA: {e}")
             continue
 
-    return {'checked': checked_count, 'disputed': disputed_count, 'total_charged': len(charged_leads)}
+    return {'checked': checked_count, 'disputed': disputed_count, 'total_charged': len(charged_leads), 'days': days}
 
 
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """По запросу проверяет все оплаченные LSA-лиды за последнюю неделю (та же логика, что в еженедельной задаче)"""
+    """
+    По запросу проверяет оплаченные LSA-лиды и звонки за период.
+    Использование: /auditcalls [дней] — например /auditcalls 30 для проверки за месяц.
+    По умолчанию — 7 дней.
+    """
     if not _is_owner(update):
         return
     if not config.lsa_configured:
         await update.message.reply_text("⚠️ LSA аккаунт не настроен.")
         return
 
-    msg = await update.message.reply_text("🎧 Собираю оплаченные лиды LSA за последние 7 дней...")
+    days = 7
+    if ctx.args:
+        try:
+            days = int(ctx.args[0])
+            if days <= 0 or days > 90:
+                await update.message.reply_text("⚠️ Укажи период от 1 до 90 дней. Например: /auditcalls 30")
+                return
+        except ValueError:
+            await update.message.reply_text("⚠️ Использование: /auditcalls [дней], например /auditcalls 30")
+            return
+
+    limit = 50 if days > 7 else 20  # для месяца лидов может быть больше — поднимаем лимит обработки
+
+    msg = await update.message.reply_text(f"🎧 Собираю оплаченные лиды LSA за последние {days} дней...")
     try:
-        stats = await _run_lsa_audit(ctx.bot, progress_msg=msg)
+        stats = await _run_lsa_audit(ctx.bot, progress_msg=msg, days=days, limit=limit)
     except Exception as e:
         log.error(f"Ошибка ручного аудита LSA: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
         return
 
     if stats['total_charged'] == 0:
-        await msg.edit_text("✅ За последние 7 дней нет оплаченных LSA-лидов для проверки.")
+        await msg.edit_text(f"✅ За последние {days} дней нет оплаченных LSA-лидов для проверки.")
         return
 
     text = (
         f"🎧 *Аудит LSA-звонков завершён*\n\n"
-        f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
+        f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
         f"Предложено к оспариванию: {stats['disputed']}."
     )
+    if stats['total_charged'] > limit:
+        text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Запусти команду ещё раз, чтобы проверить остальные."
     if stats['disputed'] > 0:
         text += "\n\nКарточки одобрения отправлены выше."
     await _safe_edit(msg, text, parse_mode="Markdown")
