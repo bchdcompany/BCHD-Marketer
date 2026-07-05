@@ -66,15 +66,20 @@ async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwar
         return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
 
 
-async def _safe_edit(query, text: str, parse_mode="Markdown", **kwargs):
+async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
     """
-    Редактирование сообщения с fallback: если Markdown не парсится, редактирует как обычный текст.
+    Редактирование с fallback: работает и с CallbackQuery (edit_message_text),
+    и с обычным Message (edit_text). Если Markdown не парсится — редактирует
+    как обычный текст.
     """
+    edit_fn = getattr(target, "edit_message_text", None) or getattr(target, "edit_text", None)
+    if edit_fn is None:
+        raise AttributeError(f"{type(target)} не поддерживает редактирование текста")
     try:
-        return await query.edit_message_text(text, parse_mode=parse_mode, **kwargs)
+        return await edit_fn(text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
         log.warning(f"Не удалось отредактировать с parse_mode={parse_mode} ({e}), редактирую как обычный текст")
-        return await query.edit_message_text(text, **kwargs)
+        return await edit_fn(text, **kwargs)
 
 
 async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
