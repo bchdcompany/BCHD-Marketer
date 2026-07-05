@@ -304,15 +304,29 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Свободные текстовые вопросы к агенту (не команды)"""
+    """Свободные текстовые вопросы к агенту (не команды) — с подтягиванием живых данных"""
     if not _is_owner(update):
         return
     question = update.message.text
     if not question or not question.strip():
         return
-    thinking_msg = await update.message.reply_text("🤔 Думаю...")
-    try:
+
+    if not config.google_ads_configured:
+        thinking_msg = await update.message.reply_text("🤔 Думаю...")
         answer = await ai_analyst.answer_question(question)
+        await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+        return
+
+    thinking_msg = await update.message.reply_text("📊 Собираю актуальные данные... (~30-40 сек)")
+    try:
+        context_data = await ads_client.get_both_accounts_summary()
+    except Exception as e:
+        log.error(f"Ошибка получения данных для свободного вопроса: {e}")
+        context_data = None
+
+    await _safe_edit(thinking_msg, "🤔 Анализирую...")
+    try:
+        answer = await ai_analyst.answer_question(question, context_data=context_data)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка обработки свободного вопроса: {e}")
