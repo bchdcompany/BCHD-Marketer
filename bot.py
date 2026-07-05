@@ -6,8 +6,10 @@ v4 — безопасная отправка сообщений (fallback без
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 
+import asyncpg
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -41,15 +43,84 @@ pending = PendingActions()
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
 MAX_HISTORY_MESSAGES = 12  # последние 6 обменов (вопрос+ответ)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+_db_pool = None
 
 
-def _get_history(ctx: ContextTypes.DEFAULT_TYPE) -> list:
-    """Возвращает историю переписки для текущего чата (в памяти процесса)"""
+async def _get_db_pool():
+    """Ленивая инициализация пула соединений с Postgres"""
+    global _db_pool
+    if DATABASE_URL and _db_pool is None:
+        _db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    return _db_pool
+
+
+async def init_db():
+    """Создаёт таблицу истории переписки, если её ещё нет"""
+    if not DATABASE_URL:
+        log.warning("DATABASE_URL не задан — история переписки будет храниться только в памяти и потеряется при рестарте")
+        return
+    try:
+        pool = await _get_db_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id_created_at
+                ON chat_history (chat_id, created_at)
+            """)
+        log.info("Таблица chat_history готова — история переписки сохраняется в Postgres")
+    except Exception as e:
+        log.error(f"Ошибка инициализации таблицы chat_history: {e}")
+
+
+async def _get_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) -> list:
+    """
+    Возвращает историю переписки для чата. Из Postgres, если настроен,
+    иначе из памяти процесса (не переживёт рестарт).
+    """
+    if DATABASE_URL:
+        try:
+            pool = await _get_db_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT role, content FROM chat_history WHERE chat_id = $1 ORDER BY created_at DESC LIMIT $2",
+                    chat_id, MAX_HISTORY_MESSAGES,
+                )
+            return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+        except Exception as e:
+            log.error(f"Ошибка чтения истории из Postgres: {e}")
     return ctx.chat_data.get("history", [])
 
 
-def _append_history(ctx: ContextTypes.DEFAULT_TYPE, question: str, answer: str):
-    """Добавляет обмен в историю переписки, обрезая до MAX_HISTORY_MESSAGES"""
+async def _append_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, question: str, answer: str):
+    """Сохраняет обмен в историю переписки (Postgres, если настроен, иначе в памяти)"""
+    if DATABASE_URL:
+        try:
+            pool = await _get_db_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO chat_history (chat_id, role, content) VALUES ($1, 'user', $2), ($1, 'assistant', $3)",
+                    chat_id, question, answer,
+                )
+                # Чистим старые записи сверх лимита, чтобы таблица не росла бесконечно
+                await conn.execute("""
+                    DELETE FROM chat_history
+                    WHERE chat_id = $1 AND id NOT IN (
+                        SELECT id FROM chat_history WHERE chat_id = $1
+                        ORDER BY created_at DESC LIMIT $2
+                    )
+                """, chat_id, MAX_HISTORY_MESSAGES)
+            return
+        except Exception as e:
+            log.error(f"Ошибка сохранения истории в Postgres: {e}")
     history = ctx.chat_data.get("history", [])
     history.append({"role": "user", "content": question})
     history.append({"role": "assistant", "content": answer})
@@ -331,13 +402,14 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
-    history = _get_history(ctx)
+    chat_id = update.effective_chat.id
+    history = await _get_history(ctx, chat_id)
 
     if not config.google_ads_configured:
         thinking_msg = await update.message.reply_text("🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
-        _append_history(ctx, question, answer)
+        await _append_history(ctx, chat_id, question, answer)
         return
 
     thinking_msg = await update.message.reply_text("🧭 Определяю, что нужно...")
@@ -356,7 +428,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(thinking_msg, "🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
-        _append_history(ctx, question, answer)
+        await _append_history(ctx, chat_id, question, answer)
         return
 
     await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-40 сек)")
@@ -399,7 +471,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     reply = result.get("reply", "Не удалось получить ответ.")
     await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
-    _append_history(ctx, question, reply)
+    await _append_history(ctx, chat_id, question, reply)
 
     for action in result.get("proposed_actions", []):
         try:
@@ -856,8 +928,13 @@ async def scheduled_seasonal_check(app):
 
 # ── main ─────────────────────────────────────────────────
 
+async def _on_startup(app):
+    """Вызывается один раз при старте бота — готовит таблицу истории переписки"""
+    await init_db()
+
+
 def main():
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_on_startup).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
