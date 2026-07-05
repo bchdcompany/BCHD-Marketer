@@ -4,6 +4,7 @@ v5 — совместимость с google-ads==31.1.0 (API v24)
 """
 
 import asyncio
+import os
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -287,7 +288,92 @@ class GoogleAdsClient:
             log.error(f"get_lsa_leads({account}) error: {e}")
             return {'error': str(e), 'leads': [], 'account': account}
 
-    async def get_performance_report(self, days: int = 7, account: str = "ads") -> dict:
+    async def get_lsa_lead_conversations(self, lead_id, account: str = "lsa") -> dict:
+        """
+        Получает беседы (в частности, звонки) по конкретному лиду LSA,
+        включая ссылку на аудиозапись звонка (call_recording_url).
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'conversations': []}
+
+        query = f"""
+            SELECT
+                local_services_lead_conversation.id,
+                local_services_lead_conversation.conversation_channel,
+                local_services_lead_conversation.event_date_time,
+                local_services_lead_conversation.phone_call_details.call_duration_millis,
+                local_services_lead_conversation.phone_call_details.call_recording_url
+            FROM local_services_lead_conversation
+            WHERE local_services_lead.id = {lead_id}
+              AND local_services_lead_conversation.conversation_channel = 'PHONE_CALL'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            conversations = []
+            for row in rows:
+                conv = row.local_services_lead_conversation
+                conversations.append({
+                    'id': conv.id,
+                    'event_date_time': conv.event_date_time,
+                    'duration_ms': conv.phone_call_details.call_duration_millis,
+                    'recording_url': conv.phone_call_details.call_recording_url,
+                })
+            return {'conversations': conversations, 'lead_id': lead_id}
+        except Exception as e:
+            log.error(f"get_lsa_lead_conversations({lead_id}) error: {e}")
+            return {'error': str(e), 'conversations': []}
+
+    def _get_fresh_access_token(self) -> str:
+        """Синхронно получает свежий OAuth access token (для скачивания записи звонка)"""
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        creds = Credentials(
+            token=None,
+            refresh_token=self.config.GOOGLE_ADS_REFRESH_TOKEN,
+            client_id=self.config.GOOGLE_ADS_CLIENT_ID,
+            client_secret=self.config.GOOGLE_ADS_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+        creds.refresh(GoogleAuthRequest())
+        return creds.token
+
+    async def download_and_transcribe_call(self, recording_url: str) -> dict:
+        """
+        Скачивает запись звонка LSA (требует OAuth-авторизацию тем же
+        Google Ads токеном) и транскрибирует через Groq Whisper.
+        Возвращает {'success': True, 'transcript': '...'} или {'success': False, 'error': '...'}.
+        """
+        import httpx
+        try:
+            access_token = await asyncio.to_thread(self._get_fresh_access_token)
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "developer-token": self.config.GOOGLE_ADS_DEVELOPER_TOKEN,
+            }
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                resp = await http_client.get(recording_url, headers=headers)
+                resp.raise_for_status()
+                audio_bytes = resp.content
+
+            def _transcribe():
+                from groq import Groq
+                groq_key = os.environ.get("GROQ_API_KEY")
+                if not groq_key:
+                    raise RuntimeError("GROQ_API_KEY не настроен в переменных окружения")
+                groq_client = Groq(api_key=groq_key)
+                transcription = groq_client.audio.transcriptions.create(
+                    file=("call.mp3", audio_bytes),
+                    model="whisper-large-v3-turbo",
+                    language="en",
+                )
+                return transcription.text
+
+            transcript = await asyncio.to_thread(_transcribe)
+            return {'success': True, 'transcript': transcript}
+        except Exception as e:
+            log.error(f"download_and_transcribe_call error: {e}")
+            return {'success': False, 'error': str(e)}
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'daily': []}
@@ -515,6 +601,7 @@ class GoogleAdsClient:
             'enable_campaign': self._enable_campaign,
             'seasonal_adjustments': self._apply_seasonal_adjustments,
             'pause_ad': self._pause_ad,
+            'dispute_lsa_lead': self._dispute_lsa_lead,
         }
         handler = handlers.get(action_type)
         if not handler:
@@ -603,6 +690,13 @@ class GoogleAdsClient:
                 # Минус-слова сложно точно сверить по тексту через GAQL сразу после mutate —
                 # автоматическая перепроверка не поддерживается для этого типа.
                 return {'verified': None, 'note': 'Автоматическая перепроверка минус-слов не поддерживается'}
+
+            elif action_type == 'dispute_lsa_lead':
+                lead_id = action.get('lead_id')
+                query = f"SELECT local_services_lead.lead_feedback_submitted FROM local_services_lead WHERE local_services_lead.id = {lead_id}"
+                rows = await self._search(customer_id, query)
+                submitted = rows[0].local_services_lead.lead_feedback_submitted if rows else None
+                return {'verified': submitted is True, 'lead_feedback_submitted': submitted}
 
             else:
                 return {'verified': None, 'note': f'Перепроверка не поддерживается для типа {action_type}'}
@@ -731,3 +825,32 @@ class GoogleAdsClient:
         op.update_mask.paths.append("status")
         await asyncio.to_thread(svc.mutate_ad_group_ads, customer_id=customer_id, operations=[op])
         return {'summary': f"Объявление поставлено на паузу: {action.get('ad_id')}"}
+
+    async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
+        """
+        Отправляет фидбэк по LSA-лиду через LocalServicesLeadService.ProvideLeadFeedback().
+        Это современный аналог "dispute" — ручной кнопки Google больше нет,
+        вместо неё отправляется оценка "неудовлетворён" с причиной, что может
+        триггернуть автоматический кредит и обучает алгоритм подбора лидов.
+        """
+        if not customer_id:
+            customer_id = self.lsa_customer_id
+        client = self._get_client()
+        lead_id = action.get('lead_id')
+        reason_text = (action.get('reason') or action.get('reasoning') or
+                        'Service category not offered by our business')[:500]
+
+        def _do():
+            svc = client.get_service("LocalServicesLeadService")
+            request = client.get_type("ProvideLeadFeedbackRequest")
+            request.resource_name = f"customers/{customer_id}/localServicesLeads/{lead_id}"
+            request.survey_answer = client.enums.LocalServicesLeadSurveyAnswerEnum.DISSATISFIED
+            request.survey_dissatisfied.survey_dissatisfied_reason = (
+                client.enums.LocalServicesLeadSurveyDissatisfiedReasonEnum.OTHER_DISSATISFIED_REASON
+            )
+            request.survey_dissatisfied.other_reason_comment = reason_text
+            return svc.provide_lead_feedback(request=request)
+
+        response = await asyncio.to_thread(_do)
+        decision = response.credit_issuance_decision.name if hasattr(response.credit_issuance_decision, 'name') else str(response.credit_issuance_decision)
+        return {'summary': f"Фидбэк отправлен по лиду {lead_id}. Решение Google по кредиту: {decision}"}
