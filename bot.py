@@ -489,6 +489,8 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             context_data["search_terms"] = {}
             for acc in accounts:
                 context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
+        if "lsa_leads" in data_needed:
+            context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
