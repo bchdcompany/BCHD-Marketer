@@ -389,6 +389,45 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send_approval_card(update.get_bot(), config.OWNER_CHAT_ID, action_id, action)
 
 
+def _action_ids_verified(action: dict, context_data: dict) -> bool:
+    """
+    Защита от использования устаревших/выдуманных ID: проверяет, что все
+    resource_name/campaign_id/budget_id, упомянутые в предложенном действии,
+    реально присутствуют в свежих данных ЭТОГО запроса (context_data),
+    а не взяты моделью из истории переписки или придуманы.
+    """
+    import json as _json
+    context_str = _json.dumps(context_data, ensure_ascii=False)
+    ids_to_check = []
+    a_type = action.get("type")
+
+    if a_type in ("pause_campaign", "enable_campaign"):
+        if action.get("campaign_id"):
+            ids_to_check.append(str(action["campaign_id"]))
+    elif a_type == "budget_change":
+        if action.get("budget_id"):
+            ids_to_check.append(str(action["budget_id"]))
+    elif a_type == "update_bid":
+        if action.get("resource_name"):
+            ids_to_check.append(str(action["resource_name"]))
+    elif a_type in ("pause_keywords", "enable_keywords"):
+        for kw in action.get("keywords", []):
+            if kw.get("resource_name"):
+                ids_to_check.append(str(kw["resource_name"]))
+    elif a_type == "seasonal_adjustments":
+        for adj in action.get("adjustments", []):
+            if adj.get("campaign_id"):
+                ids_to_check.append(str(adj["campaign_id"]))
+            if adj.get("budget_id"):
+                ids_to_check.append(str(adj["budget_id"]))
+    # add_negative_keywords не требует существующих ID (это новые термины) — пропускаем проверку
+
+    if not ids_to_check:
+        return True  # нечего проверять (например, add_negative_keywords) — пропускаем
+
+    return all(id_val in context_str for id_val in ids_to_check)
+
+
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Свободные текстовые сообщения (не команды).
@@ -475,16 +514,34 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
     await _append_history(ctx, chat_id, question, reply)
 
+    blocked_actions = 0
     for action in result.get("proposed_actions", []):
         try:
             action.setdefault("account", accounts[0])
             action.setdefault("data_summary", action.get("reasoning", ""))
             action.setdefault("expected_impact", "")
             action.setdefault("requires_approval", True)
+
+            if not _action_ids_verified(action, context_data):
+                log.warning(f"Действие заблокировано — ID не найдены в свежих данных запроса: {action}")
+                blocked_actions += 1
+                continue
+
             action_id = pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
             log.error(f"Ошибка создания карточки одобрения из чата: {e}")
+
+    if blocked_actions:
+        await ctx.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                f"⚠️ {blocked_actions} предложенное действие заблокировано автоматической проверкой: "
+                f"использованные ID не найдены в свежих данных этого запроса (возможно, устарели или "
+                f"взяты из более раннего разговора). Запроси данные заново явной командой, чтобы получить "
+                f"актуальные ID перед действием."
+            ),
+        )
 
 
 # ── Обработка кнопок ────────────────────────────────────
