@@ -226,12 +226,18 @@ class GoogleAdsClient:
             log.error(f"get_search_terms({account}) error: {e}")
             return {'error': str(e), 'terms': [], 'account': account}
 
-    async def get_lsa_leads(self, days: int = 30, account: str = "lsa") -> dict:
+    async def get_lsa_leads(self, days: int = 30, account: str = "lsa",
+                             date_from: str = None, date_to: str = None) -> dict:
         """
         Получает детальные данные по лидам Local Services Ads через ресурс
         local_services_lead в Google Ads API (без необходимости в отдельном
         LSA API или ручной выгрузке CSV). Возвращает категорию услуги,
         статус, был ли выдан кредит и т.д. для каждого лида.
+
+        Можно передать либо days (скользящее окно от сегодня), либо явные
+        date_from/date_to в формате YYYY-MM-DD (для конкретного календарного
+        периода вроде "май 2026") — если заданы date_from/date_to, они
+        имеют приоритет над days.
 
         NB: конкретные названия полей local_services_lead могут потребовать
         уточнения при первом реальном запросе (аналогично quality_score) —
@@ -242,8 +248,9 @@ class GoogleAdsClient:
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'leads': []}
 
-        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        if not date_from or not date_to:
+            date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")
 
         query = f"""
             SELECT
@@ -285,7 +292,7 @@ class GoogleAdsClient:
                     'credit_state': lead.credit_details.credit_state.name if hasattr(lead.credit_details.credit_state, 'name') else str(lead.credit_details.credit_state),
                     'phone': phone,
                 })
-            return {'leads': leads, 'total': len(leads), 'days': days, 'account': account}
+            return {'leads': leads, 'total': len(leads), 'days': days, 'date_from': date_from, 'date_to': date_to, 'account': account}
         except Exception as e:
             log.error(f"get_lsa_leads({account}) error: {e}")
             return {'error': str(e), 'leads': [], 'account': account}
