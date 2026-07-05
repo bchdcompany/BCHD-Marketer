@@ -1,7 +1,7 @@
 """
 BCHD Marketer Agent — Telegram бот
 Google Ads оптимизация с AI-анализом
-v3 — поддержка двух аккаунтов: Google Ads (936) + LSA (667)
+v4 — безопасная отправка сообщений (fallback без Markdown при ошибке парсинга сущностей)
 """
 
 import asyncio
@@ -11,6 +11,7 @@ from datetime import datetime
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -51,13 +52,47 @@ def _account_keyboard(prefix: str) -> InlineKeyboardMarkup:
     ]])
 
 
+async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwargs):
+    """
+    Отправка сообщения с fallback: если Markdown не парсится (например,
+    из-за непарных * _ [ в AI-сгенерированном тексте), отправляет как обычный текст.
+    """
+    try:
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kwargs)
+    except BadRequest as e:
+        log.warning(f"Не удалось отправить с parse_mode={parse_mode} ({e}), отправляю как обычный текст")
+        return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+
+async def _safe_edit(query, text: str, parse_mode="Markdown", **kwargs):
+    """
+    Редактирование сообщения с fallback: если Markdown не парсится, редактирует как обычный текст.
+    """
+    try:
+        return await query.edit_message_text(text, parse_mode=parse_mode, **kwargs)
+    except BadRequest as e:
+        log.warning(f"Не удалось отредактировать с parse_mode={parse_mode} ({e}), редактирую как обычный текст")
+        return await query.edit_message_text(text, **kwargs)
+
+
+async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
+    """
+    Ответ на сообщение с fallback: если Markdown не парсится, отвечает как обычный текст.
+    """
+    try:
+        return await message.reply_text(text, parse_mode=parse_mode, **kwargs)
+    except BadRequest as e:
+        log.warning(f"Не удалось ответить с parse_mode={parse_mode} ({e}), отвечаю как обычный текст")
+        return await message.reply_text(text, **kwargs)
+
+
 async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
     text = report_gen.format_approval_card(action_id, action)
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Применить", callback_data=f"approve:{action_id}"),
         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
     ]])
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
+    await _safe_send(bot, chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 # ── Команды ──────────────────────────────────────────────
@@ -67,7 +102,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     ads_status = "✅ Google Ads API подключён" if config.google_ads_configured else "⚠️ Google Ads API не настроен"
     lsa_status = "✅ LSA аккаунт подключён" if config.lsa_configured else "⚠️ LSA аккаунт не настроен"
-    await update.message.reply_text(
+    await _safe_reply(
+        update.message,
         f"🤖 *BCHD Marketer Agent*\n\n"
         f"{ads_status}\n"
         f"{lsa_status}\n\n"
@@ -124,7 +160,7 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif lsa_data and lsa_data.get('error'):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
-        await msg.edit_text(text, parse_mode="Markdown")
+        await _safe_edit(msg, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка /both: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
@@ -284,7 +320,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"⏳ Применяю: {action['description']}...")
             try:
                 result = await ads_client.execute_action(action)
-                await query.edit_message_text(
+                await _safe_edit(
+                    query,
                     f"✅ *Выполнено:* {action['description']}\n\n{result.get('summary', str(result))}",
                     parse_mode="Markdown",
                 )
@@ -313,7 +350,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     data_result = await ads_client.get_performance_report(days=7, account=account)
                     analysis = await ai_analyst.analyze_performance(data_result)
                     text = report_gen.format_performance_report(data_result, analysis) if hasattr(report_gen, 'format_performance_report') else _format_performance(data_result, analysis)
-                await query.edit_message_text(text, parse_mode="Markdown")
+                await _safe_edit(query, text, parse_mode="Markdown")
             except Exception as e:
                 log.error(f"Ошибка report callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -324,11 +361,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if account == "both":
                     data_result = await ads_client.get_both_accounts_summary()
                     text = _format_both_summary(data_result)
+                    analysis = {}
                 else:
                     data_result = await ads_client.get_full_audit_data(account=account)
                     analysis = await ai_analyst.analyze_campaigns(data_result)
                     text = _format_audit(data_result, analysis)
-                await query.edit_message_text(text, parse_mode="Markdown")
+                await _safe_edit(query, text, parse_mode="Markdown")
                 if account != "both":
                     for action in analysis.get("recommendations", []):
                         action["account"] = account
@@ -367,7 +405,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         }
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
-                await query.edit_message_text(text, parse_mode="Markdown")
+                await _safe_edit(query, text, parse_mode="Markdown")
             except Exception as e:
                 log.error(f"Ошибка budget callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -384,7 +422,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     for action in _build_keyword_actions(analysis, acc):
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
-                await query.edit_message_text("\n\n".join(texts), parse_mode="Markdown")
+                await _safe_edit(query, "\n\n".join(texts), parse_mode="Markdown")
             except Exception as e:
                 log.error(f"Ошибка keywords callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -399,7 +437,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     negatives = analysis.get("suggested_negatives", [])
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*Минус-слова {acc_label}:* {len(negatives)} найдено\n{analysis.get('summary', '')}"
-                    await ctx.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+                    await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                     if negatives:
                         action = {
                             "type": "add_negative_keywords",
@@ -427,11 +465,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 for acc in accounts:
                     data_result = await ads_client.get_auction_insights(account=acc)
                     if not data_result.get("competitors"):
-                        await ctx.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=f"ℹ️ Данных аукциона для {'Google Ads' if acc == 'ads' else 'LSA'} пока нет.")
+                        await _safe_send(ctx.bot, config.OWNER_CHAT_ID, f"ℹ️ Данных аукциона для {'Google Ads' if acc == 'ads' else 'LSA'} пока нет.", parse_mode=None)
                         continue
                     analysis = await ai_analyst.analyze_auction_insights(data_result)
                     text = f"*{'Google Ads' if acc == 'ads' else 'LSA'} — конкуренты:*\n{analysis.get('position_summary', '')}\n\n{analysis.get('summary', '')}"
-                    await ctx.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+                    await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                 await query.edit_message_text("✅ Анализ конкурентов завершён.")
             except Exception as e:
                 log.error(f"Ошибка competitors callback: {e}")
@@ -447,7 +485,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     results = analysis.get("ab_results", [])
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*A/B тест {acc_label}:* {len(results)} групп\n{analysis.get('summary', 'Нет данных')}"
-                    await ctx.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+                    await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                 await query.edit_message_text("✅ A/B анализ завершён.")
             except Exception as e:
                 log.error(f"Ошибка abtest callback: {e}")
@@ -463,7 +501,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     action_plan = await ai_analyst.build_seasonal_action(season_data, budget_data.get("campaigns", []))
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*Сезон {season_data['season_name']} — {acc_label}:*\n{action_plan.get('summary', '')}\n{action_plan.get('expected_impact', '')}"
-                    await ctx.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+                    await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                     if action_plan.get("adjustments"):
                         action = {
                             "type": "seasonal_adjustments",
@@ -574,7 +612,7 @@ async def scheduled_morning_report(app):
         data = await ads_client.get_both_accounts_summary()
         text = f"☀️ *Утренний отчёт — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
         text += _format_both_summary(data)
-        await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
         await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=f"⚠️ Ошибка утреннего отчёта: {e}")
@@ -617,7 +655,7 @@ async def scheduled_evening_summary(app):
         data = await ads_client.get_both_accounts_summary()
         text = f"🌙 *Итоги дня — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
         text += _format_both_summary(data)
-        await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка вечернего итога: {e}")
 
@@ -632,7 +670,7 @@ async def scheduled_weekly_audit(app):
             analysis = await ai_analyst.analyze_campaigns(data)
             text = f"📋 *Аудит {'Google Ads' if account == 'ads' else 'LSA'} — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
             text += _format_audit(data, analysis)
-            await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
             for action in analysis.get("recommendations", []):
                 action["account"] = account
                 action_id = pending.add(action)
@@ -651,7 +689,7 @@ async def scheduled_competitors_check(app):
             return
         analysis = await ai_analyst.analyze_auction_insights(data)
         text = f"🏆 *Конкуренты — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n{analysis.get('position_summary', '')}\n{analysis.get('summary', '')}"
-        await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка анализа конкурентов: {e}")
 
@@ -666,7 +704,7 @@ async def scheduled_ab_test_check(app):
         if not analysis.get("ab_results"):
             return
         text = f"🧪 *A/B тест — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n{analysis.get('summary', '')}"
-        await app.bot.send_message(chat_id=config.OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка A/B теста: {e}")
 
@@ -728,7 +766,7 @@ def main():
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.start()
 
-    log.info("BCHD Marketer Agent v3 запущен (Google Ads + LSA)")
+    log.info("BCHD Marketer Agent v4 запущен (Google Ads + LSA)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
