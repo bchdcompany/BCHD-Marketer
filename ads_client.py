@@ -225,6 +225,65 @@ class GoogleAdsClient:
             log.error(f"get_search_terms({account}) error: {e}")
             return {'error': str(e), 'terms': [], 'account': account}
 
+    async def get_lsa_leads(self, days: int = 30, account: str = "lsa") -> dict:
+        """
+        Получает детальные данные по лидам Local Services Ads через ресурс
+        local_services_lead в Google Ads API (без необходимости в отдельном
+        LSA API или ручной выгрузке CSV). Возвращает категорию услуги,
+        статус, был ли выдан кредит и т.д. для каждого лида.
+
+        NB: конкретные названия полей local_services_lead могут потребовать
+        уточнения при первом реальном запросе (аналогично quality_score) —
+        если API вернёт UNRECOGNIZED_FIELD, нужно будет скорректировать
+        запрос под точные имена полей этой версии API.
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'leads': []}
+
+        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")
+
+        query = f"""
+            SELECT
+                local_services_lead.id,
+                local_services_lead.category_id,
+                local_services_lead.service_id,
+                local_services_lead.lead_type,
+                local_services_lead.lead_status,
+                local_services_lead.creation_date_time,
+                local_services_lead.lead_charged,
+                local_services_lead.credit_details.credit_state,
+                local_services_lead.credit_details.credit_reason,
+                local_services_lead.contact_details.phone_number
+            FROM local_services_lead
+            WHERE local_services_lead.creation_date_time BETWEEN '{date_from}' AND '{date_to}'
+            ORDER BY local_services_lead.creation_date_time DESC
+            LIMIT 500
+        """
+
+        try:
+            rows = await self._search(customer_id, query)
+            leads = []
+            for row in rows:
+                lead = row.local_services_lead
+                leads.append({
+                    'id': lead.id,
+                    'category_id': lead.category_id,
+                    'service_id': lead.service_id,
+                    'lead_type': lead.lead_type.name if hasattr(lead.lead_type, 'name') else str(lead.lead_type),
+                    'lead_status': lead.lead_status.name if hasattr(lead.lead_status, 'name') else str(lead.lead_status),
+                    'created': lead.creation_date_time,
+                    'charged': lead.lead_charged,
+                    'credit_state': lead.credit_details.credit_state.name if hasattr(lead.credit_details.credit_state, 'name') else str(lead.credit_details.credit_state),
+                    'credit_reason': lead.credit_details.credit_reason.name if hasattr(lead.credit_details.credit_reason, 'name') else str(lead.credit_details.credit_reason),
+                    'phone': lead.contact_details.phone_number,
+                })
+            return {'leads': leads, 'total': len(leads), 'days': days, 'account': account}
+        except Exception as e:
+            log.error(f"get_lsa_leads({account}) error: {e}")
+            return {'error': str(e), 'leads': [], 'account': account}
+
     async def get_performance_report(self, days: int = 7, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
