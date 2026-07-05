@@ -458,10 +458,16 @@ API, без ручной работы владельца в интерфейсе
    pause_keywords, enable_keywords, add_negative_keywords, seasonal_adjustments,
    unsupported (если действие про Google Ads, но не входит в список), none
    (если intent="chat")
-3. data_needed — какие данные нужны для ответа: campaigns (сводка по
+3. data_needed — СПИСОК типов данных, нужных для полного ответа (можно
+   несколько, если вопрос широкий). Доступные типы: campaigns (сводка по
    кампаниям), budgets (бюджеты с их ID), keywords (ключевые слова),
    search_terms (поисковые запросы для минус-слов), seasonal (сезонные
-   рекомендации + бюджеты), none (общий вопрос, данные не нужны)
+   рекомендации + бюджеты). Если вопрос общий и данные не нужны — верни
+   пустой список [].
+   Примеры: широкий запрос "сделай полный анализ" → ["campaigns", "keywords",
+   "budgets"]. Узкий запрос "проверь ключевые слова" → ["keywords"].
+   Запрос про минус-слова → ["search_terms"]. Не экономь — если сомневаешься,
+   нужны ли ключевые слова для полноценного ответа, включи их в список.
 4. account — ads (Google Ads 936), lsa (LSA 667), both (если не уточнено
    явно и не следует из истории переписки ниже)
 
@@ -470,11 +476,14 @@ API, без ручной работы владельца в интерфейсе
 уточнение без явного упоминания аккаунта).
 
 Верни ТОЛЬКО JSON:
-{{"intent": "chat|action", "action_type": "...", "data_needed": "...", "account": "ads|lsa|both"}}
+{{"intent": "chat|action", "action_type": "...", "data_needed": ["..."], "account": "ads|lsa|both"}}
 """
         result = await self._call_claude(prompt, max_tokens=300, history=history)
         if "_error" in result:
-            return {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
+            return {"intent": "chat", "action_type": "none", "data_needed": ["campaigns"], "account": "both"}
+        # Совместимость: если модель всё же вернула строку вместо списка
+        if isinstance(result.get("data_needed"), str):
+            result["data_needed"] = [result["data_needed"]] if result["data_needed"] != "none" else []
         return result
 
     async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
@@ -534,8 +543,14 @@ resource_name / campaign_id / budget_id, которые реально есть 
   "proposed_actions": []}}
 
 Если действие не требуется (это просто вопрос) — верни "proposed_actions": [].
+
+ВАЖНО ПРО ДЛИНУ ОТВЕТА: если запрос широкий (например, "проанализируй всё",
+"дай полный анализ всех кампаний") — не пытайся описать каждую кампанию
+подробно построчно. Дай общую картину (топ-2-3 проблемы/находки с цифрами)
+и предложи владельцу уточнить, что расписать детальнее. Это важнее, чем
+уместить всё — оборванный на середине ответ хуже, чем краткий полный.
 """
-        result = await self._call_claude(prompt, max_tokens=3000, history=history)
+        result = await self._call_claude(prompt, max_tokens=4096, history=history)
         if "_error" in result:
             return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
         return result
