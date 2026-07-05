@@ -2,7 +2,6 @@
 BCHD Marketer Agent — конфигурация
 Все переменные берутся из Railway Environment Variables
 """
-
 import os
 
 
@@ -20,7 +19,14 @@ class Config:
     GOOGLE_ADS_CLIENT_ID: str = os.environ.get("GOOGLE_ADS_CLIENT_ID", "")
     GOOGLE_ADS_CLIENT_SECRET: str = os.environ.get("GOOGLE_ADS_CLIENT_SECRET", "")
     GOOGLE_ADS_REFRESH_TOKEN: str = os.environ.get("GOOGLE_ADS_REFRESH_TOKEN", "")
+
+    # Google Ads (936-279-9327) — основная кампания
     GOOGLE_ADS_CUSTOMER_ID: str = os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "")
+
+    # LSA (667-939-5231) — Local Services Ads
+    GOOGLE_ADS_LSA_CUSTOMER_ID: str = os.environ.get("GOOGLE_ADS_LSA_CUSTOMER_ID", "")
+
+    # MCC (313-939-3264) — управляющий аккаунт
     GOOGLE_ADS_LOGIN_CUSTOMER_ID: str = os.environ.get(
         "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
         os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "")
@@ -39,6 +45,11 @@ class Config:
             and self.GOOGLE_ADS_REFRESH_TOKEN
             and self.GOOGLE_ADS_CUSTOMER_ID
         )
+
+    @property
+    def lsa_configured(self) -> bool:
+        """Проверяет, настроен ли LSA аккаунт"""
+        return bool(self.GOOGLE_ADS_LSA_CUSTOMER_ID and self.google_ads_configured)
 
 
 config = Config()
