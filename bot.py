@@ -417,43 +417,45 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         classification = await ai_analyst.classify_request(question, history=history)
     except Exception as e:
         log.error(f"Ошибка классификации запроса: {e}")
-        classification = {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
+        classification = {"intent": "chat", "action_type": "none", "data_needed": ["campaigns"], "account": "both"}
 
-    data_needed = classification.get("data_needed", "campaigns")
+    data_needed = classification.get("data_needed", ["campaigns"])
+    if isinstance(data_needed, str):
+        data_needed = [data_needed] if data_needed != "none" else []
     account_scope = classification.get("account", "both")
     accounts = ["ads", "lsa"] if account_scope == "both" else [account_scope]
 
     # Быстрый путь: обычный вопрос без нужды в данных аккаунта
-    if data_needed == "none":
+    if not data_needed:
         await _safe_edit(thinking_msg, "🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
         await _append_history(ctx, chat_id, question, answer)
         return
 
-    await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-40 сек)")
+    await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-60 сек)")
     context_data = {}
     try:
-        if data_needed == "campaigns":
+        if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
-        elif data_needed == "budgets":
+        if "budgets" in data_needed:
             context_data["budgets"] = {}
             for acc in accounts:
                 context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
-        elif data_needed == "keywords":
+        if "keywords" in data_needed:
             context_data["keywords"] = {}
             for acc in accounts:
                 context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc)
-        elif data_needed == "search_terms":
+        if "search_terms" in data_needed:
             context_data["search_terms"] = {}
             for acc in accounts:
                 context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
-        elif data_needed == "seasonal":
+        if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
-            context_data["budgets"] = {}
+            context_data.setdefault("budgets", {})
             for acc in accounts:
                 context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
-        else:
+        if not context_data:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
     except Exception as e:
         log.error(f"Ошибка сбора данных для чата: {e}")
