@@ -55,35 +55,32 @@ async def _get(endpoint: str, params: dict = None) -> dict:
         return {"error": str(e)}
 
 
-async def get_jobs_by_date_range(date_from: str, date_to: str, records_per_page: int = 200) -> dict:
+async def get_jobs_by_date_range(date_from: str, date_to: str, records: int = 500) -> dict:
     """
-    Получает список джобов за период (YYYY-MM-DD), проходя по страницам
-    Workiz-пагинации (records_per_page/page), пока не закончатся результаты
-    или не будет достигнут разумный предел страниц.
+    Получает список джобов начиная с date_from (Workiz API поддерживает
+    только нижнюю границу через параметр start_date — верхнюю границу
+    date_to обрезаем на своей стороне после получения ответа).
     """
-    all_jobs = []
-    page = 1
-    max_pages = 5  # защита от слишком долгого запроса при большом периоде
-    while page <= max_pages:
-        params = {
-            "records_per_page": records_per_page,
-            "page": page,
-            "from_date": date_from,
-            "to_date": date_to,
-        }
-        result = await _get("job/all/", params)
-        if "error" in result:
-            return result
-        jobs = result.get("data", [])
-        if isinstance(jobs, dict):
-            jobs = jobs.get("data", [])
-        if not jobs:
-            break
-        all_jobs.extend(jobs)
-        if len(jobs) < records_per_page:
-            break
-        page += 1
-    return {"jobs": all_jobs, "total": len(all_jobs)}
+    params = {
+        "start_date": date_from,
+        "records": records,
+    }
+    result = await _get("job/all/", params)
+    if "error" in result:
+        return result
+    jobs = result.get("data", [])
+    if isinstance(jobs, dict):
+        jobs = jobs.get("data", [])
+
+    # Обрезаем по верхней границе на своей стороне, т.к. API не принимает to_date
+    filtered = []
+    for job in jobs:
+        created = job.get("CreatedDate") or job.get("JobDateTime") or ""
+        created_date_only = created[:10] if created else ""
+        if not created_date_only or created_date_only <= date_to:
+            filtered.append(job)
+
+    return {"jobs": filtered, "total": len(filtered), "total_before_filter": len(jobs)}
 
 
 async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
