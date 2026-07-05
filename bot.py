@@ -40,6 +40,21 @@ pending = PendingActions()
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
+MAX_HISTORY_MESSAGES = 12  # последние 6 обменов (вопрос+ответ)
+
+
+def _get_history(ctx: ContextTypes.DEFAULT_TYPE) -> list:
+    """Возвращает историю переписки для текущего чата (в памяти процесса)"""
+    return ctx.chat_data.get("history", [])
+
+
+def _append_history(ctx: ContextTypes.DEFAULT_TYPE, question: str, answer: str):
+    """Добавляет обмен в историю переписки, обрезая до MAX_HISTORY_MESSAGES"""
+    history = ctx.chat_data.get("history", [])
+    history.append({"role": "user", "content": question})
+    history.append({"role": "assistant", "content": answer})
+    ctx.chat_data["history"] = history[-MAX_HISTORY_MESSAGES:]
+
 
 def _is_owner(update: Update) -> bool:
     return update.effective_user.id == config.OWNER_CHAT_ID
@@ -308,7 +323,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Свободные текстовые сообщения (не команды).
     Классифицирует запрос, подтягивает только нужные данные и,
     если это явная просьба выполнить действие, создаёт карточку одобрения
-    (ничего не выполняется автоматически).
+    (ничего не выполняется автоматически). Учитывает историю переписки.
     """
     if not _is_owner(update):
         return
@@ -316,15 +331,18 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    history = _get_history(ctx)
+
     if not config.google_ads_configured:
         thinking_msg = await update.message.reply_text("🤔 Думаю...")
-        answer = await ai_analyst.answer_question(question)
+        answer = await ai_analyst.answer_question(question, history=history)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+        _append_history(ctx, question, answer)
         return
 
     thinking_msg = await update.message.reply_text("🧭 Определяю, что нужно...")
     try:
-        classification = await ai_analyst.classify_request(question)
+        classification = await ai_analyst.classify_request(question, history=history)
     except Exception as e:
         log.error(f"Ошибка классификации запроса: {e}")
         classification = {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
@@ -336,8 +354,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Быстрый путь: обычный вопрос без нужды в данных аккаунта
     if data_needed == "none":
         await _safe_edit(thinking_msg, "🤔 Думаю...")
-        answer = await ai_analyst.answer_question(question)
+        answer = await ai_analyst.answer_question(question, history=history)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
+        _append_history(ctx, question, answer)
         return
 
     await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-40 сек)")
@@ -372,7 +391,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
     try:
-        result = await ai_analyst.chat_action(question, context_data, action_type)
+        result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
     except Exception as e:
         log.error(f"Ошибка chat_action: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка: {e}")
@@ -380,6 +399,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     reply = result.get("reply", "Не удалось получить ответ.")
     await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
+    _append_history(ctx, question, reply)
 
     for action in result.get("proposed_actions", []):
         try:
