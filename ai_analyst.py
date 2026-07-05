@@ -16,7 +16,7 @@ class AIAnalyst:
 
     def __init__(self, config):
         self.config = config
-        self.client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, timeout=60.0)
         self.model = config.CLAUDE_MODEL
 
         self.system_prompt = """
@@ -78,13 +78,13 @@ appliance repair бизнеса в США. Ты работаешь как авт
 рекомендацию ради видимости работы.
 """
 
-    def _call_claude(self, prompt: str, max_tokens: int = 2000) -> dict:
+    async def _call_claude(self, prompt: str, max_tokens: int = 2000) -> dict:
         """
         Общий метод вызова Claude с диагностикой и защитой от пустых/некорректных ответов.
         Возвращает распарсенный JSON или {"_error": "..."} при неудаче.
         """
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=self.system_prompt,
@@ -128,6 +128,17 @@ appliance repair бизнеса в США. Ты работаешь как авт
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
+            # Частый случай: модель вернула валидный JSON, а после него добавила
+            # ещё текст/повтор ("Extra data"). Пробуем взять только первый
+            # валидный JSON-объект и проигнорировать хвост.
+            if "Extra data" in str(e):
+                try:
+                    decoder = json.JSONDecoder()
+                    obj, end_idx = decoder.raw_decode(text)
+                    log.warning(f"JSON содержал лишние данные после позиции {end_idx}, использую только первый объект")
+                    return obj
+                except json.JSONDecodeError:
+                    pass
             log.error(f"Ошибка парсинга JSON от Claude: {e}. Сырой ответ (первые 500 симв.): {text[:500]!r}")
             return {"_error": f"json_decode_error: {e}", "_raw": text[:500]}
 
@@ -174,7 +185,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 Верни ТОЛЬКО валидный JSON без markdown разметки.
 """
-        result = self._call_claude(prompt, max_tokens=4096)
+        result = await self._call_claude(prompt, max_tokens=4096)
         if "_error" in result:
             return {"summary": "Ошибка анализа", "recommendations": [], "key_findings": [], "_error": result["_error"]}
         return result
@@ -224,7 +235,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=3000)
+        result = await self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"strong_keywords": [], "weak_keywords": [], "quality_score_issues": [], "summary": result["_error"]}
         return result
@@ -266,7 +277,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=3000)
+        result = await self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"suggested_negatives": [], "summary": result["_error"]}
         return result
@@ -311,7 +322,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Если изменения не нужны, верни budget_recommendation как null.
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2500)
+        result = await self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"budget_health": "unknown", "budget_recommendation": None, "_error": result["_error"]}
         return result
@@ -345,7 +356,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2000)
+        result = await self._call_claude(prompt, max_tokens=2000)
         if "_error" in result:
             return {"trend": "unknown", "insights": [], "key_metrics": {}, "_error": result["_error"]}
         return result
@@ -373,7 +384,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
             prompt = f"Вопрос по Google Ads: {question}"
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=1200,
                 system=self.system_prompt + "\n\nОтвечай кратко и по делу. Используй Markdown форматирование для Telegram.",
@@ -418,7 +429,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Верни ТОЛЬКО JSON:
 {{"intent": "chat|action", "action_type": "...", "data_needed": "...", "account": "ads|lsa|both"}}
 """
-        result = self._call_claude(prompt, max_tokens=300)
+        result = await self._call_claude(prompt, max_tokens=300)
         if "_error" in result:
             return {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
         return result
@@ -481,7 +492,7 @@ resource_name / campaign_id / budget_id, которые реально есть 
 
 Если действие не требуется (это просто вопрос) — верни "proposed_actions": [].
 """
-        result = self._call_claude(prompt, max_tokens=3000)
+        result = await self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
         return result
@@ -529,7 +540,7 @@ resource_name / campaign_id / budget_id, которые реально есть 
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2500)
+        result = await self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"competitive_position": "unknown", "main_threats": [], "opportunities": [], "summary": result["_error"]}
         return result
@@ -593,7 +604,7 @@ resource_name / campaign_id / budget_id, которые реально есть 
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=3500)
+        result = await self._call_claude(prompt, max_tokens=3500)
         if "_error" in result:
             return {"ab_results": [], "not_ready": [], "summary": result["_error"]}
         return result
@@ -647,7 +658,7 @@ resource_name / campaign_id / budget_id, которые реально есть 
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2500)
+        result = await self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"adjustments": [], "summary": result["_error"]}
         return result
