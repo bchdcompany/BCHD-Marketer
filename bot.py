@@ -432,6 +432,12 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(msg, text, parse_mode="Markdown")
 
     if opinion.get('recommend_dispute'):
+        status = await ads_client.get_lsa_lead_feedback_status(lead_id)
+        if status.get('feedback_submitted'):
+            await update.message.reply_text(
+                f"ℹ️ По лиду {lead_id} фидбэк уже был отправлен ранее — повторно отправить нельзя (Google не позволяет)."
+            )
+            return
         action = {
             'type': 'dispute_lsa_lead',
             'account': 'lsa',
@@ -467,6 +473,7 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20)
     to_process = charged_leads[:limit]
     disputed_count = 0
     checked_count = 0
+    already_submitted_count = 0
     for i, lead in enumerate(to_process):
         lead_id = lead['id']
         if progress_msg:
@@ -474,6 +481,9 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20)
                 await progress_msg.edit_text(f"🎧 Проверяю звонки... ({i + 1}/{len(to_process)})")
             except Exception:
                 pass
+        if lead.get('feedback_submitted'):
+            already_submitted_count += 1
+            continue  # фидбэк уже отправлен раньше — Google не позволит отправить повторно
         try:
             convs = await ads_client.get_lsa_lead_conversations(lead_id)
             calls = [c for c in convs.get('conversations', []) if c.get('recording_url')]
@@ -506,7 +516,13 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20)
             log.error(f"Ошибка обработки лида {lead_id} в аудите LSA: {e}")
             continue
 
-    return {'checked': checked_count, 'disputed': disputed_count, 'total_charged': len(charged_leads), 'days': days}
+    return {
+        'checked': checked_count,
+        'disputed': disputed_count,
+        'total_charged': len(charged_leads),
+        'already_submitted': already_submitted_count,
+        'days': days,
+    }
 
 
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -550,6 +566,7 @@ async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🎧 *Аудит LSA-звонков завершён*\n\n"
         f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
         f"Предложено к оспариванию: {stats['disputed']}."
+            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
     )
     if stats['total_charged'] > limit:
         text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Запусти команду ещё раз, чтобы проверить остальные."
@@ -570,6 +587,7 @@ async def scheduled_lsa_weekly_audit(app):
                 f"🎧 *Еженедельный аудит LSA-звонков*\n\n"
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
+            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
             )
             if stats['disputed'] > 0:
                 text += "\n\nКарточки одобрения отправлены выше."
@@ -683,6 +701,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"🎧 *Аудит LSA-звонков завершён*\n\n"
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
+            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
             )
             if stats['total_charged'] > limit:
                 text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Повтори запрос, чтобы проверить остальные."
