@@ -27,7 +27,7 @@ class GoogleAdsClient:
                 "refresh_token": self.config.GOOGLE_ADS_REFRESH_TOKEN,
                 "login_customer_id": self.config.GOOGLE_ADS_LOGIN_CUSTOMER_ID,
                 "use_proto_plus": True,
-            }, version="v18")
+            }, version="v17")
         return self._client
 
     def _search(self, customer_id: str, query: str) -> list:
