@@ -7,7 +7,7 @@ v4 — безопасная отправка сообщений (fallback без
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import asyncpg
 import pytz
@@ -28,6 +28,7 @@ from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions
 from report_generator import ReportGenerator
+import workiz_client
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -478,6 +479,8 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
     disputed_count = 0
     checked_count = 0
     already_submitted_count = 0
+    workiz_checked_count = 0
+    workiz_not_found_count = 0
     for i, lead in enumerate(to_process):
         lead_id = lead['id']
         if progress_msg:
@@ -491,26 +494,71 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
         try:
             convs = await ads_client.get_lsa_lead_conversations(lead_id)
             calls = [c for c in convs.get('conversations', []) if c.get('recording_url')]
-            if not calls:
+
+            if calls:
+                result = await ads_client.download_and_transcribe_call(calls[0]['recording_url'])
+                if not result.get('success'):
+                    continue
+                checked_count += 1
+                opinion = await ai_analyst.analyze_lsa_call(result['transcript'], lead)
+                if opinion.get('recommend_dispute'):
+                    action = {
+                        'type': 'dispute_lsa_lead',
+                        'account': 'lsa',
+                        'lead_id': lead_id,
+                        'description': f"Оспорить лид {lead_id} — услуга не по профилю",
+                        'reasoning': opinion.get('dispute_reason', ''),
+                        'risks': 'Кредит не гарантирован, но фидбэк обучает алгоритм',
+                        'urgency': 'low',
+                        'urgency_label': 'Низкая',
+                        'confidence': opinion.get('confidence', 'medium'),
+                        'data_summary': result['transcript'][:300],
+                        'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
+                        'requires_approval': True,
+                    }
+                    action_id = pending.add(action)
+                    await _send_approval_card(bot, config.OWNER_CHAT_ID, action_id, action)
+                    disputed_count += 1
                 continue
-            result = await ads_client.download_and_transcribe_call(calls[0]['recording_url'])
-            if not result.get('success'):
+
+            # Записи звонка нет — сверяем с Workiz по номеру телефона,
+            # раз нельзя оценить релевантность на слух
+            phone = lead.get('phone')
+            created = lead.get('created', '')
+            created_date = created[:10] if created else None
+            if not phone or not created_date:
+                continue  # нечем свериться — честно пропускаем, не гадаем
+
+            try:
+                check_to = (datetime.strptime(created_date, "%Y-%m-%d") + timedelta(days=30)).strftime("%Y-%m-%d")
+            except ValueError:
                 continue
-            checked_count += 1
-            opinion = await ai_analyst.analyze_lsa_call(result['transcript'], lead)
-            if opinion.get('recommend_dispute'):
+
+            wz_result = await workiz_client.find_job_by_phone(phone, created_date, check_to)
+            if wz_result.get('error'):
+                log.warning(f"Ошибка сверки с Workiz для лида {lead_id}: {wz_result['error']}")
+                continue
+            workiz_checked_count += 1
+
+            if not wz_result.get('found'):
+                workiz_not_found_count += 1
                 action = {
                     'type': 'dispute_lsa_lead',
                     'account': 'lsa',
                     'lead_id': lead_id,
-                    'description': f"Оспорить лид {lead_id} — услуга не по профилю",
-                    'reasoning': opinion.get('dispute_reason', ''),
-                    'risks': 'Кредит не гарантирован, но фидбэк обучает алгоритм',
+                    'description': f"Оспорить лид {lead_id} — не найден джоб в Workiz",
+                    'reasoning': (
+                        f"У лида нет записи звонка для прослушивания. Сверка с Workiz по номеру "
+                        f"{phone} за период {created_date} — {check_to} не нашла ни одного джоба. "
+                        f"Это не доказывает несоответствие категории услуги, но означает, что лид, "
+                        f"за который выставлен счёт, не привёл к видимому заказу в Workiz."
+                    ),
+                    'risks': 'Кредит не гарантирован. Джоб мог быть создан позже периода проверки или не внесён в Workiz вручную — стоит перепроверить перед одобрением.',
                     'urgency': 'low',
                     'urgency_label': 'Низкая',
-                    'confidence': opinion.get('confidence', 'medium'),
-                    'data_summary': result['transcript'][:300],
-                    'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
+                    'confidence': 'low',
+                    'data_summary': f'Нет записи звонка + нет джоба в Workiz по номеру {phone}',
+                    'expected_impact': 'Возможный возврат средств',
                     'requires_approval': True,
                 }
                 action_id = pending.add(action)
@@ -522,6 +570,8 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
 
     return {
         'checked': checked_count,
+        'workiz_checked': workiz_checked_count,
+        'workiz_not_found': workiz_not_found_count,
         'disputed': disputed_count,
         'total_charged': len(charged_leads),
         'already_submitted': already_submitted_count,
@@ -582,6 +632,7 @@ async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
         f"Предложено к оспариванию: {stats['disputed']}."
             + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
+            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
     )
     if stats['total_charged'] > limit:
         text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Запусти команду ещё раз, чтобы проверить остальные."
@@ -603,6 +654,7 @@ async def scheduled_lsa_weekly_audit(app):
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
             + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
+            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
             )
             if stats['disputed'] > 0:
                 text += "\n\nКарточки одобрения отправлены выше."
@@ -724,6 +776,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
             + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
+            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
             )
             if stats['total_charged'] > limit:
                 text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Повтори запрос, чтобы проверить остальные."
