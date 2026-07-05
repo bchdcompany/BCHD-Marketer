@@ -450,61 +450,108 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
 
+async def _run_lsa_audit(bot, progress_msg=None) -> dict:
+    """
+    Общая логика аудита LSA-звонков: проверяет оплаченные лиды за 7 дней,
+    слушает звонки, предлагает оспаривание при явном несоответствии категории.
+    Используется и в еженедельной задаче, и в команде /auditcalls по запросу.
+    Если передан progress_msg — обновляет его статусом прогресса.
+    Возвращает {'checked': int, 'disputed': int, 'total_charged': int}.
+    """
+    leads_data = await ads_client.get_lsa_leads(days=7, account="lsa")
+    leads = leads_data.get('leads', [])
+    charged_leads = [l for l in leads if l.get('charged')]
+    if not charged_leads:
+        return {'checked': 0, 'disputed': 0, 'total_charged': 0}
+
+    disputed_count = 0
+    checked_count = 0
+    for i, lead in enumerate(charged_leads[:20]):  # ограничение, чтобы не перегружать за один прогон
+        lead_id = lead['id']
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(f"🎧 Проверяю звонки... ({i + 1}/{min(len(charged_leads), 20)})")
+            except Exception:
+                pass
+        try:
+            convs = await ads_client.get_lsa_lead_conversations(lead_id)
+            calls = [c for c in convs.get('conversations', []) if c.get('recording_url')]
+            if not calls:
+                continue
+            result = await ads_client.download_and_transcribe_call(calls[0]['recording_url'])
+            if not result.get('success'):
+                continue
+            checked_count += 1
+            opinion = await ai_analyst.analyze_lsa_call(result['transcript'], lead)
+            if opinion.get('recommend_dispute'):
+                action = {
+                    'type': 'dispute_lsa_lead',
+                    'account': 'lsa',
+                    'lead_id': lead_id,
+                    'description': f"Оспорить лид {lead_id} — услуга не по профилю",
+                    'reasoning': opinion.get('dispute_reason', ''),
+                    'risks': 'Кредит не гарантирован, но фидбэк обучает алгоритм',
+                    'urgency': 'low',
+                    'urgency_label': 'Низкая',
+                    'confidence': opinion.get('confidence', 'medium'),
+                    'data_summary': result['transcript'][:300],
+                    'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
+                    'requires_approval': True,
+                }
+                action_id = pending.add(action)
+                await _send_approval_card(bot, config.OWNER_CHAT_ID, action_id, action)
+                disputed_count += 1
+        except Exception as e:
+            log.error(f"Ошибка обработки лида {lead_id} в аудите LSA: {e}")
+            continue
+
+    return {'checked': checked_count, 'disputed': disputed_count, 'total_charged': len(charged_leads)}
+
+
+async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """По запросу проверяет все оплаченные LSA-лиды за последнюю неделю (та же логика, что в еженедельной задаче)"""
+    if not _is_owner(update):
+        return
+    if not config.lsa_configured:
+        await update.message.reply_text("⚠️ LSA аккаунт не настроен.")
+        return
+
+    msg = await update.message.reply_text("🎧 Собираю оплаченные лиды LSA за последние 7 дней...")
+    try:
+        stats = await _run_lsa_audit(ctx.bot, progress_msg=msg)
+    except Exception as e:
+        log.error(f"Ошибка ручного аудита LSA: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    if stats['total_charged'] == 0:
+        await msg.edit_text("✅ За последние 7 дней нет оплаченных LSA-лидов для проверки.")
+        return
+
+    text = (
+        f"🎧 *Аудит LSA-звонков завершён*\n\n"
+        f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
+        f"Предложено к оспариванию: {stats['disputed']}."
+    )
+    if stats['disputed'] > 0:
+        text += "\n\nКарточки одобрения отправлены выше."
+    await _safe_edit(msg, text, parse_mode="Markdown")
+
+
 async def scheduled_lsa_weekly_audit(app):
     """Раз в неделю проверяет оплаченные LSA-лиды, слушает звонки и предлагает оспаривание при явном несоответствии категории"""
     if not config.lsa_configured:
         return
     log.info("Еженедельный аудит LSA-звонков")
     try:
-        leads_data = await ads_client.get_lsa_leads(days=7, account="lsa")
-        leads = leads_data.get('leads', [])
-        charged_leads = [l for l in leads if l.get('charged')]
-        if not charged_leads:
-            return
-
-        disputed_count = 0
-        checked_count = 0
-        for lead in charged_leads[:20]:  # ограничение, чтобы не перегружать за один прогон
-            lead_id = lead['id']
-            try:
-                convs = await ads_client.get_lsa_lead_conversations(lead_id)
-                calls = [c for c in convs.get('conversations', []) if c.get('recording_url')]
-                if not calls:
-                    continue
-                result = await ads_client.download_and_transcribe_call(calls[0]['recording_url'])
-                if not result.get('success'):
-                    continue
-                checked_count += 1
-                opinion = await ai_analyst.analyze_lsa_call(result['transcript'], lead)
-                if opinion.get('recommend_dispute'):
-                    action = {
-                        'type': 'dispute_lsa_lead',
-                        'account': 'lsa',
-                        'lead_id': lead_id,
-                        'description': f"Оспорить лид {lead_id} — услуга не по профилю",
-                        'reasoning': opinion.get('dispute_reason', ''),
-                        'risks': 'Кредит не гарантирован, но фидбэк обучает алгоритм',
-                        'urgency': 'low',
-                        'urgency_label': 'Низкая',
-                        'confidence': opinion.get('confidence', 'medium'),
-                        'data_summary': result['transcript'][:300],
-                        'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
-                        'requires_approval': True,
-                    }
-                    action_id = pending.add(action)
-                    await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
-                    disputed_count += 1
-            except Exception as e:
-                log.error(f"Ошибка обработки лида {lead_id} в еженедельном аудите: {e}")
-                continue
-
-        if checked_count > 0:
+        stats = await _run_lsa_audit(app.bot)
+        if stats['checked'] > 0:
             text = (
                 f"🎧 *Еженедельный аудит LSA-звонков*\n\n"
-                f"Проверено звонков: {checked_count} из {len(charged_leads)} оплаченных лидов за 7 дней.\n"
-                f"Предложено к оспариванию: {disputed_count}."
+                f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
+                f"Предложено к оспариванию: {stats['disputed']}."
             )
-            if disputed_count > 0:
+            if stats['disputed'] > 0:
                 text += "\n\nКарточки одобрения отправлены выше."
             await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
@@ -1160,6 +1207,7 @@ def main():
     app.add_handler(CommandHandler("both", cmd_both))
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
+    app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
