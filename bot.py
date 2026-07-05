@@ -456,19 +456,23 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
 
-async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20) -> dict:
+async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
+                          date_from: str = None, date_to: str = None) -> dict:
     """
     Общая логика аудита LSA-звонков: проверяет оплаченные лиды за указанный
     период, слушает звонки, предлагает оспаривание при явном несоответствии
     категории. Используется и в еженедельной задаче, и в команде /auditcalls.
     Если передан progress_msg — обновляет его статусом прогресса.
-    Возвращает {'checked': int, 'disputed': int, 'total_charged': int, 'days': int}.
+    Можно передать либо days (скользящее окно), либо явные date_from/date_to
+    (для конкретного календарного периода, например "май 2026").
+    Возвращает {'checked': int, 'disputed': int, 'total_charged': int, 'period_label': str}.
     """
-    leads_data = await ads_client.get_lsa_leads(days=days, account="lsa")
+    leads_data = await ads_client.get_lsa_leads(days=days, account="lsa", date_from=date_from, date_to=date_to)
+    period_label = f"{leads_data.get('date_from')} — {leads_data.get('date_to')}"
     leads = leads_data.get('leads', [])
     charged_leads = [l for l in leads if l.get('charged')]
     if not charged_leads:
-        return {'checked': 0, 'disputed': 0, 'total_charged': 0, 'days': days}
+        return {'checked': 0, 'disputed': 0, 'total_charged': 0, 'period_label': period_label}
 
     to_process = charged_leads[:limit]
     disputed_count = 0
@@ -521,14 +525,16 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20)
         'disputed': disputed_count,
         'total_charged': len(charged_leads),
         'already_submitted': already_submitted_count,
-        'days': days,
+        'period_label': period_label,
     }
 
 
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     По запросу проверяет оплаченные LSA-лиды и звонки за период.
-    Использование: /auditcalls [дней] — например /auditcalls 30 для проверки за месяц.
+    Использование:
+    /auditcalls [дней] — например /auditcalls 30 для проверки последних 30 дней.
+    /auditcalls 2026-05-01 2026-05-31 — для конкретного календарного периода.
     По умолчанию — 7 дней.
     """
     if not _is_owner(update):
@@ -538,33 +544,42 @@ async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     days = 7
-    if ctx.args:
+    date_from = None
+    date_to = None
+    if len(ctx.args) == 2:
+        date_from, date_to = ctx.args[0], ctx.args[1]
+    elif len(ctx.args) == 1:
         try:
             days = int(ctx.args[0])
             if days <= 0 or days > 90:
                 await update.message.reply_text("⚠️ Укажи период от 1 до 90 дней. Например: /auditcalls 30")
                 return
         except ValueError:
-            await update.message.reply_text("⚠️ Использование: /auditcalls [дней], например /auditcalls 30")
+            await update.message.reply_text(
+                "⚠️ Использование:\n/auditcalls [дней] — например /auditcalls 30\n"
+                "/auditcalls 2026-05-01 2026-05-31 — для конкретного периода"
+            )
             return
 
-    limit = 50 if days > 7 else 20  # для месяца лидов может быть больше — поднимаем лимит обработки
+    limit = 50 if (days > 7 or date_from) else 20  # для длинных периодов лидов может быть больше
 
-    msg = await update.message.reply_text(f"🎧 Собираю оплаченные лиды LSA за последние {days} дней...")
+    msg = await update.message.reply_text("🎧 Собираю оплаченные лиды LSA...")
     try:
-        stats = await _run_lsa_audit(ctx.bot, progress_msg=msg, days=days, limit=limit)
+        stats = await _run_lsa_audit(ctx.bot, progress_msg=msg, days=days, limit=limit, date_from=date_from, date_to=date_to)
     except Exception as e:
         log.error(f"Ошибка ручного аудита LSA: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
         return
 
+    period_label = stats.get('period_label', f'последние {days} дней')
     if stats['total_charged'] == 0:
-        await msg.edit_text(f"✅ За последние {days} дней нет оплаченных LSA-лидов для проверки.")
+        await msg.edit_text(f"✅ За период {period_label} нет оплаченных LSA-лидов для проверки.")
         return
 
     text = (
         f"🎧 *Аудит LSA-звонков завершён*\n\n"
-        f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
+        f"Период: {period_label}\n"
+        f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
         f"Предложено к оспариванию: {stats['disputed']}."
             + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
     )
@@ -679,27 +694,34 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not config.lsa_configured:
             await thinking_msg.edit_text("⚠️ LSA аккаунт не настроен.")
             return
+        cls_date_from = classification.get("date_from") or None
+        cls_date_to = classification.get("date_to") or None
         days = classification.get("days") or 7
         try:
             days = max(1, min(90, int(days)))
         except (TypeError, ValueError):
             days = 7
-        limit = 50 if days > 7 else 20
+        limit = 50 if (days > 7 or cls_date_from) else 20
 
-        await _safe_edit(thinking_msg, f"🎧 Собираю оплаченные лиды LSA за последние {days} дней...")
+        await _safe_edit(thinking_msg, "🎧 Собираю оплаченные лиды LSA...")
         try:
-            stats = await _run_lsa_audit(ctx.bot, progress_msg=thinking_msg, days=days, limit=limit)
+            stats = await _run_lsa_audit(
+                ctx.bot, progress_msg=thinking_msg, days=days, limit=limit,
+                date_from=cls_date_from, date_to=cls_date_to,
+            )
         except Exception as e:
             log.error(f"Ошибка аудита LSA из чата: {e}")
             await thinking_msg.edit_text(f"❌ Ошибка: {e}")
             return
 
+        period_label = stats.get('period_label', f'последние {days} дней')
         if stats['total_charged'] == 0:
-            text = f"✅ За последние {days} дней нет оплаченных LSA-лидов для проверки."
+            text = f"✅ За период {period_label} нет оплаченных LSA-лидов для проверки."
         else:
             text = (
                 f"🎧 *Аудит LSA-звонков завершён*\n\n"
-                f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за {days} дней.\n"
+                f"Период: {period_label}\n"
+                f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
             + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
             )
