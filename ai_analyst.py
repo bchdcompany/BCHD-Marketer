@@ -76,19 +76,28 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Отвечай на русском языке. Будь конкретным, профессиональным и трезвым —
 лучше сказать "недостаточно данных" или "всё в норме", чем выдумать
 рекомендацию ради видимости работы.
+
+ОБЩЕНИЕ В ЧАТЕ:
+Если в сообщении есть история переписки — это продолжение одного и того же
+диалога с владельцем бизнеса. НЕ здоровайся заново и не представляйся,
+если только это не первое сообщение в истории. Ссылайся на то, что уже
+обсуждали, если это уместно, и отвечай так, как будто помнишь разговор.
 """
 
-    async def _call_claude(self, prompt: str, max_tokens: int = 2000) -> dict:
+    async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None) -> dict:
         """
         Общий метод вызова Claude с диагностикой и защитой от пустых/некорректных ответов.
+        Если передан history (предыдущие сообщения диалога), включает его для контекста.
         Возвращает распарсенный JSON или {"_error": "..."} при неудаче.
         """
+        messages = list(history) if history else []
+        messages.append({"role": "user", "content": prompt})
         try:
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
         except Exception as e:
             log.error(f"Ошибка вызова Claude API: {e}")
@@ -361,11 +370,12 @@ appliance repair бизнеса в США. Ты работаешь как авт
             return {"trend": "unknown", "insights": [], "key_metrics": {}, "_error": result["_error"]}
         return result
 
-    async def answer_question(self, question: str, context_data: dict = None) -> str:
+    async def answer_question(self, question: str, context_data: dict = None, history: list = None) -> str:
         """
         Свободный вопрос — агент отвечает как эксперт.
         Если передан context_data (актуальные данные аккаунта), отвечает
         на основе реальных цифр, а не общих рассуждений.
+        Если передан history — учитывает предыдущие сообщения диалога.
         """
         if context_data:
             prompt = f"""
@@ -383,12 +393,15 @@ appliance repair бизнеса в США. Ты работаешь как авт
         else:
             prompt = f"Вопрос по Google Ads: {question}"
 
+        messages = list(history) if history else []
+        messages.append({"role": "user", "content": prompt})
+
         try:
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=1200,
                 system=self.system_prompt + "\n\nОтвечай кратко и по делу. Используй Markdown форматирование для Telegram.",
-                messages=[{"role": "user", "content": prompt}]
+                messages=messages
             )
             if not response.content:
                 log.error("answer_question: пустой content от Claude")
@@ -403,11 +416,13 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
     # ── СВОБОДНЫЙ ЧАТ С ВОЗМОЖНОСТЬЮ ДЕЙСТВИЙ ──────────────
 
-    async def classify_request(self, question: str) -> dict:
+    async def classify_request(self, question: str, history: list = None) -> dict:
         """
         Быстрая классификация свободного текстового запроса:
         просто вопрос или явная просьба выполнить действие,
         какие данные нужны для ответа и по какому аккаунту.
+        Учитывает историю переписки (например, "а по LSA?" после
+        предыдущего вопроса про Google Ads).
         """
         prompt = f"""
 Владелец бизнеса appliance repair написал агенту по управлению Google Ads:
@@ -424,17 +439,22 @@ appliance repair бизнеса в США. Ты работаешь как авт
    кампаниям), budgets (бюджеты с их ID), keywords (ключевые слова),
    search_terms (поисковые запросы для минус-слов), seasonal (сезонные
    рекомендации + бюджеты), none (общий вопрос, данные не нужны)
-4. account — ads (Google Ads 936), lsa (LSA 667), both (если не уточнено)
+4. account — ads (Google Ads 936), lsa (LSA 667), both (если не уточнено
+   явно и не следует из истории переписки ниже)
+
+Если есть история переписки, используй её, чтобы понять контекст
+(например, если до этого шла речь про LSA, а текущее сообщение — короткое
+уточнение без явного упоминания аккаунта).
 
 Верни ТОЛЬКО JSON:
 {{"intent": "chat|action", "action_type": "...", "data_needed": "...", "account": "ads|lsa|both"}}
 """
-        result = await self._call_claude(prompt, max_tokens=300)
+        result = await self._call_claude(prompt, max_tokens=300, history=history)
         if "_error" in result:
             return {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
         return result
 
-    async def chat_action(self, question: str, context_data: dict, action_type: str) -> dict:
+    async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
         """
         Отвечает на запрос и, если это явная просьба выполнить действие,
         формирует его строго на основе реальных ID из переданных данных
@@ -492,7 +512,7 @@ resource_name / campaign_id / budget_id, которые реально есть 
 
 Если действие не требуется (это просто вопрос) — верни "proposed_actions": [].
 """
-        result = await self._call_claude(prompt, max_tokens=3000)
+        result = await self._call_claude(prompt, max_tokens=3000, history=history)
         if "_error" in result:
             return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
         return result
