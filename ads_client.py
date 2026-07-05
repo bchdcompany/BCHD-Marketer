@@ -1,6 +1,6 @@
 """
 Google Ads API клиент
-v4 — совместимость с google-ads==24.1.0
+v5 — совместимость с google-ads==31.1.0 (API v24)
 """
 
 import logging
@@ -77,7 +77,7 @@ class GoogleAdsClient:
                 metrics.cost_micros,
                 metrics.conversions,
                 metrics.cost_per_conversion,
-                metrics.conversion_rate,
+                metrics.conversions_from_interactions_rate,
                 metrics.search_impression_share,
                 metrics.search_rank_lost_impression_share
             FROM campaign
@@ -102,7 +102,7 @@ class GoogleAdsClient:
                     'cost': round(row.metrics.cost_micros / 1_000_000, 2),
                     'conversions': round(row.metrics.conversions, 1),
                     'cpa': round(row.metrics.cost_per_conversion / 1_000_000, 2) if row.metrics.conversions > 0 else None,
-                    'conversion_rate': round(row.metrics.conversion_rate * 100, 2),
+                    'conversion_rate': round(row.metrics.conversions_from_interactions_rate * 100, 2),
                     'impression_share': round(row.metrics.search_impression_share * 100, 1),
                     'rank_lost_is': round(row.metrics.search_rank_lost_impression_share * 100, 1),
                     'account': account,
@@ -382,7 +382,7 @@ class GoogleAdsClient:
                 metrics.average_cpc,
                 metrics.cost_micros,
                 metrics.conversions,
-                metrics.conversion_rate
+                metrics.conversions_from_interactions_rate
             FROM ad_group_ad
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
               AND ad_group_ad.status = 'ENABLED'
@@ -410,7 +410,7 @@ class GoogleAdsClient:
                     'cpc': round(row.metrics.average_cpc / 1_000_000, 2),
                     'cost': round(row.metrics.cost_micros / 1_000_000, 2),
                     'conversions': round(row.metrics.conversions, 1),
-                    'conv_rate': round(row.metrics.conversion_rate * 100, 2),
+                    'conv_rate': round(row.metrics.conversions_from_interactions_rate * 100, 2),
                     'account': account,
                 })
             by_group = {}
