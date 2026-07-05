@@ -135,9 +135,11 @@ class GoogleAdsClient:
 
         query = f"""
             SELECT
+                ad_group_criterion.resource_name,
                 ad_group_criterion.keyword.text,
                 ad_group_criterion.keyword.match_type,
                 ad_group_criterion.status,
+                ad_group_criterion.quality_info.quality_score,
                 campaign.name,
                 ad_group.name,
                 metrics.impressions,
@@ -145,8 +147,7 @@ class GoogleAdsClient:
                 metrics.ctr,
                 metrics.average_cpc,
                 metrics.cost_micros,
-                metrics.conversions,
-                metrics.quality_score
+                metrics.conversions
             FROM keyword_view
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
               AND ad_group_criterion.status != 'REMOVED'
@@ -159,6 +160,7 @@ class GoogleAdsClient:
             keywords = []
             for row in rows:
                 keywords.append({
+                    'resource_name': row.ad_group_criterion.resource_name,
                     'keyword': row.ad_group_criterion.keyword.text,
                     'match_type': row.ad_group_criterion.keyword.match_type.name,
                     'status': row.ad_group_criterion.status.name,
@@ -170,7 +172,7 @@ class GoogleAdsClient:
                     'cpc': round(row.metrics.average_cpc / 1_000_000, 2),
                     'spend': round(row.metrics.cost_micros / 1_000_000, 2),
                     'conversions': round(row.metrics.conversions, 1),
-                    'quality_score': row.metrics.quality_score,
+                    'quality_score': row.ad_group_criterion.quality_info.quality_score,
                 })
             return {'keywords': keywords, 'total': len(keywords), 'date_from': date_from, 'date_to': date_to, 'account': account}
         except Exception as e:
