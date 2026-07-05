@@ -136,7 +136,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 Верни ТОЛЬКО валидный JSON без markdown разметки.
 """
-        result = self._call_claude(prompt, max_tokens=2000)
+        result = self._call_claude(prompt, max_tokens=4096)
         if "_error" in result:
             return {"summary": "Ошибка анализа", "recommendations": [], "key_findings": [], "_error": result["_error"]}
         return result
@@ -186,7 +186,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2000)
+        result = self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"strong_keywords": [], "weak_keywords": [], "quality_score_issues": [], "summary": result["_error"]}
         return result
@@ -228,7 +228,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2000)
+        result = self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"suggested_negatives": [], "summary": result["_error"]}
         return result
@@ -273,7 +273,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Если изменения не нужны, верни budget_recommendation как null.
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=1500)
+        result = self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"budget_health": "unknown", "budget_recommendation": None, "_error": result["_error"]}
         return result
@@ -307,7 +307,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=1000)
+        result = self._call_claude(prompt, max_tokens=2000)
         if "_error" in result:
             return {"trend": "unknown", "insights": [], "key_metrics": {}, "_error": result["_error"]}
         return result
@@ -375,7 +375,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=1500)
+        result = self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"competitive_position": "unknown", "main_threats": [], "opportunities": [], "summary": result["_error"]}
         return result
@@ -439,7 +439,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=2000)
+        result = self._call_claude(prompt, max_tokens=3500)
         if "_error" in result:
             return {"ab_results": [], "not_ready": [], "summary": result["_error"]}
         return result
@@ -493,7 +493,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-        result = self._call_claude(prompt, max_tokens=1500)
+        result = self._call_claude(prompt, max_tokens=2500)
         if "_error" in result:
             return {"adjustments": [], "summary": result["_error"]}
         return result
