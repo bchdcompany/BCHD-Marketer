@@ -390,6 +390,102 @@ appliance repair бизнеса в США. Ты работаешь как авт
             log.error(f"Ошибка ответа на вопрос: {e}")
             return f"❌ Ошибка: {e}"
 
+    # ── СВОБОДНЫЙ ЧАТ С ВОЗМОЖНОСТЬЮ ДЕЙСТВИЙ ──────────────
+
+    async def classify_request(self, question: str) -> dict:
+        """
+        Быстрая классификация свободного текстового запроса:
+        просто вопрос или явная просьба выполнить действие,
+        какие данные нужны для ответа и по какому аккаунту.
+        """
+        prompt = f"""
+Владелец бизнеса appliance repair написал агенту по управлению Google Ads:
+"{question}"
+
+Определи:
+1. intent: "chat" (вопрос/анализ без изменений) или "action" (явная просьба
+   выполнить конкретное изменение — пауза, бюджет, ставка, минус-слова и т.п.)
+2. action_type — один из: pause_campaign, enable_campaign, budget_change,
+   pause_keywords, enable_keywords, add_negative_keywords, seasonal_adjustments,
+   unsupported (если действие про Google Ads, но не входит в список), none
+   (если intent="chat")
+3. data_needed — какие данные нужны для ответа: campaigns (сводка по
+   кампаниям), budgets (бюджеты с их ID), keywords (ключевые слова),
+   search_terms (поисковые запросы для минус-слов), seasonal (сезонные
+   рекомендации + бюджеты), none (общий вопрос, данные не нужны)
+4. account — ads (Google Ads 936), lsa (LSA 667), both (если не уточнено)
+
+Верни ТОЛЬКО JSON:
+{{"intent": "chat|action", "action_type": "...", "data_needed": "...", "account": "ads|lsa|both"}}
+"""
+        result = self._call_claude(prompt, max_tokens=300)
+        if "_error" in result:
+            return {"intent": "chat", "action_type": "none", "data_needed": "campaigns", "account": "both"}
+        return result
+
+    async def chat_action(self, question: str, context_data: dict, action_type: str) -> dict:
+        """
+        Отвечает на запрос и, если это явная просьба выполнить действие,
+        формирует его строго на основе реальных ID из переданных данных
+        (никогда не выдумывает resource_name/campaign_id/budget_id).
+        Любое действие требует одобрения владельца — ничего не выполняется
+        автоматически.
+        """
+        prompt = f"""
+Вот актуальные данные (последние 30 дней):
+
+{json.dumps(context_data, ensure_ascii=False, indent=2)}
+
+Запрос от владельца бизнеса: {question}
+
+Если запрос подразумевает конкретное действие (тип: {action_type}) —
+сформируй его в proposed_actions, используя ТОЛЬКО реальные
+resource_name / campaign_id / budget_id, которые реально есть в данных выше.
+Если нужных идентификаторов в данных нет — НЕ создавай действие, а честно
+объясни в reply, каких данных не хватает (и какую команду использовать,
+например /keywords, /negatives, /budget, /seasonal).
+
+Изменение бюджета и любые другие действия ВСЕГДА требуют одобрения
+владельца через карточку — они только предлагаются, никогда не
+выполняются автоматически.
+
+Используй ТОЧНО эти схемы полей для каждого типа действия:
+- pause_campaign / enable_campaign:
+  {{"type": "...", "account": "ads|lsa", "campaign_id": "...", "campaign_name": "...",
+    "description": "...", "reasoning": "...", "risks": "...",
+    "urgency": "high|medium|low", "urgency_label": "...", "confidence": "high|medium|low"}}
+- budget_change:
+  {{"type": "budget_change", "account": "...", "budget_id": "...", "campaign_name": "...",
+    "current_budget": 50.0, "proposed_budget": 65.0, "description": "...",
+    "reasoning": "...", "risks": "...", "urgency": "...", "urgency_label": "...",
+    "confidence": "..."}}
+- pause_keywords / enable_keywords:
+  {{"type": "...", "account": "...", "keywords": [{{"resource_name": "...", "keyword": "..."}}],
+    "description": "...", "reasoning": "...", "risks": "...", "urgency": "...",
+    "urgency_label": "...", "confidence": "..."}}
+- add_negative_keywords:
+  {{"type": "add_negative_keywords", "account": "...",
+    "negatives": [{{"term": "...", "reason": "..."}}], "description": "...",
+    "reasoning": "...", "risks": "...", "urgency": "...", "urgency_label": "...",
+    "confidence": "..."}}
+- seasonal_adjustments:
+  {{"type": "seasonal_adjustments", "account": "...",
+    "adjustments": [{{"campaign_id": "...", "campaign_name": "...", "budget_id": "...",
+    "current_budget": 0, "adjustment_pct": 0, "direction": "increase|decrease",
+    "reason": "..."}}], "description": "...", "reasoning": "...", "risks": "...",
+    "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+
+Верни ТОЛЬКО JSON:
+{{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
+  "proposed_actions": []}}
+
+Если действие не требуется (это просто вопрос) — верни "proposed_actions": [].
+"""
+        result = self._call_claude(prompt, max_tokens=3000)
+        if "_error" in result:
+            return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
+        return result
+
     # ── АУКЦИОННЫЙ АНАЛИЗ ──────────────────────────
 
     async def analyze_auction_insights(self, data: dict) -> dict:
