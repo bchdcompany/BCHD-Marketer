@@ -1,10 +1,11 @@
 """
 AI Аналитик — Claude API
-v2 — добавлены: auction insights, A/B тест, сезонные рекомендации
+v3 — добавлена диагностика пустых/некорректных ответов + общий метод вызова
 """
 
 import json
 import logging
+import re
 import anthropic
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,59 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Отвечай на русском языке. Будь конкретным и профессиональным.
 """
 
+    def _call_claude(self, prompt: str, max_tokens: int = 2000) -> dict:
+        """
+        Общий метод вызова Claude с диагностикой и защитой от пустых/некорректных ответов.
+        Возвращает распарсенный JSON или {"_error": "..."} при неудаче.
+        """
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as e:
+            log.error(f"Ошибка вызова Claude API: {e}")
+            return {"_error": f"api_error: {e}"}
+
+        # Диагностика: логируем stop_reason и состав content на случай проблем
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason not in ("end_turn", "stop_sequence", None):
+            log.warning(f"Claude ответил с stop_reason={stop_reason} (не end_turn)")
+
+        if not response.content:
+            log.error(f"Claude вернул пустой content. stop_reason={stop_reason}, usage={getattr(response, 'usage', None)}")
+            return {"_error": "empty_content"}
+
+        # Ищем первый текстовый блок (на случай, если первым идёт не text-блок)
+        text = None
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                text = block.text
+                break
+
+        if text is None:
+            log.error(f"Claude не вернул текстовый блок. content types={[getattr(b, 'type', '?') for b in response.content]}")
+            return {"_error": "no_text_block"}
+
+        text = text.strip()
+
+        if not text:
+            log.error(f"Claude вернул пустой текст. stop_reason={stop_reason}, usage={getattr(response, 'usage', None)}")
+            return {"_error": "empty_text"}
+
+        # На случай если модель всё же обернула в markdown ```json ... ```
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            log.error(f"Ошибка парсинга JSON от Claude: {e}. Сырой ответ (первые 500 симв.): {text[:500]!r}")
+            return {"_error": f"json_decode_error: {e}", "_raw": text[:500]}
+
     async def analyze_campaigns(self, data: dict) -> dict:
         """Полный анализ кампаний + рекомендации"""
         prompt = f"""
@@ -82,22 +136,10 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 Верни ТОЛЬКО валидный JSON без markdown разметки.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = response.content[0].text.strip()
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            log.error(f"Ошибка парсинга JSON от Claude: {e}")
-            return {"summary": "Ошибка анализа", "recommendations": [], "key_findings": []}
-        except Exception as e:
-            log.error(f"Ошибка Claude API: {e}")
-            return {"summary": f"Ошибка AI: {e}", "recommendations": [], "key_findings": []}
+        result = self._call_claude(prompt, max_tokens=2000)
+        if "_error" in result:
+            return {"summary": "Ошибка анализа", "recommendations": [], "key_findings": [], "_error": result["_error"]}
+        return result
 
     async def analyze_keywords(self, data: dict) -> dict:
         """Анализ ключевых слов — находит слабые и сильные"""
@@ -144,18 +186,10 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка анализа ключей: {e}")
-            return {"strong_keywords": [], "weak_keywords": [], "quality_score_issues": [], "summary": str(e)}
+        result = self._call_claude(prompt, max_tokens=2000)
+        if "_error" in result:
+            return {"strong_keywords": [], "weak_keywords": [], "quality_score_issues": [], "summary": result["_error"]}
+        return result
 
     async def find_negative_keywords(self, data: dict) -> dict:
         """Находит нерелевантные запросы для добавления в минус-слова"""
@@ -194,18 +228,10 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка поиска минус-слов: {e}")
-            return {"suggested_negatives": [], "summary": str(e)}
+        result = self._call_claude(prompt, max_tokens=2000)
+        if "_error" in result:
+            return {"suggested_negatives": [], "summary": result["_error"]}
+        return result
 
     async def analyze_budget(self, data: dict) -> dict:
         """Анализ бюджета и рекомендации по его распределению"""
@@ -247,18 +273,10 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Если изменения не нужны, верни budget_recommendation как null.
 ТОЛЬКО валидный JSON.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка анализа бюджета: {e}")
-            return {"budget_health": "unknown", "budget_recommendation": None}
+        result = self._call_claude(prompt, max_tokens=1500)
+        if "_error" in result:
+            return {"budget_health": "unknown", "budget_recommendation": None, "_error": result["_error"]}
+        return result
 
     async def analyze_performance(self, data: dict) -> dict:
         """Анализ производительности за период"""
@@ -289,18 +307,10 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка анализа производительности: {e}")
-            return {"trend": "unknown", "insights": [], "key_metrics": {}}
+        result = self._call_claude(prompt, max_tokens=1000)
+        if "_error" in result:
+            return {"trend": "unknown", "insights": [], "key_metrics": {}, "_error": result["_error"]}
+        return result
 
     async def answer_question(self, question: str) -> str:
         """Свободный вопрос — агент отвечает как эксперт"""
@@ -311,12 +321,18 @@ appliance repair бизнеса в США. Ты работаешь как авт
                 system=self.system_prompt + "\n\nОтвечай кратко и по делу. Используй Markdown форматирование для Telegram.",
                 messages=[{"role": "user", "content": f"Вопрос по Google Ads: {question}"}]
             )
-            return response.content[0].text
+            if not response.content:
+                log.error("answer_question: пустой content от Claude")
+                return "❌ Ошибка: пустой ответ от Claude"
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    return block.text
+            return "❌ Ошибка: нет текстового блока в ответе"
         except Exception as e:
             log.error(f"Ошибка ответа на вопрос: {e}")
             return f"❌ Ошибка: {e}"
 
-    # ── НОВОЕ: АУКЦИОННЫЙ АНАЛИЗ ──────────────────────────
+    # ── АУКЦИОННЫЙ АНАЛИЗ ──────────────────────────
 
     async def analyze_auction_insights(self, data: dict) -> dict:
         """Анализирует конкурентов из auction insights"""
@@ -359,20 +375,12 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
+        result = self._call_claude(prompt, max_tokens=1500)
+        if "_error" in result:
+            return {"competitive_position": "unknown", "main_threats": [], "opportunities": [], "summary": result["_error"]}
+        return result
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка анализа аукциона: {e}")
-            return {"competitive_position": "unknown", "main_threats": [], "opportunities": [], "summary": str(e)}
-
-    # ── НОВОЕ: A/B ТЕСТ ──────────────────────────────────
+    # ── A/B ТЕСТ ──────────────────────────────────
 
     async def analyze_ab_test(self, data: dict) -> dict:
         """
@@ -431,20 +439,12 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
+        result = self._call_claude(prompt, max_tokens=2000)
+        if "_error" in result:
+            return {"ab_results": [], "not_ready": [], "summary": result["_error"]}
+        return result
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка A/B анализа: {e}")
-            return {"ab_results": [], "not_ready": [], "summary": str(e)}
-
-    # ── НОВОЕ: СЕЗОННЫЕ РЕКОМЕНДАЦИИ ──────────────────────
+    # ── СЕЗОННЫЕ РЕКОМЕНДАЦИИ ──────────────────────
 
     async def build_seasonal_action(self, season_data: dict, campaigns: list) -> dict:
         """
@@ -493,15 +493,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 
 ТОЛЬКО валидный JSON.
 """
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return json.loads(response.content[0].text.strip())
-        except Exception as e:
-            log.error(f"Ошибка сезонного плана: {e}")
-            return {"adjustments": [], "summary": str(e)}
+        result = self._call_claude(prompt, max_tokens=1500)
+        if "_error" in result:
+            return {"adjustments": [], "summary": result["_error"]}
+        return result
