@@ -377,6 +377,118 @@ async def cmd_seasonal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _build_roas_report(date_from: str, date_to: str) -> str:
+    """Строит честный ROAS-отчёт на основе данных Google Ads + Workiz"""
+    from datetime import datetime as dt
+    ads_spend = await ads_client.get_spend_for_period(date_from, date_to, account="ads")
+    lsa_spend = await ads_client.get_spend_for_period(date_from, date_to, account="lsa")
+    google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
+
+    ads_cost = ads_spend.get("spend", 0)
+    lsa_cost = lsa_spend.get("spend", 0)
+    total_ad_spend = ads_cost + lsa_cost
+
+    text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
+
+    # Расходы на рекламу
+    text += f"💰 *Расходы на рекламу:*\n"
+    text += f"• Google Ads (936): ${ads_cost:.2f}\n"
+    text += f"• LSA (667): ${lsa_cost:.2f}\n"
+    text += f"• Итого: ${total_ad_spend:.2f}\n\n"
+
+    # Реальные джобы из Google
+    g = google_jobs
+    text += f"🔧 *Джобы из Google (Workiz):*\n"
+    text += f"• Всего джобов: {g.get('total_jobs', 0)}\n"
+    text += f"• Общая выручка: ${g.get('total_revenue', 0):.2f}\n"
+    text += f"• Реально собрано: ${g.get('total_collected', 0):.2f}\n"
+    text += f"• Долг клиентов: ${g.get('total_due', 0):.2f}\n"
+
+    completed = g.get("completed_jobs", 0)
+    completed_rev = g.get("completed_revenue", 0)
+    if completed > 0:
+        text += f"• Завершённых: {completed} на ${completed_rev:.2f}\n"
+
+    text += "\n"
+
+    # ROAS
+    if total_ad_spend > 0 and g.get("total_revenue", 0) > 0:
+        roas = g["total_revenue"] / total_ad_spend * 100
+        roas_collected = g.get("total_collected", 0) / total_ad_spend * 100
+        text += f"📈 *ROAS (по выручке): {roas:.0f}%*\n"
+        text += f"📈 *ROAS (по собранному): {roas_collected:.0f}%*\n"
+        cpa_real = total_ad_spend / g["total_jobs"] if g.get("total_jobs") else 0
+        text += f"💵 *Реальный CPA: ${cpa_real:.0f}* (Google считает ${ads_spend.get('spend', 0) / max(ads_spend.get('conversions', 1), 1):.0f})\n"
+    else:
+        text += "⚠️ Недостаточно данных для расчёта ROAS\n"
+
+    # Статусы джобов
+    by_status = g.get("by_status", {})
+    if by_status:
+        text += "\n📋 *По статусам:*\n"
+        for status, data in sorted(by_status.items(), key=lambda x: -x[1]["revenue"]):
+            text += f"• {status}: {data['count']} джоб(ов), ${data['revenue']:.0f}"
+            if data["due"] > 0:
+                text += f" (долг: ${data['due']:.0f})"
+            text += "\n"
+
+    # Долги
+    overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
+    if overdue:
+        text += f"\n⚠️ *Неоплаченные джобы из Google ({len(overdue)}):*\n"
+        for j in overdue[:5]:
+            text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
+
+    return text
+
+
+async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Честный ROAS-отчёт: сравнивает расходы Google Ads с реальными джобами
+    из Workiz (по полю JobSource='Google').
+    Использование: /roas [дней] — по умолчанию 30 дней.
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+
+    days = 30
+    if ctx.args:
+        try:
+            days = max(1, min(90, int(ctx.args[0])))
+        except ValueError:
+            pass
+
+    from datetime import timedelta
+    date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
+    date_from = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    msg = await update.message.reply_text(f"📊 Считаю реальный ROAS за {days} дней...")
+    try:
+        text = await _build_roas_report(date_from, date_to)
+        await _safe_edit(msg, text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка /roas: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+async def scheduled_weekly_roas(app):
+    """Еженедельный ROAS-отчёт — каждый понедельник показывает реальную отдачу от рекламы"""
+    if not config.google_ads_configured:
+        return
+    log.info("Еженедельный ROAS-отчёт")
+    try:
+        from datetime import timedelta
+        date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
+        date_from = (datetime.now(NY_TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
+        text = await _build_roas_report(date_from, date_to)
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка еженедельного ROAS: {e}")
+
+
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -1369,6 +1481,7 @@ def main():
     app.add_handler(CommandHandler("pending", cmd_pending))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
+    app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
@@ -1382,6 +1495,7 @@ def main():
     scheduler.add_job(scheduled_ab_test_check,    "cron", day_of_week="wed", hour=10, minute=0,  args=[app])
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
+    scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v4 запущен (Google Ads + LSA)")
