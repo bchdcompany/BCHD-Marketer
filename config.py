@@ -36,6 +36,14 @@ class Config:
     COMPANY_NAME: str = "BCHD Appliance Repair & HVAC"
     TIMEZONE: str = "America/New_York"
 
+    # Пороговые значения для анализа ключевых слов (appliance repair, USA бенчмарки)
+    # Слабый ключ: CTR ниже этого % при MIN_IMPRESSIONS_FOR_JUDGMENT+ показах
+    MIN_CTR_THRESHOLD: float = 2.0
+    # Минимум показов для статистически значимого вывода о ключе
+    MIN_IMPRESSIONS_FOR_JUDGMENT: int = 100
+    # CPA выше этого порога = дорогой ключ, требует внимания
+    MAX_CPA_THRESHOLD: float = 80.0
+
     @property
     def google_ads_configured(self) -> bool:
         """Проверяет, настроен ли Google Ads API"""
