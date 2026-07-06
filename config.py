@@ -44,6 +44,12 @@ class Config:
     # CPA выше этого порога = дорогой ключ, требует внимания
     MAX_CPA_THRESHOLD: float = 80.0
 
+    # Рекламные бюджеты сторонних платформ (не Google Ads)
+    # Thumbtack: фиксированный недельный бюджет в USD.
+    # Чтобы изменить: Railway → BCHD-Marketer → Variables → THUMBTACK_WEEKLY_BUDGET
+    # Деплой не нужен — переменная подхватывается при следующем перезапуске.
+    THUMBTACK_WEEKLY_BUDGET: float = float(os.environ.get("THUMBTACK_WEEKLY_BUDGET", "200"))
+
     @property
     def google_ads_configured(self) -> bool:
         """Проверяет, настроен ли Google Ads API"""
