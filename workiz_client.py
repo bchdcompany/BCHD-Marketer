@@ -83,6 +83,70 @@ async def get_jobs_by_date_range(date_from: str, date_to: str, records: int = 50
     return {"jobs": filtered, "total": len(filtered), "total_before_filter": len(jobs)}
 
 
+async def get_jobs_by_source(
+    source: str,
+    date_from: str,
+    date_to: str,
+    records: int = 100,
+) -> dict:
+    """
+    Получает джобы по источнику лида (JobSource) за период и считает
+    финансовую сводку: выручка, собрано, долг, по статусам.
+    Используется для расчёта реального ROAS по каждому рекламному каналу.
+    """
+    result = await get_jobs_by_date_range(date_from, date_to, records=records)
+    if "error" in result:
+        return result
+
+    all_jobs = result.get("jobs", [])
+    source_jobs = [j for j in all_jobs if (j.get("JobSource") or "") == source]
+
+    total_revenue = sum(float(j.get("JobTotalPrice", 0) or 0) for j in source_jobs)
+    total_due = sum(float(j.get("JobAmountDue", 0) or 0) for j in source_jobs)
+    total_collected = total_revenue - total_due
+
+    by_status = {}
+    for j in source_jobs:
+        s = j.get("Status", "Unknown")
+        if s not in by_status:
+            by_status[s] = {"count": 0, "revenue": 0.0, "due": 0.0}
+        by_status[s]["count"] += 1
+        by_status[s]["revenue"] += float(j.get("JobTotalPrice", 0) or 0)
+        by_status[s]["due"] += float(j.get("JobAmountDue", 0) or 0)
+
+    completed_jobs = [j for j in source_jobs if j.get("Status") in ("Completed", "Done", "Closed")]
+    completed_revenue = sum(float(j.get("JobTotalPrice", 0) or 0) for j in completed_jobs)
+    completed_collected = sum(
+        float(j.get("JobTotalPrice", 0) or 0) - float(j.get("JobAmountDue", 0) or 0)
+        for j in completed_jobs
+    )
+
+    jobs_summary = []
+    for j in source_jobs:
+        jobs_summary.append({
+            "serial_id": j.get("SerialId"),
+            "status": j.get("Status"),
+            "total_price": float(j.get("JobTotalPrice", 0) or 0),
+            "amount_due": float(j.get("JobAmountDue", 0) or 0),
+            "created_date": (j.get("CreatedDate") or "")[:10],
+        })
+
+    return {
+        "source": source,
+        "date_from": date_from,
+        "date_to": date_to,
+        "total_jobs": len(source_jobs),
+        "total_revenue": round(total_revenue, 2),
+        "total_collected": round(total_collected, 2),
+        "total_due": round(total_due, 2),
+        "completed_jobs": len(completed_jobs),
+        "completed_revenue": round(completed_revenue, 2),
+        "completed_collected": round(completed_collected, 2),
+        "by_status": by_status,
+        "jobs": jobs_summary,
+    }
+
+
 async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
     """
     Ищет джоб(ы) в Workiz по номеру телефона клиента за указанный период.
