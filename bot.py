@@ -390,7 +390,7 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
         days_in_period = (dt.strptime(date_to, "%Y-%m-%d") - dt.strptime(date_from, "%Y-%m-%d")).days + 1
     except Exception:
         days_in_period = 7
-    thumbtack_weekly_budget = 200.0
+    thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET  # менять: Railway → Variables → THUMBTACK_WEEKLY_BUDGET
     thumbtack_cost = round(thumbtack_weekly_budget / 7 * days_in_period, 2)
 
     # Джобы из Workiz по каналам
@@ -407,7 +407,7 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     text += f"💰 *Расходы на рекламу:*\n"
     text += f"• Google Ads (936): ${ads_cost:.2f}\n"
     text += f"• LSA (667): ${lsa_cost:.2f}\n"
-    text += f"• Thumbtack (~${thumbtack_weekly_budget:.0f}/нед): ${thumbtack_cost:.2f}\n"
+    text += f"• Thumbtack (бюджет ${thumbtack_weekly_budget:.0f}/нед, расчётно): ${thumbtack_cost:.2f}\n"
     text += f"• Итого: ${total_ad_spend:.2f}\n\n"
 
     # Google джобы
