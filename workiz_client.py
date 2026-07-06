@@ -55,7 +55,7 @@ async def _get(endpoint: str, params: dict = None) -> dict:
         return {"error": str(e)}
 
 
-async def get_jobs_by_date_range(date_from: str, date_to: str, records: int = 500) -> dict:
+async def get_jobs_by_date_range(date_from: str, date_to: str, records: int = 100) -> dict:
     """
     Получает список джобов начиная с date_from (Workiz API поддерживает
     только нижнюю границу через параметр start_date — верхнюю границу
