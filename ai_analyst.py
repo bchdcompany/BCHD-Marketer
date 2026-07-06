@@ -276,6 +276,15 @@ summary типа "Все ключи показывают CTR выше порог
         result = await self._call_claude(prompt, max_tokens=3000)
         if "_error" in result:
             return {"strong_keywords": [], "weak_keywords": [], "quality_score_issues": [], "summary": result["_error"]}
+        if not result.get("summary"):
+            # Если Claude не вернул summary — генерируем базовый на основе данных
+            n_weak = len(result.get("weak_keywords", []))
+            n_strong = len(result.get("strong_keywords", []))
+            n_qs = len(result.get("quality_score_issues", []))
+            if n_weak == 0 and n_strong == 0:
+                result["summary"] = "Все ключевые слова показывают CTR выше порогового значения. Слабых ключей не обнаружено — кампания работает стабильно."
+            else:
+                result["summary"] = f"Найдено сильных ключей: {n_strong}, слабых: {n_weak}, проблем с QS: {n_qs}."
         return result
 
     async def find_negative_keywords(self, data: dict) -> dict:
