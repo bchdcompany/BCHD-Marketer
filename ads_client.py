@@ -42,6 +42,37 @@ class GoogleAdsClient:
             return list(response)
         return await asyncio.to_thread(_do_search)
 
+    async def get_spend_for_period(self, date_from: str, date_to: str, account: str = "ads") -> dict:
+        """Получает реальные расходы на рекламу за конкретный период (не скользящее окно)"""
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'spend': 0}
+        query = f"""
+            SELECT
+                metrics.cost_micros,
+                metrics.conversions,
+                metrics.clicks,
+                metrics.impressions
+            FROM customer
+            WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            total_spend = sum(row.metrics.cost_micros / 1_000_000 for row in rows)
+            total_conversions = sum(row.metrics.conversions for row in rows)
+            total_clicks = sum(row.metrics.clicks for row in rows)
+            return {
+                'account': account,
+                'date_from': date_from,
+                'date_to': date_to,
+                'spend': round(total_spend, 2),
+                'conversions': round(total_conversions, 1),
+                'clicks': total_clicks,
+            }
+        except Exception as e:
+            log.error(f"get_spend_for_period({account}) error: {e}")
+            return {'error': str(e), 'spend': 0, 'account': account}
+
     async def get_both_accounts_summary(self) -> dict:
         ads_data = await self.get_full_audit_data(account="ads")
         lsa_data = await self.get_full_audit_data(account="lsa") if self.lsa_customer_id else None
