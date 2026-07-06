@@ -378,15 +378,28 @@ async def cmd_seasonal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _build_roas_report(date_from: str, date_to: str) -> str:
-    """Строит честный ROAS-отчёт на основе данных Google Ads + Workiz"""
-    from datetime import datetime as dt
+    """Строит честный ROAS-отчёт на основе данных Google Ads + Workiz (Google + Thumbtack)"""
+    from datetime import datetime as dt, timedelta
+
+    # Расходы
     ads_spend = await ads_client.get_spend_for_period(date_from, date_to, account="ads")
     lsa_spend = await ads_client.get_spend_for_period(date_from, date_to, account="lsa")
+
+    # Thumbtack — фиксированный бюджет $200/неделю, пересчитываем на период отчёта
+    try:
+        days_in_period = (dt.strptime(date_to, "%Y-%m-%d") - dt.strptime(date_from, "%Y-%m-%d")).days + 1
+    except Exception:
+        days_in_period = 7
+    thumbtack_weekly_budget = 200.0
+    thumbtack_cost = round(thumbtack_weekly_budget / 7 * days_in_period, 2)
+
+    # Джобы из Workiz по каналам
     google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
+    thumbtack_jobs = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
 
     ads_cost = ads_spend.get("spend", 0)
     lsa_cost = lsa_spend.get("spend", 0)
-    total_ad_spend = ads_cost + lsa_cost
+    total_ad_spend = ads_cost + lsa_cost + thumbtack_cost
 
     text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
 
@@ -394,49 +407,60 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     text += f"💰 *Расходы на рекламу:*\n"
     text += f"• Google Ads (936): ${ads_cost:.2f}\n"
     text += f"• LSA (667): ${lsa_cost:.2f}\n"
+    text += f"• Thumbtack (~${thumbtack_weekly_budget:.0f}/нед): ${thumbtack_cost:.2f}\n"
     text += f"• Итого: ${total_ad_spend:.2f}\n\n"
 
-    # Реальные джобы из Google
+    # Google джобы
     g = google_jobs
-    text += f"🔧 *Джобы из Google (Workiz):*\n"
-    text += f"• Всего джобов: {g.get('total_jobs', 0)}\n"
-    text += f"• Общая выручка: ${g.get('total_revenue', 0):.2f}\n"
-    text += f"• Реально собрано: ${g.get('total_collected', 0):.2f}\n"
-    text += f"• Долг клиентов: ${g.get('total_due', 0):.2f}\n"
+    g_rev = g.get('total_revenue', 0)
+    g_jobs = g.get('total_jobs', 0)
+    google_spend = ads_cost + lsa_cost
 
-    completed = g.get("completed_jobs", 0)
-    completed_rev = g.get("completed_revenue", 0)
-    if completed > 0:
-        text += f"• Завершённых: {completed} на ${completed_rev:.2f}\n"
-
+    text += f"🔧 *Google (Ads + LSA):*\n"
+    text += f"• Джобов: {g_jobs} | Выручка: ${g_rev:.2f} | Собрано: ${g.get('total_collected', 0):.2f}\n"
+    if g.get('total_due', 0) > 0:
+        text += f"• Долг: ${g.get('total_due', 0):.2f}\n"
+    if google_spend > 0 and g_jobs > 0:
+        g_roas = g_rev / google_spend * 100
+        g_cpa = google_spend / g_jobs
+        text += f"• ROAS: {g_roas:.0f}% | CPA: ${g_cpa:.0f}\n"
     text += "\n"
 
-    # ROAS
-    if total_ad_spend > 0 and g.get("total_revenue", 0) > 0:
-        roas = g["total_revenue"] / total_ad_spend * 100
-        roas_collected = g.get("total_collected", 0) / total_ad_spend * 100
-        text += f"📈 *ROAS (по выручке): {roas:.0f}%*\n"
-        text += f"📈 *ROAS (по собранному): {roas_collected:.0f}%*\n"
-        cpa_real = total_ad_spend / g["total_jobs"] if g.get("total_jobs") else 0
-        text += f"💵 *Реальный CPA: ${cpa_real:.0f}* (Google считает ${ads_spend.get('spend', 0) / max(ads_spend.get('conversions', 1), 1):.0f})\n"
-    else:
-        text += "⚠️ Недостаточно данных для расчёта ROAS\n"
+    # Thumbtack джобы
+    t = thumbtack_jobs
+    t_rev = t.get('total_revenue', 0)
+    t_jobs = t.get('total_jobs', 0)
+    text += f"📌 *Thumbtack:*\n"
+    text += f"• Джобов: {t_jobs} | Выручка: ${t_rev:.2f} | Собрано: ${t.get('total_collected', 0):.2f}\n"
+    if t.get('total_due', 0) > 0:
+        text += f"• Долг: ${t.get('total_due', 0):.2f}\n"
+    if thumbtack_cost > 0 and t_jobs > 0:
+        t_roas = t_rev / thumbtack_cost * 100
+        t_cpa = thumbtack_cost / t_jobs
+        text += f"• ROAS: {t_roas:.0f}% | CPA: ${t_cpa:.0f}\n"
+    elif t_jobs == 0:
+        text += f"• Джобов из Thumbtack не найдено за период\n"
+    text += "\n"
 
-    # Статусы джобов
-    by_status = g.get("by_status", {})
-    if by_status:
-        text += "\n📋 *По статусам:*\n"
-        for status, data in sorted(by_status.items(), key=lambda x: -x[1]["revenue"]):
-            text += f"• {status}: {data['count']} джоб(ов), ${data['revenue']:.0f}"
-            if data["due"] > 0:
-                text += f" (долг: ${data['due']:.0f})"
-            text += "\n"
+    # Общий ROAS
+    total_revenue = g_rev + t_rev
+    total_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
+    total_jobs = g_jobs + t_jobs
+    text += f"📈 *Итого по всем каналам:*\n"
+    text += f"• Расходы: ${total_ad_spend:.2f} | Выручка: ${total_revenue:.2f} | Собрано: ${total_collected:.2f}\n"
+    if total_ad_spend > 0 and total_revenue > 0:
+        total_roas = total_revenue / total_ad_spend * 100
+        text += f"• Общий ROAS: {total_roas:.0f}%\n"
+    if total_jobs > 0 and total_ad_spend > 0:
+        text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
-    # Долги
+    # Долги Google
     overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
-    if overdue:
-        text += f"\n⚠️ *Неоплаченные джобы из Google ({len(overdue)}):*\n"
-        for j in overdue[:5]:
+    overdue_t = [j for j in t.get("jobs", []) if j.get("amount_due", 0) > 0]
+    all_overdue = overdue + overdue_t
+    if all_overdue:
+        text += f"\n⚠️ *Неоплаченные джобы ({len(all_overdue)}):*\n"
+        for j in all_overdue[:5]:
             text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
