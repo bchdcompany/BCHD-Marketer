@@ -1011,15 +1011,26 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "keywords":
             await query.edit_message_text(f"🔑 Ключевые слова: {account_label}... (~30 сек)")
             try:
-                accounts = ["ads", "lsa"] if account == "both" else [account]
+                # LSA не использует ключевые слова — Google сам определяет аудиторию
+                accounts = ["ads"] if account in ("lsa", "both") else [account]
+                if account == "lsa":
+                    await _safe_edit(query,
+                        "ℹ️ *LSA не использует ключевые слова*\n\n"
+                        "Local Services Ads работает иначе — Google сам определяет, "
+                        "кому показывать объявления, на основе категории услуги и профиля. "
+                        "Ключевые слова доступны только для Google Ads (936).",
+                        parse_mode="Markdown")
+                    return
                 texts = []
                 for acc in accounts:
                     data_result = await ads_client.get_keywords_analysis(account=acc)
                     analysis = await ai_analyst.analyze_keywords(data_result)
-                    texts.append(f"*{'Google Ads' if acc == 'ads' else 'LSA'} ({len(data_result.get('keywords', []))} ключей):*\n{analysis.get('summary', 'Нет данных')}")
+                    texts.append(f"*Google Ads ({len(data_result.get('keywords', []))} ключей):*\n{analysis.get('summary', 'Нет данных')}")
                     for action in _build_keyword_actions(analysis, acc):
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                if account == "both":
+                    texts.append("ℹ️ *LSA:* ключевые слова не используются (Google определяет аудиторию автоматически)")
                 await _safe_edit(query, "\n\n".join(texts), parse_mode="Markdown")
             except Exception as e:
                 log.error(f"Ошибка keywords callback: {e}")
