@@ -137,6 +137,7 @@ class GoogleAdsClient:
                 campaign.id,
                 campaign.name,
                 campaign.status,
+                campaign.advertising_channel_type,
                 campaign.bidding_strategy_type,
                 campaign_budget.amount_micros,
                 metrics.impressions,
@@ -163,6 +164,7 @@ class GoogleAdsClient:
                     'id': row.campaign.id,
                     'name': row.campaign.name,
                     'status': row.campaign.status.name,
+                    'advertising_channel_type': row.campaign.advertising_channel_type.name,
                     'budget_daily': row.campaign_budget.amount_micros / 1_000_000,
                     'impressions': row.metrics.impressions,
                     'clicks': row.metrics.clicks,
@@ -812,7 +814,24 @@ class GoogleAdsClient:
         client = self._get_client()
         svc = client.get_service("CampaignCriterionService")
         campaigns = await self.get_campaigns(account="lsa" if customer_id == self.lsa_customer_id else "ads")
-        enabled_ids = [c['id'] for c in campaigns if c['status'] == 'ENABLED']
+        # ВАЖНО: даже внутри обычного Google Ads customer_id может встретиться
+        # кампания типа LOCAL_SERVICES (Google Ads позволяет держать разные
+        # типы кампаний в одном аккаунте). Такие кампании тоже не принимают
+        # campaign_criterion с ключевыми словами — фильтруем по типу, а не
+        # только по customer_id/account.
+        enabled_ids = [
+            c['id'] for c in campaigns
+            if c['status'] == 'ENABLED' and c.get('advertising_channel_type') != 'LOCAL_SERVICES'
+        ]
+        skipped_lsa_campaigns = [
+            c['name'] for c in campaigns
+            if c['status'] == 'ENABLED' and c.get('advertising_channel_type') == 'LOCAL_SERVICES'
+        ]
+        if skipped_lsa_campaigns:
+            log.info(
+                f"Пропущены кампании типа LOCAL_SERVICES при добавлении минус-слов "
+                f"(не поддерживают ключевые слова): {skipped_lsa_campaigns}"
+            )
         ops = []
         for neg in action.get('negatives', []):
             for cid in enabled_ids:
@@ -823,7 +842,10 @@ class GoogleAdsClient:
                 op.create.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
                 ops.append(op)
         if ops: await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=ops)
-        return {'summary': f"Добавлено минус-слов: {len(action.get('negatives', []))}"}
+        summary = f"Добавлено минус-слов: {len(action.get('negatives', []))} (в {len(enabled_ids)} кампаний)"
+        if skipped_lsa_campaigns:
+            summary += f". Пропущено кампаний Local Services (не поддерживают минус-слова): {len(skipped_lsa_campaigns)}"
+        return {'summary': summary}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
