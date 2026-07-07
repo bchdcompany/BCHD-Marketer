@@ -1,7 +1,9 @@
 """
 BCHD Marketer Agent — Telegram бот
 Google Ads оптимизация с AI-анализом
-v4 — безопасная отправка сообщений (fallback без Markdown при ошибке парсинга сущностей)
+v5 — история команд: команды (/keywords, /audit, /budget, /report) сохраняются
+     в chat_history, чтобы агент помнил что уже было сделано и не повторял вопросы.
+     Лимит истории увеличен до 30 сообщений (15 обменов).
 """
 
 import asyncio
@@ -43,13 +45,12 @@ pending = PendingActions()
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
-MAX_HISTORY_MESSAGES = 12  # последние 6 обменов (вопрос+ответ)
+MAX_HISTORY_MESSAGES = 30  # последние 15 обменов (вопрос+ответ)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 _db_pool = None
 
 
 async def _get_db_pool():
-    """Ленивая инициализация пула соединений с Postgres"""
     global _db_pool
     if DATABASE_URL and _db_pool is None:
         _db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
@@ -57,9 +58,8 @@ async def _get_db_pool():
 
 
 async def init_db():
-    """Создаёт таблицу истории переписки, если её ещё нет"""
     if not DATABASE_URL:
-        log.warning("DATABASE_URL не задан — история переписки будет храниться только в памяти и потеряется при рестарте")
+        log.warning("DATABASE_URL не задан — история переписки будет храниться только в памяти")
         return
     try:
         pool = await _get_db_pool()
@@ -77,16 +77,12 @@ async def init_db():
                 CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id_created_at
                 ON chat_history (chat_id, created_at)
             """)
-        log.info("Таблица chat_history готова — история переписки сохраняется в Postgres")
+        log.info("Таблица chat_history готова")
     except Exception as e:
         log.error(f"Ошибка инициализации таблицы chat_history: {e}")
 
 
 async def _get_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) -> list:
-    """
-    Возвращает историю переписки для чата. Из Postgres, если настроен,
-    иначе из памяти процесса (не переживёт рестарт).
-    """
     if DATABASE_URL:
         try:
             pool = await _get_db_pool()
@@ -102,16 +98,18 @@ async def _get_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) -> list:
 
 
 async def _append_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, question: str, answer: str):
-    """Сохраняет обмен в историю переписки (Postgres, если настроен, иначе в памяти)"""
+    """Сохраняет обмен в историю. Обрезает слишком длинные ответы чтобы не раздувать контекст."""
+    # Обрезаем очень длинные ответы (например, большие JSON-данные аудита)
+    answer_trimmed = answer[:4000] if len(answer) > 4000 else answer
+
     if DATABASE_URL:
         try:
             pool = await _get_db_pool()
             async with pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO chat_history (chat_id, role, content) VALUES ($1, 'user', $2), ($1, 'assistant', $3)",
-                    chat_id, question, answer,
+                    chat_id, question, answer_trimmed,
                 )
-                # Чистим старые записи сверх лимита, чтобы таблица не росла бесконечно
                 await conn.execute("""
                     DELETE FROM chat_history
                     WHERE chat_id = $1 AND id NOT IN (
@@ -124,8 +122,21 @@ async def _append_history(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, question
             log.error(f"Ошибка сохранения истории в Postgres: {e}")
     history = ctx.chat_data.get("history", [])
     history.append({"role": "user", "content": question})
-    history.append({"role": "assistant", "content": answer})
+    history.append({"role": "assistant", "content": answer_trimmed})
     ctx.chat_data["history"] = history[-MAX_HISTORY_MESSAGES:]
+
+
+async def _save_cmd_result(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, command_label: str, result_text: str):
+    """
+    Сохраняет результат команды (/keywords, /audit, /budget и т.д.) в историю переписки.
+    Это позволяет агенту помнить что уже было сделано при последующих текстовых вопросах.
+    command_label — строка вида "/keywords (Google Ads 936)"
+    """
+    try:
+        await _append_history(ctx, chat_id, command_label, result_text)
+        log.info(f"Сохранён результат команды в историю: {command_label[:60]}")
+    except Exception as e:
+        log.warning(f"Не удалось сохранить результат команды в историю: {e}")
 
 
 def _is_owner(update: Update) -> bool:
@@ -133,7 +144,6 @@ def _is_owner(update: Update) -> bool:
 
 
 def _account_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    """Кнопки выбора аккаунта"""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📊 Google Ads (936)", callback_data=f"{prefix}:ads"),
         InlineKeyboardButton("📍 LSA (667)", callback_data=f"{prefix}:lsa"),
@@ -142,10 +152,6 @@ def _account_keyboard(prefix: str) -> InlineKeyboardMarkup:
 
 
 async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwargs):
-    """
-    Отправка сообщения с fallback: если Markdown не парсится (например,
-    из-за непарных * _ [ в AI-сгенерированном тексте), отправляет как обычный текст.
-    """
     try:
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
@@ -154,11 +160,6 @@ async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwar
 
 
 async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
-    """
-    Редактирование с fallback: работает и с CallbackQuery (edit_message_text),
-    и с обычным Message (edit_text). Если Markdown не парсится — редактирует
-    как обычный текст.
-    """
     edit_fn = getattr(target, "edit_message_text", None) or getattr(target, "edit_text", None)
     if edit_fn is None:
         raise AttributeError(f"{type(target)} не поддерживает редактирование текста")
@@ -170,9 +171,6 @@ async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
 
 
 async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
-    """
-    Ответ на сообщение с fallback: если Markdown не парсится, отвечает как обычный текст.
-    """
     try:
         return await message.reply_text(text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
@@ -222,7 +220,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Сводка по обоим аккаунтам"""
     if not _is_owner(update):
         return
     if not config.google_ads_configured:
@@ -255,6 +252,10 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
         await _safe_edit(msg, text, parse_mode="Markdown")
+
+        # Сохраняем в историю
+        chat_id = update.effective_chat.id
+        await _save_cmd_result(ctx, chat_id, "/both", text)
     except Exception as e:
         log.error(f"Ошибка /both: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
@@ -378,22 +379,18 @@ async def cmd_seasonal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _build_roas_report(date_from: str, date_to: str) -> str:
-    """Строит честный ROAS-отчёт на основе данных Google Ads + Workiz (Google + Thumbtack)"""
-    from datetime import datetime as dt, timedelta
+    from datetime import datetime as dt
 
-    # Расходы
     ads_spend = await ads_client.get_spend_for_period(date_from, date_to, account="ads")
     lsa_spend = await ads_client.get_spend_for_period(date_from, date_to, account="lsa")
 
-    # Thumbtack — фиксированный бюджет $200/неделю, пересчитываем на период отчёта
     try:
         days_in_period = (dt.strptime(date_to, "%Y-%m-%d") - dt.strptime(date_from, "%Y-%m-%d")).days + 1
     except Exception:
         days_in_period = 7
-    thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET  # менять: Railway → Variables → THUMBTACK_WEEKLY_BUDGET
+    thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET
     thumbtack_cost = round(thumbtack_weekly_budget / 7 * days_in_period, 2)
 
-    # Джобы из Workiz по каналам
     google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
     thumbtack_jobs = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
 
@@ -402,15 +399,12 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     total_ad_spend = ads_cost + lsa_cost + thumbtack_cost
 
     text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
-
-    # Расходы на рекламу
     text += f"💰 *Расходы на рекламу:*\n"
     text += f"• Google Ads (936): ${ads_cost:.2f}\n"
     text += f"• LSA (667): ${lsa_cost:.2f}\n"
     text += f"• Thumbtack (бюджет ${thumbtack_weekly_budget:.0f}/нед, расчётно): ${thumbtack_cost:.2f}\n"
     text += f"• Итого: ${total_ad_spend:.2f}\n\n"
 
-    # Google джобы
     g = google_jobs
     g_rev = g.get('total_revenue', 0)
     g_jobs = g.get('total_jobs', 0)
@@ -426,7 +420,6 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
         text += f"• ROAS: {g_roas:.0f}% | CPA: ${g_cpa:.0f}\n"
     text += "\n"
 
-    # Thumbtack джобы
     t = thumbtack_jobs
     t_rev = t.get('total_revenue', 0)
     t_jobs = t.get('total_jobs', 0)
@@ -442,7 +435,6 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
         text += f"• Джобов из Thumbtack не найдено за период\n"
     text += "\n"
 
-    # Общий ROAS
     total_revenue = g_rev + t_rev
     total_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
     total_jobs = g_jobs + t_jobs
@@ -454,7 +446,6 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     if total_jobs > 0 and total_ad_spend > 0:
         text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
-    # Долги Google
     overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
     overdue_t = [j for j in t.get("jobs", []) if j.get("amount_due", 0) > 0]
     all_overdue = overdue + overdue_t
@@ -467,11 +458,6 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
 
 
 async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Честный ROAS-отчёт: сравнивает расходы Google Ads с реальными джобами
-    из Workiz (по полю JobSource='Google').
-    Использование: /roas [дней] — по умолчанию 30 дней.
-    """
     if not _is_owner(update):
         return
     if not config.google_ads_configured:
@@ -485,7 +471,6 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    from datetime import timedelta
     date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
     date_from = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -493,18 +478,19 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         text = await _build_roas_report(date_from, date_to)
         await _safe_edit(msg, text, parse_mode="Markdown")
+        # Сохраняем в историю
+        chat_id = update.effective_chat.id
+        await _save_cmd_result(ctx, chat_id, f"/roas ({days} дней)", text)
     except Exception as e:
         log.error(f"Ошибка /roas: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
 
 
 async def scheduled_weekly_roas(app):
-    """Еженедельный ROAS-отчёт — каждый понедельник показывает реальную отдачу от рекламы"""
     if not config.google_ads_configured:
         return
     log.info("Еженедельный ROAS-отчёт")
     try:
-        from datetime import timedelta
         date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
         date_from = (datetime.now(NY_TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
         text = await _build_roas_report(date_from, date_to)
@@ -527,11 +513,10 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Прослушивает звонок по конкретному LSA-лиду и даёт мнение о релевантности"""
     if not _is_owner(update):
         return
     if not ctx.args:
-        await update.message.reply_text("Использование: /checklead <lead_id>\nID лида можно найти через анализ LSA-лидов в чате.")
+        await update.message.reply_text("Использование: /checklead <lead_id>")
         return
     lead_id = ctx.args[0]
 
@@ -547,7 +532,7 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not calls:
         await msg.edit_text(
             f"❌ Не нашёл запись звонка для лида {lead_id}.\n"
-            f"Возможно, это текстовый лид (не звонок) или запись недоступна."
+            f"Возможно, это текстовый лид или запись недоступна."
         )
         return
 
@@ -572,7 +557,7 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status = await ads_client.get_lsa_lead_feedback_status(lead_id)
         if status.get('feedback_submitted'):
             await update.message.reply_text(
-                f"ℹ️ По лиду {lead_id} фидбэк уже был отправлен ранее — повторно отправить нельзя (Google не позволяет)."
+                f"ℹ️ По лиду {lead_id} фидбэк уже был отправлен ранее."
             )
             return
         action = {
@@ -581,12 +566,12 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'lead_id': lead_id,
             'description': f"Оспорить лид {lead_id} — услуга не по профилю",
             'reasoning': opinion.get('dispute_reason', ''),
-            'risks': 'Кредит не гарантирован (для категории "услуга не обслуживается" Google может отказать), но фидбэк обучает алгоритм',
+            'risks': 'Кредит не гарантирован, но фидбэк обучает алгоритм',
             'urgency': 'low',
             'urgency_label': 'Низкая',
             'confidence': opinion.get('confidence', 'medium'),
             'data_summary': result['transcript'][:300],
-            'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
+            'expected_impact': 'Возможный возврат средств + более релевантные лиды',
             'requires_approval': True,
         }
         action_id = pending.add(action)
@@ -595,15 +580,6 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                           date_from: str = None, date_to: str = None) -> dict:
-    """
-    Общая логика аудита LSA-звонков: проверяет оплаченные лиды за указанный
-    период, слушает звонки, предлагает оспаривание при явном несоответствии
-    категории. Используется и в еженедельной задаче, и в команде /auditcalls.
-    Если передан progress_msg — обновляет его статусом прогресса.
-    Можно передать либо days (скользящее окно), либо явные date_from/date_to
-    (для конкретного календарного периода, например "май 2026").
-    Возвращает {'checked': int, 'disputed': int, 'total_charged': int, 'period_label': str}.
-    """
     leads_data = await ads_client.get_lsa_leads(days=days, account="lsa", date_from=date_from, date_to=date_to)
     period_label = f"{leads_data.get('date_from')} — {leads_data.get('date_to')}"
     leads = leads_data.get('leads', [])
@@ -626,7 +602,7 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                 pass
         if lead.get('feedback_submitted'):
             already_submitted_count += 1
-            continue  # фидбэк уже отправлен раньше — Google не позволит отправить повторно
+            continue
         try:
             convs = await ads_client.get_lsa_lead_conversations(lead_id)
             calls = [c for c in convs.get('conversations', []) if c.get('recording_url')]
@@ -649,7 +625,7 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                         'urgency_label': 'Низкая',
                         'confidence': opinion.get('confidence', 'medium'),
                         'data_summary': result['transcript'][:300],
-                        'expected_impact': 'Возможный возврат средств + более релевантные лиды в будущем',
+                        'expected_impact': 'Возможный возврат средств + более релевантные лиды',
                         'requires_approval': True,
                     }
                     action_id = pending.add(action)
@@ -657,13 +633,11 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                     disputed_count += 1
                 continue
 
-            # Записи звонка нет — сверяем с Workiz по номеру телефона,
-            # раз нельзя оценить релевантность на слух
             phone = lead.get('phone')
             created = lead.get('created', '')
             created_date = created[:10] if created else None
             if not phone or not created_date:
-                continue  # нечем свериться — честно пропускаем, не гадаем
+                continue
 
             try:
                 check_to = (datetime.strptime(created_date, "%Y-%m-%d") + timedelta(days=30)).strftime("%Y-%m-%d")
@@ -684,12 +658,10 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                     'lead_id': lead_id,
                     'description': f"Оспорить лид {lead_id} — не найден джоб в Workiz",
                     'reasoning': (
-                        f"У лида нет записи звонка для прослушивания. Сверка с Workiz по номеру "
-                        f"{phone} за период {created_date} — {check_to} не нашла ни одного джоба. "
-                        f"Это не доказывает несоответствие категории услуги, но означает, что лид, "
-                        f"за который выставлен счёт, не привёл к видимому заказу в Workiz."
+                        f"У лида нет записи звонка. Сверка с Workiz по номеру "
+                        f"{phone} за период {created_date} — {check_to} не нашла ни одного джоба."
                     ),
-                    'risks': 'Кредит не гарантирован. Джоб мог быть создан позже периода проверки или не внесён в Workiz вручную — стоит перепроверить перед одобрением.',
+                    'risks': 'Кредит не гарантирован. Стоит перепроверить перед одобрением.',
                     'urgency': 'low',
                     'urgency_label': 'Низкая',
                     'confidence': 'low',
@@ -716,13 +688,6 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
 
 
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    По запросу проверяет оплаченные LSA-лиды и звонки за период.
-    Использование:
-    /auditcalls [дней] — например /auditcalls 30 для проверки последних 30 дней.
-    /auditcalls 2026-05-01 2026-05-31 — для конкретного календарного периода.
-    По умолчанию — 7 дней.
-    """
     if not _is_owner(update):
         return
     if not config.lsa_configured:
@@ -738,16 +703,13 @@ async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             days = int(ctx.args[0])
             if days <= 0 or days > 90:
-                await update.message.reply_text("⚠️ Укажи период от 1 до 90 дней. Например: /auditcalls 30")
+                await update.message.reply_text("⚠️ Укажи период от 1 до 90 дней.")
                 return
         except ValueError:
-            await update.message.reply_text(
-                "⚠️ Использование:\n/auditcalls [дней] — например /auditcalls 30\n"
-                "/auditcalls 2026-05-01 2026-05-31 — для конкретного периода"
-            )
+            await update.message.reply_text("⚠️ Использование: /auditcalls [дней] или /auditcalls 2026-05-01 2026-05-31")
             return
 
-    limit = 50 if (days > 7 or date_from) else 20  # для длинных периодов лидов может быть больше
+    limit = 50 if (days > 7 or date_from) else 20
 
     msg = await update.message.reply_text("🎧 Собираю оплаченные лиды LSA...")
     try:
@@ -767,18 +729,17 @@ async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Период: {period_label}\n"
         f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
         f"Предложено к оспариванию: {stats['disputed']}."
-            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
-            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
+        + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
+        + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
     )
     if stats['total_charged'] > limit:
-        text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Запусти команду ещё раз, чтобы проверить остальные."
+        text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано ({limit}). Запусти команду ещё раз."
     if stats['disputed'] > 0:
         text += "\n\nКарточки одобрения отправлены выше."
     await _safe_edit(msg, text, parse_mode="Markdown")
 
 
 async def scheduled_lsa_weekly_audit(app):
-    """Раз в неделю проверяет оплаченные LSA-лиды, слушает звонки и предлагает оспаривание при явном несоответствии категории"""
     if not config.lsa_configured:
         return
     log.info("Еженедельный аудит LSA-звонков")
@@ -789,8 +750,8 @@ async def scheduled_lsa_weekly_audit(app):
                 f"🎧 *Еженедельный аудит LSA-звонков*\n\n"
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов за 7 дней.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
-            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
-            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
+                + (f"\nУже был отправлен фидбэк ранее: {stats['already_submitted']}." if stats.get('already_submitted') else "")
+                + (f"\nСверено с Workiz: {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
             )
             if stats['disputed'] > 0:
                 text += "\n\nКарточки одобрения отправлены выше."
@@ -800,12 +761,6 @@ async def scheduled_lsa_weekly_audit(app):
 
 
 def _action_ids_verified(action: dict, context_data: dict) -> bool:
-    """
-    Защита от использования устаревших/выдуманных ID: проверяет, что все
-    resource_name/campaign_id/budget_id, упомянутые в предложенном действии,
-    реально присутствуют в свежих данных ЭТОГО запроса (context_data),
-    а не взяты моделью из истории переписки или придуманы.
-    """
     import json as _json
     context_str = _json.dumps(context_data, ensure_ascii=False)
     ids_to_check = []
@@ -833,21 +788,14 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
     elif a_type == "dispute_lsa_lead":
         if action.get("lead_id"):
             ids_to_check.append(str(action["lead_id"]))
-    # add_negative_keywords не требует существующих ID (это новые термины) — пропускаем проверку
 
     if not ids_to_check:
-        return True  # нечего проверять (например, add_negative_keywords) — пропускаем
+        return True
 
     return all(id_val in context_str for id_val in ids_to_check)
 
 
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Свободные текстовые сообщения (не команды).
-    Классифицирует запрос, подтягивает только нужные данные и,
-    если это явная просьба выполнить действие, создаёт карточку одобрения
-    (ничего не выполняется автоматически). Учитывает историю переписки.
-    """
     if not _is_owner(update):
         return
     question = update.message.text
@@ -877,7 +825,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     account_scope = classification.get("account", "both")
     accounts = ["ads", "lsa"] if account_scope == "both" else [account_scope]
 
-    # Явная просьба прослушать/проанализировать звонки LSA за период
     if classification.get("action_type") == "audit_lsa_calls":
         if not config.lsa_configured:
             await thinking_msg.edit_text("⚠️ LSA аккаунт не настроен.")
@@ -911,18 +858,17 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Период: {period_label}\n"
                 f"Проверено звонков: {stats['checked']} из {stats['total_charged']} оплаченных лидов.\n"
                 f"Предложено к оспариванию: {stats['disputed']}."
-            + (f"\nУже был отправлен фидбэк ранее (пропущено): {stats['already_submitted']}." if stats.get('already_submitted') else "")
-            + (f"\nСверено с Workiz (без записи звонка): {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
+                + (f"\nУже был отправлен фидбэк ранее: {stats['already_submitted']}." if stats.get('already_submitted') else "")
+                + (f"\nСверено с Workiz: {stats['workiz_checked']}, не найден джоб: {stats['workiz_not_found']}." if stats.get('workiz_checked') else "")
             )
             if stats['total_charged'] > limit:
-                text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано за один прогон ({limit}). Повтори запрос, чтобы проверить остальные."
+                text += f"\n\n⚠️ Найдено больше лидов ({stats['total_charged']}), чем обработано ({limit}). Повтори запрос."
             if stats['disputed'] > 0:
                 text += "\n\nКарточки одобрения отправлены выше."
         await _safe_edit(thinking_msg, text, parse_mode="Markdown")
         await _append_history(ctx, chat_id, question, text)
         return
 
-    # Быстрый путь: обычный вопрос без нужды в данных аккаунта
     if not data_needed:
         await _safe_edit(thinking_msg, "🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
@@ -983,7 +929,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action.setdefault("requires_approval", True)
 
             if not _action_ids_verified(action, context_data):
-                log.warning(f"Действие заблокировано — ID не найдены в свежих данных запроса: {action}")
+                log.warning(f"Действие заблокировано — ID не найдены в свежих данных: {action}")
                 blocked_actions += 1
                 continue
 
@@ -996,10 +942,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ctx.bot.send_message(
             chat_id=config.OWNER_CHAT_ID,
             text=(
-                f"⚠️ {blocked_actions} предложенное действие заблокировано автоматической проверкой: "
-                f"использованные ID не найдены в свежих данных этого запроса (возможно, устарели или "
-                f"взяты из более раннего разговора). Запроси данные заново явной командой, чтобы получить "
-                f"актуальные ID перед действием."
+                f"⚠️ {blocked_actions} предложенное действие заблокировано: "
+                f"ID не найдены в свежих данных этого запроса. "
+                f"Запроси данные заново явной командой."
             ),
         )
 
@@ -1018,8 +963,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if len(parts) == 2:
         cmd, param = parts
+        chat_id = query.message.chat_id  # для сохранения в историю
 
-        # Одобрение/отклонение действий
         if cmd == "approve":
             action = pending.approve(param)
             if not action:
@@ -1045,21 +990,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text = (
                     f"✅ *Выполнено и перепроверено:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}\n\n"
-                    f"_Подтверждено повторным запросом к Google Ads API — изменение реально применилось._"
+                    f"_Подтверждено повторным запросом к Google Ads API._"
                 )
             elif verified is False:
                 text = (
-                    f"⚠️ *Внимание — расхождение после выполнения:* {action['description']}\n\n"
-                    f"API не вернул ошибку при выполнении, но при перепроверке фактическое состояние "
-                    f"НЕ совпадает с ожидаемым:\n`{verification}`\n\n"
-                    f"Рекомендую проверить вручную в Google Ads перед тем, как считать задачу выполненной."
+                    f"⚠️ *Расхождение после выполнения:* {action['description']}\n\n"
+                    f"API не вернул ошибку, но перепроверка показала несоответствие:\n`{verification}`\n\n"
+                    f"Рекомендую проверить вручную в Google Ads."
                 )
             else:
                 text = (
                     f"✅ *Выполнено:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}\n\n"
-                    f"_Автоматическая перепроверка для этого типа действия не поддерживается "
-                    f"({verification.get('note', 'н/д')}) — рекомендую проверить вручную при необходимости._"
+                    f"_Автоматическая перепроверка не поддерживается для этого типа действия._"
                 )
             await _safe_edit(query, text, parse_mode="Markdown")
             return
@@ -1070,8 +1013,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(f"❌ Отклонено: {action['description']}")
             return
 
-        # Выбор аккаунта
-        account = param  # "ads", "lsa", "both"
+        account = param
         account_label = {"ads": "Google Ads (936)", "lsa": "LSA (667)", "both": "Оба аккаунта"}.get(account, account)
 
         if cmd == "report":
@@ -1085,6 +1027,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     analysis = await ai_analyst.analyze_performance(data_result)
                     text = report_gen.format_performance_report(data_result, analysis) if hasattr(report_gen, 'format_performance_report') else _format_performance(data_result, analysis)
                 await _safe_edit(query, text, parse_mode="Markdown")
+                # Сохраняем в историю
+                await _save_cmd_result(ctx, chat_id, f"/report ({account_label})", text)
             except Exception as e:
                 log.error(f"Ошибка report callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1101,6 +1045,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     analysis = await ai_analyst.analyze_campaigns(data_result)
                     text = _format_audit(data_result, analysis)
                 await _safe_edit(query, text, parse_mode="Markdown")
+                # Сохраняем в историю
+                await _save_cmd_result(ctx, chat_id, f"/audit ({account_label})", text)
                 if account != "both":
                     for action in analysis.get("recommendations", []):
                         action["account"] = account
@@ -1140,6 +1086,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 await _safe_edit(query, text, parse_mode="Markdown")
+                # Сохраняем в историю
+                await _save_cmd_result(ctx, chat_id, f"/budget ({account_label})", text)
             except Exception as e:
                 log.error(f"Ошибка budget callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1147,18 +1095,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "keywords":
             await query.edit_message_text(f"🔑 Ключевые слова: {account_label}... (~30 сек)")
             try:
-                # LSA не использует ключевые слова — Google сам определяет аудиторию
-                accounts = ["ads"] if account in ("lsa", "both") else [account]
+                accounts_list = ["ads"] if account in ("lsa", "both") else [account]
                 if account == "lsa":
-                    await _safe_edit(query,
+                    result_text = (
                         "ℹ️ *LSA не использует ключевые слова*\n\n"
                         "Local Services Ads работает иначе — Google сам определяет, "
                         "кому показывать объявления, на основе категории услуги и профиля. "
-                        "Ключевые слова доступны только для Google Ads (936).",
-                        parse_mode="Markdown")
+                        "Ключевые слова доступны только для Google Ads (936)."
+                    )
+                    await _safe_edit(query, result_text, parse_mode="Markdown")
+                    await _save_cmd_result(ctx, chat_id, f"/keywords ({account_label})", result_text)
                     return
                 texts = []
-                for acc in accounts:
+                for acc in accounts_list:
                     data_result = await ads_client.get_keywords_analysis(account=acc)
                     analysis = await ai_analyst.analyze_keywords(data_result)
                     texts.append(f"*Google Ads ({len(data_result.get('keywords', []))} ключей):*\n{analysis.get('summary', 'Нет данных')}")
@@ -1167,7 +1116,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 if account == "both":
                     texts.append("ℹ️ *LSA:* ключевые слова не используются (Google определяет аудиторию автоматически)")
-                await _safe_edit(query, "\n\n".join(texts), parse_mode="Markdown")
+                result_text = "\n\n".join(texts)
+                await _safe_edit(query, result_text, parse_mode="Markdown")
+                # Сохраняем в историю — ключевой фикс: агент теперь помнит результат /keywords
+                await _save_cmd_result(ctx, chat_id, f"/keywords ({account_label})", result_text)
             except Exception as e:
                 log.error(f"Ошибка keywords callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1175,13 +1127,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "negatives":
             await query.edit_message_text(f"🚫 Минус-слова: {account_label}... (~30 сек)")
             try:
-                accounts = ["ads", "lsa"] if account == "both" else [account]
-                for acc in accounts:
+                accounts_list = ["ads", "lsa"] if account == "both" else [account]
+                summary_parts = []
+                for acc in accounts_list:
                     data_result = await ads_client.get_search_terms(account=acc)
                     analysis = await ai_analyst.find_negative_keywords(data_result)
                     negatives = analysis.get("suggested_negatives", [])
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*Минус-слова {acc_label}:* {len(negatives)} найдено\n{analysis.get('summary', '')}"
+                    summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                     if negatives:
                         action = {
@@ -1199,6 +1153,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 await query.edit_message_text("✅ Анализ завершён — карточки одобрения отправлены выше.")
+                await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка negatives callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1206,16 +1161,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "competitors":
             await query.edit_message_text(f"🏆 Конкуренты: {account_label}... (~30 сек)")
             try:
-                accounts = ["ads", "lsa"] if account == "both" else [account]
-                for acc in accounts:
+                accounts_list = ["ads", "lsa"] if account == "both" else [account]
+                summary_parts = []
+                for acc in accounts_list:
                     data_result = await ads_client.get_auction_insights(account=acc)
                     if not data_result.get("competitors"):
                         await _safe_send(ctx.bot, config.OWNER_CHAT_ID, f"ℹ️ Данных аукциона для {'Google Ads' if acc == 'ads' else 'LSA'} пока нет.", parse_mode=None)
                         continue
                     analysis = await ai_analyst.analyze_auction_insights(data_result)
                     text = f"*{'Google Ads' if acc == 'ads' else 'LSA'} — конкуренты:*\n{analysis.get('position_summary', '')}\n\n{analysis.get('summary', '')}"
+                    summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                 await query.edit_message_text("✅ Анализ конкурентов завершён.")
+                if summary_parts:
+                    await _save_cmd_result(ctx, chat_id, f"/competitors ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка competitors callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1223,15 +1182,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "abtest":
             await query.edit_message_text(f"🧪 A/B тест: {account_label}... (~30 сек)")
             try:
-                accounts = ["ads", "lsa"] if account == "both" else [account]
-                for acc in accounts:
+                accounts_list = ["ads", "lsa"] if account == "both" else [account]
+                summary_parts = []
+                for acc in accounts_list:
                     data_result = await ads_client.get_ad_performance(account=acc)
                     analysis = await ai_analyst.analyze_ab_test(data_result)
                     results = analysis.get("ab_results", [])
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*A/B тест {acc_label}:* {len(results)} групп\n{analysis.get('summary', 'Нет данных')}"
+                    summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                 await query.edit_message_text("✅ A/B анализ завершён.")
+                if summary_parts:
+                    await _save_cmd_result(ctx, chat_id, f"/abtest ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка abtest callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1239,13 +1202,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "seasonal":
             await query.edit_message_text(f"🍂 Сезонный план: {account_label}... (~30 сек)")
             try:
-                accounts = ["ads", "lsa"] if account == "both" else [account]
+                accounts_list = ["ads", "lsa"] if account == "both" else [account]
                 season_data = ads_client.get_current_season_recommendations()
-                for acc in accounts:
+                summary_parts = []
+                for acc in accounts_list:
                     budget_data = await ads_client.get_budget_data(account=acc)
                     action_plan = await ai_analyst.build_seasonal_action(season_data, budget_data.get("campaigns", []))
                     acc_label = "Google Ads" if acc == "ads" else "LSA"
                     text = f"*Сезон {season_data['season_name']} — {acc_label}:*\n{action_plan.get('summary', '')}\n{action_plan.get('expected_impact', '')}"
+                    summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
                     if action_plan.get("adjustments"):
                         action = {
@@ -1263,6 +1228,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 await query.edit_message_text("✅ Сезонный план готов — карточки отправлены выше.")
+                if summary_parts:
+                    await _save_cmd_result(ctx, chat_id, f"/seasonal ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка seasonal callback: {e}")
                 await query.edit_message_text(f"❌ Ошибка: {e}")
@@ -1485,7 +1452,6 @@ async def scheduled_seasonal_check(app):
 # ── main ─────────────────────────────────────────────────
 
 async def _on_startup(app):
-    """Вызывается один раз при старте бота — готовит таблицу истории переписки"""
     await init_db()
 
 
@@ -1522,7 +1488,7 @@ def main():
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
     scheduler.start()
 
-    log.info("BCHD Marketer Agent v4 запущен (Google Ads + LSA)")
+    log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
