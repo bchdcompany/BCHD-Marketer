@@ -988,7 +988,7 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
     ids_to_check = []
     a_type = action.get("type")
 
-    if a_type in ("pause_campaign", "enable_campaign"):
+    if a_type in ("pause_campaign", "enable_campaign", "remove_campaign"):
         if action.get("campaign_id"):
             ids_to_check.append(str(action["campaign_id"]))
     elif a_type == "budget_change":
