@@ -936,6 +936,9 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
     elif a_type == "update_bid":
         if action.get("resource_name"):
             ids_to_check.append(str(action["resource_name"]))
+    elif a_type == "update_final_url":
+        if action.get("resource_name"):
+            ids_to_check.append(str(action["resource_name"]))
     elif a_type in ("pause_keywords", "enable_keywords"):
         for kw in action.get("keywords", []):
             if kw.get("resource_name"):
