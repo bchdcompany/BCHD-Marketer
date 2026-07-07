@@ -867,6 +867,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not config.google_ads_configured:
         thinking_msg = await update.message.reply_text("🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
+        answer = _guard_against_hallucinated_execution(answer)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
         await _append_history(ctx, chat_id, question, answer)
         return
@@ -931,6 +932,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not data_needed:
         await _safe_edit(thinking_msg, "🤔 Думаю...")
         answer = await ai_analyst.answer_question(question, history=history)
+        answer = _guard_against_hallucinated_execution(answer)
         await _safe_edit(thinking_msg, answer, parse_mode="Markdown")
         await _append_history(ctx, chat_id, question, answer)
         return
@@ -997,6 +999,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     reply = result.get("reply", "Не удалось получить ответ.")
+    reply = _guard_against_hallucinated_execution(reply)
     await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
     await _append_history(ctx, chat_id, question, reply)
 
@@ -1358,6 +1361,38 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Вспомогательные форматтеры ───────────────────────────
+
+_HALLUCINATED_EXECUTION_PHRASES = [
+    "выполнено и подтверждено",
+    "подтверждено повторным запросом",
+    "изменение реально применилось",
+    "ставка обновлена:",
+    "выполнено и перепроверено",
+]
+
+
+def _guard_against_hallucinated_execution(reply: str) -> str:
+    """
+    Защитный код-level фильтр (второй эшелон защиты помимо промпта):
+    свободный текстовый ответ модели (chat_action/answer_question) не
+    должен заявлять о реальном выполнении действия — это язык, который
+    зарезервирован за кодом handle_callback (approve), где execute_action()
+    и verify_action() реально вызываются. Если модель всё же проговорилась
+    такой фразой в свободном тексте, добавляем явное предупреждение
+    владельцу, чтобы он не принял это за подтверждённый факт.
+    """
+    lower = reply.lower()
+    if any(phrase in lower for phrase in _HALLUCINATED_EXECUTION_PHRASES):
+        log.warning(f"Обнаружена потенциально ложная формулировка о выполнении в свободном тексте: {reply[:200]!r}")
+        reply = (
+            "⚠️ *Внимание:* следующий текст сгенерирован в свободном чате и МОГ ошибочно "
+            "заявить о выполнении действия, хотя это НЕ гарантия — реальное выполнение "
+            "подтверждается только через карточку одобрения с кнопками. Проверь фактический "
+            "статус через /audit или /budget при сомнении.\n\n"
+            + reply
+        )
+    return reply
+
 
 def _format_both_summary(data: dict) -> str:
     combined = data.get('combined', {})
