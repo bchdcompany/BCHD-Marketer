@@ -342,6 +342,89 @@ class GoogleAdsClient:
             pages.append(page_data)
         return {'pages': pages}
 
+    async def get_keyword_current_bid(self, search_text: str, account: str = "ads") -> dict:
+        """
+        Прямая диагностическая проверка: находит ключевые слова, текст которых
+        содержит search_text, и возвращает их РЕАЛЬНУЮ текущую ставку
+        (ad_group_criterion.cpc_bid_micros — именно назначенную ставку, а не
+        среднюю цену клика по факту аукциона) напрямую из Google Ads API.
+        Используется для однозначной проверки "применилось ли изменение
+        ставки" без участия ИИ-анализа или карточек одобрения.
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'matches': []}
+
+        safe_text = search_text.replace("'", "\\'")
+        query = f"""
+            SELECT
+                ad_group_criterion.resource_name,
+                ad_group_criterion.keyword.text,
+                ad_group_criterion.keyword.match_type,
+                ad_group_criterion.status,
+                ad_group_criterion.cpc_bid_micros,
+                ad_group_criterion.effective_cpc_bid_micros,
+                campaign.name,
+                ad_group.name
+            FROM keyword_view
+            WHERE ad_group_criterion.keyword.text LIKE '%{safe_text}%'
+              AND ad_group_criterion.status != 'REMOVED'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            matches = []
+            for row in rows:
+                crit = row.ad_group_criterion
+                own_bid = crit.cpc_bid_micros / 1_000_000 if crit.cpc_bid_micros else None
+                effective_bid = crit.effective_cpc_bid_micros / 1_000_000 if crit.effective_cpc_bid_micros else None
+                matches.append({
+                    'keyword': crit.keyword.text,
+                    'match_type': crit.keyword.match_type.name,
+                    'status': crit.status.name,
+                    'own_cpc_bid': own_bid,
+                    'effective_cpc_bid': effective_bid,
+                    'campaign': row.campaign.name,
+                    'ad_group': row.ad_group.name,
+                    'resource_name': crit.resource_name,
+                })
+            return {'matches': matches, 'search_text': search_text, 'account': account}
+        except Exception as e:
+            log.error(f"get_keyword_current_bid({search_text}) error: {e}")
+            return {'error': str(e), 'matches': []}
+
+    async def get_negative_keywords_list(self, account: str = "ads") -> dict:
+        """
+        Прямая диагностическая проверка: возвращает ПОЛНЫЙ текущий список
+        минус-слов на уровне кампаний (campaign_criterion, negative=true,
+        type=KEYWORD) напрямую из Google Ads API, без анализа ИИ.
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'negatives': []}
+
+        query = """
+            SELECT
+                campaign_criterion.keyword.text,
+                campaign_criterion.keyword.match_type,
+                campaign.name
+            FROM campaign_criterion
+            WHERE campaign_criterion.type = 'KEYWORD'
+              AND campaign_criterion.negative = TRUE
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            negatives = []
+            for row in rows:
+                negatives.append({
+                    'term': row.campaign_criterion.keyword.text,
+                    'match_type': row.campaign_criterion.keyword.match_type.name,
+                    'campaign': row.campaign.name,
+                })
+            return {'negatives': negatives, 'total': len(negatives), 'account': account}
+        except Exception as e:
+            log.error(f"get_negative_keywords_list({account}) error: {e}")
+            return {'error': str(e), 'negatives': []}
+
     async def get_search_terms(self, days: int = 30, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
