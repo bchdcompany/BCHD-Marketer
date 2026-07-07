@@ -539,9 +539,24 @@ async def cmd_check_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа) — {len(negatives)} минус-слов:*\n\n"
-    for n in negatives:
-        text += f"• \"{n['term']}\" ({n['match_type']}) — {n['campaign']}\n"
-    await _safe_edit(msg, text, parse_mode="Markdown")
+    lines = [f"• \"{n['term']}\" ({n['match_type']}) — {n['campaign']}\n" for n in negatives]
+
+    # Telegram ограничивает сообщение ~4096 символами — разбиваем на части,
+    # чтобы длинный список минус-слов не падал с "Text is too long"
+    TELEGRAM_LIMIT = 3500  # с запасом ниже реального лимита 4096
+    chunks = []
+    current = text
+    for line in lines:
+        if len(current) + len(line) > TELEGRAM_LIMIT:
+            chunks.append(current)
+            current = ""
+        current += line
+    if current:
+        chunks.append(current)
+
+    await _safe_edit(msg, chunks[0], parse_mode="Markdown")
+    for chunk in chunks[1:]:
+        await _safe_send(ctx.bot, config.OWNER_CHAT_ID, chunk, parse_mode="Markdown")
 
 
 async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
