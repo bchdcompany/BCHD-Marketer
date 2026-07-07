@@ -378,6 +378,7 @@ class GoogleAdsClient:
                 ad_group_criterion.status,
                 ad_group_criterion.cpc_bid_micros,
                 ad_group_criterion.effective_cpc_bid_micros,
+                ad_group_criterion.final_urls,
                 campaign.name,
                 ad_group.name
             FROM keyword_view
@@ -397,6 +398,7 @@ class GoogleAdsClient:
                     'status': crit.status.name,
                     'own_cpc_bid': own_bid,
                     'effective_cpc_bid': effective_bid,
+                    'final_urls': list(crit.final_urls) if crit.final_urls else [],
                     'campaign': row.campaign.name,
                     'ad_group': row.ad_group.name,
                     'resource_name': crit.resource_name,
