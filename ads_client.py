@@ -889,6 +889,7 @@ class GoogleAdsClient:
             'update_bid': self._update_bid,
             'pause_campaign': self._pause_campaign,
             'enable_campaign': self._enable_campaign,
+            'remove_campaign': self._remove_campaign,
             'seasonal_adjustments': self._apply_seasonal_adjustments,
             'pause_ad': self._pause_ad,
             'dispute_lsa_lead': self._dispute_lsa_lead,
@@ -922,8 +923,8 @@ class GoogleAdsClient:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
 
         try:
-            if action_type in ('pause_campaign', 'enable_campaign'):
-                expected = 'PAUSED' if action_type == 'pause_campaign' else 'ENABLED'
+            if action_type in ('pause_campaign', 'enable_campaign', 'remove_campaign'):
+                expected = {'pause_campaign': 'PAUSED', 'enable_campaign': 'ENABLED', 'remove_campaign': 'REMOVED'}[action_type]
                 query = f"SELECT campaign.status FROM campaign WHERE campaign.id = {action['campaign_id']}"
                 rows = await self._search(customer_id, query)
                 actual = rows[0].campaign.status.name if rows else None
@@ -1164,6 +1165,23 @@ class GoogleAdsClient:
         op.update_mask.paths.append("status")
         await asyncio.to_thread(svc.mutate_campaigns, customer_id=customer_id, operations=[op])
         return {'summary': f"Кампания {action.get('campaign_name')} активирована"}
+
+    async def _remove_campaign(self, action: dict, customer_id: str = None) -> dict:
+        """
+        "Удаление" кампании в Google Ads — это НЕОБРАТИМО, в отличие от
+        паузы: устанавливается campaign.status = REMOVED. Физически
+        кампания не стирается (сохраняется в истории для отчётности), но
+        включить её обратно невозможно — только создать новую с нуля.
+        """
+        if not customer_id: customer_id = self.customer_id
+        client = self._get_client()
+        svc = client.get_service("CampaignService")
+        op = client.get_type("CampaignOperation")
+        op.update.resource_name = f"customers/{customer_id}/campaigns/{action['campaign_id']}"
+        op.update.status = client.enums.CampaignStatusEnum.REMOVED
+        op.update_mask.paths.append("status")
+        await asyncio.to_thread(svc.mutate_campaigns, customer_id=customer_id, operations=[op])
+        return {'summary': f"Кампания {action.get('campaign_name')} удалена (статус REMOVED, необратимо)"}
 
     async def _apply_seasonal_adjustments(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
