@@ -216,7 +216,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/pending — ожидающие одобрения\n"
         f"/schedule — расписание задач\n"
         f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
-        f"/checknegatives — прямая проверка списка минус-слов (без ИИ)",
+        f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
+        f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
+        f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
         parse_mode="Markdown",
     )
 
@@ -732,6 +734,139 @@ async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for action in actions[:5]:
         action_id = action["id"]
         await _send_approval_card(update.get_bot(), config.OWNER_CHAT_ID, action_id, action)
+
+
+async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Журнал выполненных действий (одобрено/отклонено), новые сначала.
+    ВАЖНО: хранилище только в памяти процесса — журнал охватывает время
+    с последнего рестарта/редеплоя бота, не является постоянным архивом.
+    """
+    if not _is_owner(update):
+        return
+    limit = 20
+    if ctx.args:
+        try:
+            limit = max(1, min(50, int(ctx.args[0])))
+        except ValueError:
+            pass
+
+    history = pending.get_history(limit=limit)
+    if not history:
+        await update.message.reply_text(
+            "📋 Журнал пуст (за время с последнего рестарта бота действий не было)."
+        )
+        return
+
+    text = f"📋 *Журнал действий (последние {len(history)}):*\n"
+    text += "_Только за время с последнего рестарта бота — не постоянный архив._\n\n"
+    for a in history:
+        if a["status"] == "rejected":
+            icon = "❌"
+            status_label = "Отклонено"
+        else:
+            verified = a.get("initial_verified")
+            reverified = a.get("reverify_done")
+            if verified is True:
+                icon, status_label = "✅", "Выполнено, подтверждено"
+            elif verified is False:
+                icon, status_label = "🚨", "Выполнено, РАСХОЖДЕНИЕ"
+            elif reverified:
+                icon, status_label = "ℹ️", "Выполнено, перепроверено позже"
+            else:
+                icon, status_label = "📤", "Отправлено, не подтверждено"
+        when = a.get("executed_at") or a.get("created_at", "")
+        when_short = when[:16].replace("T", " ") if when else "?"
+        text += f"{icon} *{a.get('type', '?')}* — {status_label}\n"
+        text += f"   {a.get('description', '')[:100]}\n"
+        text += f"   _{when_short}_ · id `{a.get('id')}`\n\n"
+
+    await _safe_reply(update.message, text, parse_mode="Markdown")
+
+
+async def cmd_review_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    ИИ-обзор УЖЕ СУЩЕСТВУЮЩЕГО списка минус-слов на риск блокировки
+    релевантного трафика (в отличие от /negatives, который ищет НОВЫЕ
+    минус-слова по свежим поисковым запросам). Не удаляет ничего сам —
+    только предлагает карточки на удаление конкретных рискованных записей.
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+
+    msg = await update.message.reply_text("🔍 Собираю текущий список минус-слов...")
+    try:
+        neg_result = await ads_client.get_negative_keywords_list(account="ads")
+    except Exception as e:
+        log.error(f"Ошибка сбора минус-слов для /reviewnegatives: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    if neg_result.get("error"):
+        await msg.edit_text(f"❌ Ошибка: {neg_result['error']}")
+        return
+
+    negatives = neg_result.get("negatives", [])
+    if not negatives:
+        await msg.edit_text("Список минус-слов пуст — нечего анализировать.")
+        return
+
+    await _safe_edit(msg, f"🤔 Анализирую {len(negatives)} минус-слов на риск блокировки релевантного трафика...")
+    try:
+        analysis = await ai_analyst.review_negative_keywords_list(negatives)
+    except Exception as e:
+        log.error(f"Ошибка анализа минус-слов: {e}")
+        await msg.edit_text(f"❌ Ошибка анализа: {e}")
+        return
+
+    risky = analysis.get("risky_terms", [])
+    duplicates = analysis.get("duplicate_groups", [])
+    summary = analysis.get("summary", "")
+
+    text = f"🔍 *Обзор минус-слов ({len(negatives)} всего)*\n\n{summary}\n\n"
+    if risky:
+        text += f"⚠️ *Найдено рискованных: {len(risky)}*\n"
+        text += "Карточки на удаление отправлены ниже.\n"
+    else:
+        text += "✅ Рискованных записей не найдено.\n"
+    if duplicates:
+        text += f"\n📋 Возможные дубликаты ({len(duplicates)} групп) — требуют ручного решения, карточки не создаются:\n"
+        for d in duplicates[:10]:
+            text += f"• {', '.join(d.get('terms', []))} — {d.get('note', '')}\n"
+
+    await _safe_edit(msg, text, parse_mode="Markdown")
+    await _save_cmd_result(ctx, update.effective_chat.id, "/reviewnegatives", text)
+
+    # Сопоставляем найденные рискованные термины с их resource_name из
+    # исходного списка, чтобы можно было предложить конкретное удаление
+    by_term = {n['term'].strip().lower(): n for n in negatives}
+    for r in risky:
+        term_key = r.get('term', '').strip().lower()
+        match = by_term.get(term_key)
+        if not match:
+            continue
+        action = {
+            "type": "remove_negative_keyword",
+            "account": "ads",
+            "resource_name": match['resource_name'],
+            "term": match['term'],
+            "description": f"Удалить рискованное минус-слово '{match['term']}'",
+            "reasoning": r.get("risk", ""),
+            "data_summary": f"Кампания: {match.get('campaign', '')}, тип: {match.get('match_type', '')}",
+            "expected_impact": "Восстановление релевантного трафика, который могло блокировать это минус-слово",
+            "urgency": "low",
+            "urgency_label": "Низкая",
+            "risks": "Проверь причину перед удалением — если минус-слово всё же нужно, отклони карточку",
+            "confidence": "medium",
+        }
+        try:
+            action_id = pending.add(action)
+            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        except Exception as e:
+            log.warning(f"Не удалось создать карточку для рискованного минус-слова: {e}")
 
 
 async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1803,6 +1938,8 @@ def main():
     app.add_handler(CommandHandler("seasonal", cmd_seasonal))
     app.add_handler(CommandHandler("both", cmd_both))
     app.add_handler(CommandHandler("pending", cmd_pending))
+    app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
