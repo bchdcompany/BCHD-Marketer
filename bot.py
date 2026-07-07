@@ -504,6 +504,11 @@ async def cmd_check_keyword(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += f"• Собственная ставка (cpc_bid_micros): {own}\n"
         if m['effective_cpc_bid'] is not None:
             text += f"• Эффективная ставка (effective_cpc_bid): ${m['effective_cpc_bid']:.2f}\n"
+        final_urls = m.get('final_urls') or []
+        if final_urls:
+            text += f"• Final URL (собственный, override ключа): {final_urls[0]}\n"
+        else:
+            text += f"• Final URL: не задан на уровне ключа (наследуется от объявления группы)\n"
         text += "\n"
     await _safe_edit(msg, text, parse_mode="Markdown")
 
