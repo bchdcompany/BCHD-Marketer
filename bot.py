@@ -912,6 +912,19 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if acc == "lsa":
                     continue
                 context_data["ad_performance"][acc] = await ads_client.get_ad_performance(account=acc)
+        if "landing_pages" in data_needed:
+            # Проверка лендингов требует списка ключевых слов (URL берётся
+            # с конкретного ключа/его ad group) — подтягиваем keywords
+            # автоматически, если ещё не собраны в этом запросе.
+            context_data.setdefault("keywords", {})
+            context_data["landing_pages"] = {}
+            for acc in accounts:
+                if acc == "lsa":
+                    continue
+                if acc not in context_data["keywords"]:
+                    context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc)
+                kw_list = context_data["keywords"][acc].get("keywords", [])
+                context_data["landing_pages"][acc] = await ads_client.get_landing_pages_for_keywords(kw_list, account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
         if "seasonal" in data_needed:
