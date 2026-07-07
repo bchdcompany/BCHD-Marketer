@@ -177,15 +177,24 @@ API, без ручной работы владельца в интерфейсе
 вручную".
 """
 
-    async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None) -> dict:
+    async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
+                            required_keys: list = None) -> dict:
         messages = list(history) if history else []
         messages.append({"role": "user", "content": prompt})
+
+        input_schema = {"type": "object"}
+        if required_keys:
+            # Явно требуем эти поля в структуре ответа — без этого модель
+            # иногда возвращает валидный JSON без ключевых полей (например,
+            # только "proposed_actions" без "reply"), и код падает на
+            # дефолтную заглушку "Не удалось получить ответ" без объяснения.
+            input_schema["required"] = required_keys
 
         tools = [{
             "name": "submit_result",
             "description": "Верни результат анализа в виде структурированного JSON-объекта, "
                             "согласно формату, описанному в тексте запроса выше.",
-            "input_schema": {"type": "object"},
+            "input_schema": input_schema,
         }]
 
         try:
@@ -593,7 +602,10 @@ summary типа "Все ключи показывают CTR выше порог
 Верни ТОЛЬКО JSON:
 {{"intent": "chat|action", "action_type": "...", "days": 0, "date_from": "", "date_to": "", "data_needed": ["..."], "account": "ads|lsa|both"}}
 """
-        result = await self._call_claude(prompt, max_tokens=300, history=history)
+        result = await self._call_claude(
+            prompt, max_tokens=300, history=history,
+            required_keys=["intent", "action_type", "days", "date_from", "date_to", "data_needed", "account"],
+        )
         if "_error" in result:
             return {"intent": "chat", "action_type": "none", "days": 0, "date_from": "", "date_to": "", "data_needed": ["campaigns"], "account": "both"}
         if isinstance(result.get("data_needed"), str):
@@ -796,7 +808,10 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
 и предложи владельцу уточнить, что расписать детальнее. Это важнее, чем
 уместить всё — оборванный на середине ответ хуже, чем краткий полный.
 """
-        result = await self._call_claude(prompt, max_tokens=4096, history=history)
+        result = await self._call_claude(
+            prompt, max_tokens=4096, history=history,
+            required_keys=["reply", "proposed_actions"],
+        )
         if "_error" in result:
             return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
         return result
