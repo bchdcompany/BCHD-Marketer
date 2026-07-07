@@ -149,6 +149,22 @@ class PendingActions:
         if action:
             action["reverify_done"] = True
 
+    def get_history(self, limit: int = 20) -> list[dict]:
+        """
+        Возвращает журнал ВЫПОЛНЕННЫХ действий (approved + reject), новые
+        сначала. ВАЖНО: это журнал только за время жизни ТЕКУЩЕГО процесса —
+        хранилище в памяти, сбрасывается при рестарте/редеплое. Для действий
+        со статусом "approved" включает initial_verified и reverify-статус,
+        если они есть.
+        """
+        actions = [a for a in self._store.values() if a["status"] in ("approved", "rejected")]
+
+        def _sort_key(a):
+            return a.get("executed_at") or a.get("created_at", "")
+
+        actions.sort(key=_sort_key, reverse=True)
+        return actions[:limit]
+
     def pending_count(self) -> int:
         return sum(1 for a in self._store.values() if a["status"] == "pending")
 
