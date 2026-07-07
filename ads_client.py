@@ -213,7 +213,9 @@ class GoogleAdsClient:
                 ad_group_criterion.keyword.match_type,
                 ad_group_criterion.status,
                 ad_group_criterion.quality_info.quality_score,
+                ad_group_criterion.final_urls,
                 campaign.name,
+                ad_group.id,
                 ad_group.name,
                 metrics.impressions,
                 metrics.clicks,
@@ -239,6 +241,8 @@ class GoogleAdsClient:
                     'status': row.ad_group_criterion.status.name,
                     'campaign': row.campaign.name,
                     'ad_group': row.ad_group.name,
+                    'ad_group_id': row.ad_group.id,
+                    'final_urls': list(row.ad_group_criterion.final_urls) if row.ad_group_criterion.final_urls else [],
                     'impressions': row.metrics.impressions,
                     'clicks': row.metrics.clicks,
                     'ctr': round(row.metrics.ctr * 100, 2),
@@ -251,6 +255,92 @@ class GoogleAdsClient:
         except Exception as e:
             log.error(f"get_keywords_analysis({account}) error: {e}")
             return {'error': str(e), 'keywords': [], 'account': account}
+
+    async def _get_ad_group_fallback_url(self, ad_group_id, customer_id: str) -> Optional[str]:
+        """
+        Если у ключевого слова нет собственного final_urls (override на
+        уровне ключа встречается редко), берём URL с активного объявления
+        этой же ad group — именно туда реально ведёт клик по этому ключу.
+        """
+        query = f"""
+            SELECT ad_group_ad.final_urls
+            FROM ad_group_ad
+            WHERE ad_group.id = {ad_group_id}
+              AND ad_group_ad.status = 'ENABLED'
+            LIMIT 1
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            if rows and rows[0].ad_group_ad.final_urls:
+                return list(rows[0].ad_group_ad.final_urls)[0]
+        except Exception as e:
+            log.warning(f"_get_ad_group_fallback_url({ad_group_id}) error: {e}")
+        return None
+
+    async def _fetch_page_snippet(self, url: str) -> dict:
+        """
+        Скачивает лендинг напрямую по HTTP и извлекает title + короткий
+        текстовый сниппет (без тегов/скриптов/стилей). Это даёт агенту
+        реальную возможность самому оценить релевантность страницы
+        ключевому слову — без участия владельца и без браузера.
+        """
+        import httpx
+        import re as _re
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http_client:
+                resp = await http_client.get(
+                    url, headers={"User-Agent": "Mozilla/5.0 (compatible; BCHDMarketerBot/1.0)"}
+                )
+                resp.raise_for_status()
+                html = resp.text
+        except Exception as e:
+            return {'url': url, 'error': str(e)}
+
+        title_match = _re.search(r'<title[^>]*>(.*?)</title>', html, _re.IGNORECASE | _re.DOTALL)
+        title = _re.sub(r'\s+', ' ', title_match.group(1)).strip() if title_match else None
+
+        body = _re.sub(r'<script.*?</script>', ' ', html, flags=_re.IGNORECASE | _re.DOTALL)
+        body = _re.sub(r'<style.*?</style>', ' ', body, flags=_re.IGNORECASE | _re.DOTALL)
+        body = _re.sub(r'<[^>]+>', ' ', body)
+        body = _re.sub(r'\s+', ' ', body).strip()
+
+        return {'url': url, 'title': title, 'snippet': body[:600]}
+
+    async def get_landing_pages_for_keywords(self, keywords: list, account: str = "ads", limit: int = 5) -> dict:
+        """
+        Для топ-N ключевых слов по расходу определяет реальный URL лендинга
+        (final_urls самого ключа, либо fallback на объявление его группы)
+        и скачивает страницу — чтобы дать агенту готовые данные для
+        самостоятельной оценки релевантности, без просьбы к владельцу
+        "зайди и посмотри сам".
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id or not keywords:
+            return {'pages': []}
+
+        sorted_kw = sorted(keywords, key=lambda k: k.get('spend', 0), reverse=True)[:limit]
+        pages = []
+        for kw in sorted_kw:
+            url = None
+            final_urls = kw.get('final_urls') or []
+            if final_urls:
+                url = final_urls[0]
+            elif kw.get('ad_group_id'):
+                url = await self._get_ad_group_fallback_url(kw['ad_group_id'], customer_id)
+
+            if not url:
+                pages.append({
+                    'keyword': kw.get('keyword'),
+                    'url': None,
+                    'error': 'URL не найден (нет final_urls ни у ключа, ни у объявлений его группы)',
+                })
+                continue
+
+            page_data = await self._fetch_page_snippet(url)
+            page_data['keyword'] = kw.get('keyword')
+            page_data['spend'] = kw.get('spend')
+            pages.append(page_data)
+        return {'pages': pages}
 
     async def get_search_terms(self, days: int = 30, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
