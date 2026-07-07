@@ -1082,6 +1082,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 log.error(f"Ошибка перепроверки {param}: {e}")
                 verification = {"verified": None, "note": f"Ошибка перепроверки: {e}"}
 
+            log.info(f"VERIFY_ACTION RESULT: action_id={param}, type={action.get('type')}, verification={verification}")
             verified = verification.get("verified")
             pending.record_execution_result(param, verified)
             if verified is True:
