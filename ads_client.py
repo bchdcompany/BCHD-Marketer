@@ -774,7 +774,24 @@ class GoogleAdsClient:
         handler = handlers.get(action_type)
         if not handler:
             raise ValueError(f"Неизвестный тип действия: {action_type}")
-        return await handler(action, customer_id)
+
+        # ЯВНОЕ логирование ДО и ПОСЛЕ реального вызова Google Ads API.
+        # Библиотека google-ads-python логирует запросы через собственный
+        # interceptor, который по умолчанию печатает строку в основном
+        # при ошибках (IsFault: True) — успешные вызовы могут быть не видны
+        # на уровне INFO. Чтобы не гадать по логам библиотеки, фиксируем
+        # факт вызова явно и однозначно нашим собственным логом.
+        log.info(
+            f"EXECUTE_ACTION START: type={action_type}, customer_id={customer_id}, "
+            f"account={account}, description={action.get('description', '')!r}"
+        )
+        try:
+            result = await handler(action, customer_id)
+            log.info(f"EXECUTE_ACTION SUCCESS: type={action_type}, customer_id={customer_id}, result={result}")
+            return result
+        except Exception as e:
+            log.error(f"EXECUTE_ACTION FAILED: type={action_type}, customer_id={customer_id}, error={e}")
+            raise
 
     async def verify_action(self, action: dict) -> dict:
         action_type = action.get('type')
