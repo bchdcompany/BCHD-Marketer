@@ -270,16 +270,24 @@ async def cmd_schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📅 *Расписание задач (NY time)*\n\n"
         "Ежедневно:\n"
         "— 08:00: утренний отчёт (оба аккаунта)\n"
-        "— 14:00: анализ расходов\n"
+        "— 14:00: проверка бюджетов (создаёт карточку, если нужна коррекция)\n"
         "— 21:00: итоги дня\n\n"
-        "Еженедельно:\n"
-        "— Пн 09:00: аудит кампаний\n"
-        "— Пн 09:30: анализ ключевых слов\n"
-        "— Пт 18:00: предложения по оптимизации\n\n"
+        "Еженедельно (понедельник):\n"
+        "— 08:30: аудит LSA-звонков (предлагает оспаривание нерелевантных лидов)\n"
+        "— 09:00: полный аудит кампаний (Google Ads + LSA)\n"
+        "— 09:15: ROAS-отчёт по всем каналам (Google + LSA + Thumbtack, на основе реальных джобов из Workiz)\n"
+        "— 09:20: отдельная проверка Thumbtack (бюджет vs количество джобов, с флагом аномалий)\n\n"
         "Дополнительно:\n"
         "— Вс 09:30: анализ конкурентов\n"
         "— Ср 10:00: проверка A/B тестов\n"
-        "— 1-е число месяца 08:00: сезонная оптимизация",
+        "— 1-е число месяца 08:00: сезонная оптимизация\n\n"
+        "Служебное (не отчёты, но может прислать сообщение):\n"
+        "— каждые 4 часа: отложенная перепроверка ранее одобренных действий, "
+        "если первая проверка не дала железного подтверждения\n\n"
+        "Важно: автоматические задачи только анализируют данные и предлагают "
+        "действия через карточки ✅/❌ — сами ничего не меняют без твоего "
+        "одобрения (кроме отправки фидбэка Google по явно неподходящим LSA-лидам, "
+        "которое тоже требует одобрения через карточку).",
         parse_mode="Markdown",
     )
 
@@ -663,6 +671,54 @@ async def scheduled_weekly_roas(app):
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка еженедельного ROAS: {e}")
+
+
+async def scheduled_thumbtack_check(app):
+    """
+    Еженедельная выделенная проверка Thumbtack: сопоставляет фиксированный
+    недельный бюджет с реальным количеством джобов из Workiz (поле
+    JobSource='Thumbtack'), считает эффективный CPA и явно флагает
+    аномалии — например, бюджет потрачен, но джобов 0, или CPA сильно
+    выше нормы. В отличие от общего /roas (который считает все каналы
+    сразу), этот отчёт выделен отдельно, чтобы не потерять сигнал по
+    Thumbtack среди Google/LSA цифр.
+    """
+    log.info("Еженедельная проверка Thumbtack (бюджет vs джобы)")
+    try:
+        date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
+        date_from = (datetime.now(NY_TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
+        thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET
+        result = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
+        jobs = result.get('total_jobs', 0)
+        revenue = result.get('total_revenue', 0)
+        collected = result.get('total_collected', 0)
+        due = result.get('total_due', 0)
+
+        text = f"📌 *Thumbtack — бюджет vs джобы, {date_from} — {date_to}*\n\n"
+        text += f"💰 Недельный бюджет (расчётно): ${thumbtack_weekly_budget:.2f}\n"
+        text += f"🔧 Джобов из Workiz (JobSource='Thumbtack'): {jobs}\n"
+        text += f"💵 Выручка: ${revenue:.2f} | Собрано: ${collected:.2f}"
+        if due > 0:
+            text += f" | Долг: ${due:.2f}"
+        text += "\n"
+
+        if jobs > 0:
+            cpa = thumbtack_weekly_budget / jobs
+            roas = (revenue / thumbtack_weekly_budget * 100) if thumbtack_weekly_budget > 0 else None
+            text += f"📊 Эффективный CPA: ${cpa:.2f} за джоб\n"
+            if roas is not None:
+                text += f"📈 ROAS: {roas:.0f}%\n"
+        else:
+            text += (
+                "\n🚨 *Аномалия:* за неделю потрачен бюджет, но джобов с "
+                "источником Thumbtack в Workiz не найдено. Возможные причины: "
+                "лиды не конвертируются, проблема с трекингом источника в "
+                "Workiz, или сам канал сейчас неэффективен — стоит проверить "
+                "вручную в приложении Thumbtack.\n"
+            )
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка проверки Thumbtack: {e}")
 
 
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1766,6 +1822,7 @@ def main():
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
+    scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.start()
