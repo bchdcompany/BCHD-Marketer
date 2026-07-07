@@ -852,7 +852,37 @@ class GoogleAdsClient:
             elif action_type == 'add_negative_keywords':
                 if self._is_lsa(customer_id):
                     return {'verified': None, 'note': 'LSA не поддерживает минус-слова — перепроверка неприменима'}
-                return {'verified': None, 'note': 'Автоматическая перепроверка минус-слов не поддерживается'}
+                target_ids = action.get('_target_campaign_ids')
+                negatives = action.get('negatives', [])
+                if not target_ids or not negatives:
+                    return {
+                        'verified': None,
+                        'note': 'Нет сохранённых целевых кампаний для перепроверки (действие создано до внедрения этой проверки)',
+                    }
+                terms_expected = {neg['term'].strip().lower() for neg in negatives if neg.get('term')}
+                found_terms = set()
+                for cid in target_ids:
+                    query = f"""
+                        SELECT campaign_criterion.keyword.text, campaign_criterion.negative
+                        FROM campaign_criterion
+                        WHERE campaign.id = {cid}
+                          AND campaign_criterion.type = 'KEYWORD'
+                          AND campaign_criterion.negative = TRUE
+                    """
+                    try:
+                        rows = await self._search(customer_id, query)
+                        for row in rows:
+                            found_terms.add(row.campaign_criterion.keyword.text.strip().lower())
+                    except Exception as e:
+                        log.warning(f"Ошибка проверки минус-слов для campaign {cid}: {e}")
+                missing = terms_expected - found_terms
+                verified = len(missing) == 0
+                return {
+                    'verified': verified,
+                    'expected_terms': list(terms_expected),
+                    'missing_terms': list(missing),
+                    'checked_campaigns': len(target_ids),
+                }
 
             elif action_type == 'dispute_lsa_lead':
                 lead_id = action.get('lead_id')
@@ -932,6 +962,10 @@ class GoogleAdsClient:
                 op.create.keyword.match_type = client.enums.KeywordMatchTypeEnum.BROAD
                 ops.append(op)
         if ops: await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=ops)
+        # Сохраняем в само действие, какие кампании реально были целью —
+        # это позволяет verify_action() позже РЕАЛЬНО проверить, что минус-
+        # слова применились, а не просто полагаться на отсутствие ошибки API.
+        action['_target_campaign_ids'] = enabled_ids
         summary = f"Добавлено минус-слов: {len(action.get('negatives', []))} (в {len(enabled_ids)} кампаний)"
         if skipped_lsa_campaigns:
             summary += f". Пропущено кампаний Local Services (не поддерживают минус-слова): {len(skipped_lsa_campaigns)}"
