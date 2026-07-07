@@ -747,6 +747,16 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
   {{"type": "...", "account": "ads|lsa", "campaign_id": "...", "campaign_name": "...",
     "description": "...", "reasoning": "...", "risks": "...",
     "urgency": "high|medium|low", "urgency_label": "...", "confidence": "high|medium|low"}}
+- remove_campaign (НЕОБРАТИМОЕ удаление кампании — устанавливает статус
+  REMOVED, включить обратно НЕЛЬЗЯ, только создать новую кампанию с нуля.
+  Используй эту схему ТОЛЬКО когда владелец явно попросил удалить/убрать
+  кампанию навсегда, а не просто приостановить. В "risks" ОБЯЗАТЕЛЬНО
+  явно предупреди о необратимости):
+  {{"type": "remove_campaign", "account": "ads|lsa", "campaign_id": "...",
+    "campaign_name": "...", "description": "...", "reasoning": "...",
+    "risks": "НЕОБРАТИМО: кампанию нельзя будет включить обратно, только
+    создать новую с нуля", "urgency": "low", "urgency_label": "Низкая",
+    "confidence": "high"}}
 - budget_change:
   {{"type": "budget_change", "account": "...", "budget_id": "...", "campaign_name": "...",
     "current_budget": 50.0, "proposed_budget": 65.0, "description": "...",
