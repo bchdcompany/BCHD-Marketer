@@ -1,6 +1,11 @@
 """
 Google Ads API клиент
-v5 — совместимость с google-ads==31.1.0 (API v24)
+v6 — добавлена жёсткая защита: LSA (Local Services Ads) не поддерживает
+     ключевые слова/минус-слова вообще (Google сам определяет аудиторию).
+     Любая попытка pause_keywords/enable_keywords/add_negative_keywords
+     на LSA-аккаунте теперь блокируется ДО обращения к API, с понятной
+     ошибкой, вместо непрозрачного Google Ads RPC-исключения
+     (OPERATION_NOT_PERMITTED_FOR_CONTEXT / LOCAL_SERVICES).
 """
 
 import asyncio
@@ -10,6 +15,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+class LsaUnsupportedActionError(Exception):
+    """Действие невозможно для LSA-аккаунта (ключевые слова там не используются)."""
+    pass
 
 
 class GoogleAdsClient:
@@ -31,6 +41,29 @@ class GoogleAdsClient:
                 "use_proto_plus": True,
             })
         return self._client
+
+    def _is_lsa(self, customer_id: str) -> bool:
+        """True, если customer_id относится к LSA-аккаунту (сравнение устойчиво к дефисам/пробелам)."""
+        if not customer_id or not self.lsa_customer_id:
+            return False
+        norm = lambda s: str(s).replace("-", "").replace(" ", "").strip()
+        return norm(customer_id) == norm(self.lsa_customer_id)
+
+    def _assert_not_lsa_for_keywords(self, customer_id: str, action_label: str):
+        """
+        Жёсткая проверка перед любой операцией с ключевыми словами
+        (pause/enable/add negative). LSA не поддерживает ad_group_criterion
+        и campaign_criterion с keyword — Google Ads API вернёт
+        OPERATION_NOT_PERMITTED_FOR_CONTEXT / trigger LOCAL_SERVICES.
+        Лучше поймать это здесь с понятным сообщением, чем после мутации.
+        """
+        if self._is_lsa(customer_id):
+            raise LsaUnsupportedActionError(
+                f"Действие '{action_label}' невозможно для LSA (Local Services Ads) — "
+                f"этот тип аккаунта не использует ключевые слова, Google сам определяет "
+                f"аудиторию на основе категории услуги и профиля. Ключевые слова/минус-слова "
+                f"доступны только для обычного Google Ads аккаунта."
+            )
 
     async def _search(self, customer_id: str, query: str) -> list:
         """Универсальный поиск. Блокирующий вызов Google Ads API выполняется
@@ -162,6 +195,12 @@ class GoogleAdsClient:
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'keywords': []}
 
+        if self._is_lsa(customer_id):
+            return {
+                'error': 'LSA не использует ключевые слова — Google сам определяет аудиторию',
+                'keywords': [], 'account': account,
+            }
+
         date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         date_to = datetime.now().strftime("%Y-%m-%d")
 
@@ -259,22 +298,6 @@ class GoogleAdsClient:
 
     async def get_lsa_leads(self, days: int = 30, account: str = "lsa",
                              date_from: str = None, date_to: str = None) -> dict:
-        """
-        Получает детальные данные по лидам Local Services Ads через ресурс
-        local_services_lead в Google Ads API (без необходимости в отдельном
-        LSA API или ручной выгрузке CSV). Возвращает категорию услуги,
-        статус, был ли выдан кредит и т.д. для каждого лида.
-
-        Можно передать либо days (скользящее окно от сегодня), либо явные
-        date_from/date_to в формате YYYY-MM-DD (для конкретного календарного
-        периода вроде "май 2026") — если заданы date_from/date_to, они
-        имеют приоритет над days.
-
-        NB: конкретные названия полей local_services_lead могут потребовать
-        уточнения при первом реальном запросе (аналогично quality_score) —
-        если API вернёт UNRECOGNIZED_FIELD, нужно будет скорректировать
-        запрос под точные имена полей этой версии API.
-        """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'leads': []}
@@ -344,10 +367,6 @@ class GoogleAdsClient:
             return {'error': str(e)}
 
     async def get_lsa_lead_conversations(self, lead_id, account: str = "lsa") -> dict:
-        """
-        Получает беседы (в частности, звонки) по конкретному лиду LSA,
-        включая ссылку на аудиозапись звонка (call_recording_url).
-        """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'conversations': []}
@@ -394,11 +413,6 @@ class GoogleAdsClient:
         return creds.token
 
     async def download_and_transcribe_call(self, recording_url: str) -> dict:
-        """
-        Скачивает запись звонка LSA (требует OAuth-авторизацию тем же
-        Google Ads токеном) и транскрибирует через Groq Whisper.
-        Возвращает {'success': True, 'transcript': '...'} или {'success': False, 'error': '...'}.
-        """
         import httpx
         try:
             access_token = await asyncio.to_thread(self._get_fresh_access_token)
@@ -429,6 +443,8 @@ class GoogleAdsClient:
         except Exception as e:
             log.error(f"download_and_transcribe_call error: {e}")
             return {'success': False, 'error': str(e)}
+
+    async def get_performance_report(self, days: int = 7, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'daily': []}
@@ -646,6 +662,11 @@ class GoogleAdsClient:
         action_type = action.get('type')
         account = action.get('account', 'ads')
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+
+        # Жёсткая защита ДО обращения к API: LSA не поддерживает ключевые слова
+        if action_type in ('pause_keywords', 'enable_keywords', 'add_negative_keywords'):
+            self._assert_not_lsa_for_keywords(customer_id, action_type)
+
         handlers = {
             'pause_keywords': self._pause_keywords,
             'enable_keywords': self._enable_keywords,
@@ -664,13 +685,6 @@ class GoogleAdsClient:
         return await handler(action, customer_id)
 
     async def verify_action(self, action: dict) -> dict:
-        """
-        Перепроверяет, что действие РЕАЛЬНО применилось, заново запрашивая
-        актуальное состояние из Google Ads API (а не полагаясь только на то,
-        что вызов API не вернул ошибку). Возвращает {'verified': True/False/None, ...}.
-        verified=None означает, что для этого типа действия автоматическая
-        перепроверка не поддерживается.
-        """
         action_type = action.get('type')
         account = action.get('account', 'ads')
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
@@ -692,6 +706,8 @@ class GoogleAdsClient:
                 return {'verified': verified, 'actual_budget': actual, 'expected_budget': expected}
 
             elif action_type in ('pause_keywords', 'enable_keywords'):
+                if self._is_lsa(customer_id):
+                    return {'verified': None, 'note': 'LSA не поддерживает ключевые слова — перепроверка неприменима'}
                 expected = 'PAUSED' if action_type == 'pause_keywords' else 'ENABLED'
                 keywords = action.get('keywords', [])
                 if not keywords:
@@ -742,8 +758,8 @@ class GoogleAdsClient:
                 return {'verified': all(results), 'verified_count': sum(results), 'total': len(results)}
 
             elif action_type == 'add_negative_keywords':
-                # Минус-слова сложно точно сверить по тексту через GAQL сразу после mutate —
-                # автоматическая перепроверка не поддерживается для этого типа.
+                if self._is_lsa(customer_id):
+                    return {'verified': None, 'note': 'LSA не поддерживает минус-слова — перепроверка неприменима'}
                 return {'verified': None, 'note': 'Автоматическая перепроверка минус-слов не поддерживается'}
 
             elif action_type == 'dispute_lsa_lead':
@@ -762,6 +778,7 @@ class GoogleAdsClient:
 
     async def _pause_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
+        self._assert_not_lsa_for_keywords(customer_id, 'pause_keywords')
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         ops = []
@@ -776,6 +793,7 @@ class GoogleAdsClient:
 
     async def _enable_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
+        self._assert_not_lsa_for_keywords(customer_id, 'enable_keywords')
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         ops = []
@@ -790,6 +808,7 @@ class GoogleAdsClient:
 
     async def _add_negative_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
+        self._assert_not_lsa_for_keywords(customer_id, 'add_negative_keywords')
         client = self._get_client()
         svc = client.get_service("CampaignCriterionService")
         campaigns = await self.get_campaigns(account="lsa" if customer_id == self.lsa_customer_id else "ads")
@@ -882,12 +901,6 @@ class GoogleAdsClient:
         return {'summary': f"Объявление поставлено на паузу: {action.get('ad_id')}"}
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
-        """
-        Отправляет фидбэк по LSA-лиду через LocalServicesLeadService.ProvideLeadFeedback().
-        Это современный аналог "dispute" — ручной кнопки Google больше нет,
-        вместо неё отправляется оценка "неудовлетворён" с причиной, что может
-        триггернуть автоматический кредит и обучает алгоритм подбора лидов.
-        """
         if not customer_id:
             customer_id = self.lsa_customer_id
         client = self._get_client()
