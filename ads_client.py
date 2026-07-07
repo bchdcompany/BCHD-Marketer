@@ -420,6 +420,7 @@ class GoogleAdsClient:
 
         query = """
             SELECT
+                campaign_criterion.resource_name,
                 campaign_criterion.keyword.text,
                 campaign_criterion.keyword.match_type,
                 campaign.name
@@ -432,6 +433,7 @@ class GoogleAdsClient:
             negatives = []
             for row in rows:
                 negatives.append({
+                    'resource_name': row.campaign_criterion.resource_name,
                     'term': row.campaign_criterion.keyword.text,
                     'match_type': row.campaign_criterion.keyword.match_type.name,
                     'campaign': row.campaign.name,
@@ -885,6 +887,7 @@ class GoogleAdsClient:
             'pause_keywords': self._pause_keywords,
             'enable_keywords': self._enable_keywords,
             'add_negative_keywords': self._add_negative_keywords,
+            'remove_negative_keyword': self._remove_negative_keyword,
             'budget_change': self._change_budget,
             'update_bid': self._update_bid,
             'pause_campaign': self._pause_campaign,
@@ -1025,6 +1028,22 @@ class GoogleAdsClient:
                     'checked_campaigns': len(target_ids),
                 }
 
+            elif action_type == 'remove_negative_keyword':
+                rn = action.get('resource_name')
+                if not rn:
+                    return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
+                query = f"SELECT campaign_criterion.resource_name FROM campaign_criterion WHERE campaign_criterion.resource_name = '{rn}'"
+                try:
+                    rows = await self._search(customer_id, query)
+                    # Если критерий удалён, запрос по его resource_name вернёт 0 строк
+                    return {'verified': len(rows) == 0, 'note': 'Критерий должен отсутствовать в результатах после удаления'}
+                except Exception as e:
+                    # Google Ads может вернуть ошибку "not found" для удалённого
+                    # критерия — это тоже подтверждение успешного удаления
+                    if 'not found' in str(e).lower() or 'NOT_FOUND' in str(e):
+                        return {'verified': True, 'note': 'Критерий не найден — удаление подтверждено'}
+                    return {'verified': None, 'note': f'Ошибка проверки: {e}'}
+
             elif action_type == 'dispute_lsa_lead':
                 lead_id = action.get('lead_id')
                 query = f"SELECT local_services_lead.lead_feedback_submitted FROM local_services_lead WHERE local_services_lead.id = {lead_id}"
@@ -1121,6 +1140,20 @@ class GoogleAdsClient:
         if skipped_lsa_campaigns:
             summary += f". Пропущено кампаний Local Services (не поддерживают минус-слова): {len(skipped_lsa_campaigns)}"
         return {'summary': summary}
+
+    async def _remove_negative_keyword(self, action: dict, customer_id: str = None) -> dict:
+        """
+        Удаляет конкретное минус-слово (campaign_criterion) — используется
+        для действий, найденных через /reviewnegatives (рискованные минус-
+        слова, которые могут блокировать релевантный трафик).
+        """
+        if not customer_id: customer_id = self.customer_id
+        client = self._get_client()
+        svc = client.get_service("CampaignCriterionService")
+        op = client.get_type("CampaignCriterionOperation")
+        op.remove = action.get('resource_name')
+        await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=[op])
+        return {'summary': f"Минус-слово '{action.get('term', '')}' удалено"}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
