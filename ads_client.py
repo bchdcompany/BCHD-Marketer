@@ -263,7 +263,7 @@ class GoogleAdsClient:
         этой же ad group — именно туда реально ведёт клик по этому ключу.
         """
         query = f"""
-            SELECT ad_group_ad.final_urls
+            SELECT ad_group_ad.ad.final_urls
             FROM ad_group_ad
             WHERE ad_group.id = {ad_group_id}
               AND ad_group_ad.status = 'ENABLED'
@@ -271,8 +271,8 @@ class GoogleAdsClient:
         """
         try:
             rows = await self._search(customer_id, query)
-            if rows and rows[0].ad_group_ad.final_urls:
-                return list(rows[0].ad_group_ad.final_urls)[0]
+            if rows and rows[0].ad_group_ad.ad.final_urls:
+                return list(rows[0].ad_group_ad.ad.final_urls)[0]
         except Exception as e:
             log.warning(f"_get_ad_group_fallback_url({ad_group_id}) error: {e}")
         return None
