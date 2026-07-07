@@ -497,6 +497,54 @@ async def scheduled_purge_pending(app):
         log.error(f"Ошибка очистки очереди одобрения: {e}")
 
 
+async def scheduled_reverify_executed_actions(app):
+    """
+    Раз в несколько часов повторно проверяет действия, которые при
+    первом выполнении НЕ были железно подтверждены (verified=False,
+    либо тип действия не поддерживает автопроверку и получил verified=None).
+    Это ловит случаи, когда первичная проверка ошиблась из-за задержки
+    синхронизации Google Ads API, или когда действие было принято API,
+    но реально не применилось так, как ожидалось — владелец должен
+    узнать правду, а не жить с ложным ощущением "всё сделано".
+    """
+    try:
+        to_check = pending.get_actions_needing_reverify(min_hours_since_execution=20)
+    except Exception as e:
+        log.error(f"Ошибка получения действий для отложенной перепроверки: {e}")
+        return
+    for action in to_check:
+        action_id = action.get("id")
+        try:
+            verification = await ads_client.verify_action(action)
+        except Exception as e:
+            log.error(f"Ошибка отложенной перепроверки {action_id}: {e}")
+            continue
+        verified = verification.get("verified")
+        pending.mark_reverified(action_id)
+        if verified is True:
+            text = (
+                f"✅ *Отложенная перепроверка подтвердила успех:* {action.get('description')}\n\n"
+                f"Изменение реально применилось (проверено повторно через сутки)."
+            )
+        elif verified is False:
+            text = (
+                f"🚨 *Отложенная перепроверка нашла расхождение:* {action.get('description')}\n\n"
+                f"Похоже, действие НЕ применилось так, как ожидалось, хотя API изначально "
+                f"не вернул ошибку:\n`{verification}`\n\n"
+                f"Рекомендую проверить и применить вручную в Google Ads при необходимости."
+            )
+        else:
+            text = (
+                f"ℹ️ *Отложенная перепроверка:* {action.get('description')}\n\n"
+                f"Автоматическое подтверждение по-прежнему недоступно для этого типа "
+                f"действия — рекомендую проверить вручную в Google Ads, если это важно."
+            )
+        try:
+            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+        except Exception as e:
+            log.error(f"Ошибка отправки результата отложенной перепроверки: {e}")
+
+
 async def scheduled_weekly_roas(app):
     if not config.google_ads_configured:
         return
@@ -1020,6 +1068,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
 
             await query.edit_message_text(f"🔍 Перепроверяю фактическое состояние...")
+            # Небольшая пауза перед проверкой: у Google Ads API бывает
+            # задержка синхронизации между mutate и последующим search —
+            # без неё verify_action может ошибочно показать "не применилось",
+            # хотя изменение реально прошло.
+            await asyncio.sleep(3)
             try:
                 verification = await ads_client.verify_action(action)
             except Exception as e:
@@ -1027,23 +1080,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 verification = {"verified": None, "note": f"Ошибка перепроверки: {e}"}
 
             verified = verification.get("verified")
+            pending.record_execution_result(param, verified)
             if verified is True:
                 text = (
-                    f"✅ *Выполнено и перепроверено:* {action['description']}\n\n"
+                    f"✅ *Выполнено и подтверждено:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}\n\n"
-                    f"_Подтверждено повторным запросом к Google Ads API._"
+                    f"_Подтверждено повторным запросом к Google Ads API — изменение реально применилось._"
                 )
             elif verified is False:
                 text = (
                     f"⚠️ *Расхождение после выполнения:* {action['description']}\n\n"
                     f"API не вернул ошибку, но перепроверка показала несоответствие:\n`{verification}`\n\n"
-                    f"Рекомендую проверить вручную в Google Ads."
+                    f"Рекомендую проверить вручную в Google Ads. Я также автоматически "
+                    f"перепроверю это ещё раз через сутки и сообщу результат."
                 )
             else:
                 text = (
-                    f"✅ *Выполнено:* {action['description']}\n\n"
+                    f"📤 *Отправлено в Google Ads:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}\n\n"
-                    f"_Автоматическая перепроверка не поддерживается для этого типа действия._"
+                    f"⚠️ _API принял запрос без ошибок, но автоматическое подтверждение "
+                    f"результата недоступно для этого типа действия — это НЕ гарантия, "
+                    f"что изменение реально применилось так, как ожидалось. Я перепроверю "
+                    f"это ещё раз через сутки и напишу, подтвердилось ли на самом деле._"
                 )
             await _safe_edit(query, text, parse_mode="Markdown")
             return
@@ -1551,6 +1609,7 @@ def main():
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
+    scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
