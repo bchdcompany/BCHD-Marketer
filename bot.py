@@ -214,7 +214,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/seasonal — сезонные корректировки\n"
         f"/both — сводка по обоим аккаунтам\n"
         f"/pending — ожидающие одобрения\n"
-        f"/schedule — расписание задач",
+        f"/schedule — расписание задач\n"
+        f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
+        f"/checknegatives — прямая проверка списка минус-слов (без ИИ)",
         parse_mode="Markdown",
     )
 
@@ -455,6 +457,91 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
             text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
+
+
+async def cmd_check_keyword(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Прямая диагностическая команда: /checkkeyword <текст> — находит ключевые
+    слова, содержащие этот текст, и показывает их РЕАЛЬНУЮ текущую ставку
+    напрямую из Google Ads API. Никакого ИИ-анализа, никаких карточек —
+    только сырые факты, чтобы однозначно проверить, применилось ли
+    изменение ставки, без риска путаницы с формулировками чата.
+    Использование: /checkkeyword refrigerator repair Brooklyn
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /checkkeyword <текст ключа>\nНапример: /checkkeyword refrigerator repair Brooklyn")
+        return
+    search_text = " ".join(ctx.args)
+
+    msg = await update.message.reply_text(f"🔍 Ищу ключи, содержащие '{search_text}'...")
+    try:
+        result = await ads_client.get_keyword_current_bid(search_text, account="ads")
+    except Exception as e:
+        log.error(f"Ошибка /checkkeyword: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    if result.get("error"):
+        await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        return
+
+    matches = result.get("matches", [])
+    if not matches:
+        await msg.edit_text(f"Ключей, содержащих '{search_text}', не найдено.")
+        return
+
+    text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа):*\n\n"
+    for m in matches:
+        text += f"*\"{m['keyword']}\"* ({m['match_type']})\n"
+        text += f"• Кампания: {m['campaign']} / {m['ad_group']}\n"
+        text += f"• Статус: {m['status']}\n"
+        own = f"${m['own_cpc_bid']:.2f}" if m['own_cpc_bid'] is not None else "не задана (наследуется от группы/автостратегии)"
+        text += f"• Собственная ставка (cpc_bid_micros): {own}\n"
+        if m['effective_cpc_bid'] is not None:
+            text += f"• Эффективная ставка (effective_cpc_bid): ${m['effective_cpc_bid']:.2f}\n"
+        text += "\n"
+    await _safe_edit(msg, text, parse_mode="Markdown")
+
+
+async def cmd_check_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Прямая диагностическая команда: /checknegatives — показывает ПОЛНЫЙ
+    текущий список минус-слов на уровне кампаний напрямую из Google Ads API,
+    без анализа ИИ. Используется для однозначной проверки, реально ли
+    применилось добавление конкретного минус-слова.
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+
+    msg = await update.message.reply_text("🔍 Собираю текущий список минус-слов из Google Ads API...")
+    try:
+        result = await ads_client.get_negative_keywords_list(account="ads")
+    except Exception as e:
+        log.error(f"Ошибка /checknegatives: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    if result.get("error"):
+        await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        return
+
+    negatives = result.get("negatives", [])
+    if not negatives:
+        await msg.edit_text("🔍 *Прямая проверка Google Ads API:*\n\nМинус-слов на уровне кампаний не найдено (список пуст).", parse_mode="Markdown")
+        return
+
+    text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа) — {len(negatives)} минус-слов:*\n\n"
+    for n in negatives:
+        text += f"• \"{n['term']}\" ({n['match_type']}) — {n['campaign']}\n"
+    await _safe_edit(msg, text, parse_mode="Markdown")
 
 
 async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1638,6 +1725,8 @@ def main():
     app.add_handler(CommandHandler("checklead", cmd_checklead))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
+    app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
+    app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
