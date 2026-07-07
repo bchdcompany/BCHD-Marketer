@@ -343,6 +343,7 @@ class GoogleAdsClient:
             if not url:
                 pages.append({
                     'keyword': kw.get('keyword'),
+                    'resource_name': kw.get('resource_name'),
                     'url': None,
                     'error': 'URL не найден (нет final_urls ни у ключа, ни у объявлений его группы)',
                 })
@@ -350,6 +351,7 @@ class GoogleAdsClient:
 
             page_data = await self._fetch_page_snippet(url)
             page_data['keyword'] = kw.get('keyword')
+            page_data['resource_name'] = kw.get('resource_name')
             page_data['spend'] = kw.get('spend')
             pages.append(page_data)
         return {'pages': pages}
@@ -888,6 +890,7 @@ class GoogleAdsClient:
             'seasonal_adjustments': self._apply_seasonal_adjustments,
             'pause_ad': self._pause_ad,
             'dispute_lsa_lead': self._dispute_lsa_lead,
+            'update_final_url': self._update_keyword_final_url,
         }
         handler = handlers.get(action_type)
         if not handler:
@@ -1025,6 +1028,16 @@ class GoogleAdsClient:
                 rows = await self._search(customer_id, query)
                 submitted = rows[0].local_services_lead.lead_feedback_submitted if rows else None
                 return {'verified': submitted is True, 'lead_feedback_submitted': submitted}
+
+            elif action_type == 'update_final_url':
+                rn = action.get('resource_name')
+                expected_url = action.get('new_url')
+                if not rn or not expected_url:
+                    return {'verified': None, 'note': 'Нет resource_name/new_url для перепроверки'}
+                query = f"SELECT ad_group_criterion.final_urls FROM ad_group_criterion WHERE ad_group_criterion.resource_name = '{rn}'"
+                rows = await self._search(customer_id, query)
+                actual_urls = list(rows[0].ad_group_criterion.final_urls) if rows and rows[0].ad_group_criterion.final_urls else []
+                return {'verified': expected_url in actual_urls, 'actual_final_urls': actual_urls, 'expected_url': expected_url}
 
             else:
                 return {'verified': None, 'note': f'Перепроверка не поддерживается для типа {action_type}'}
@@ -1180,6 +1193,25 @@ class GoogleAdsClient:
         op.update_mask.paths.append("status")
         await asyncio.to_thread(svc.mutate_ad_group_ads, customer_id=customer_id, operations=[op])
         return {'summary': f"Объявление поставлено на паузу: {action.get('ad_id')}"}
+
+    async def _update_keyword_final_url(self, action: dict, customer_id: str = None) -> dict:
+        """
+        Обновляет Final URL конкретного ключевого слова (ad_group_criterion.
+        final_urls) — override на уровне ключа, который направляет клики по
+        этому ключу на конкретную посадочную страницу вместо базового URL
+        объявления. Используется, когда владелец предоставил ссылку на
+        специализированную страницу (например, /dishwasher), чтобы поднять
+        релевантность лендинга и Quality Score для этого ключа.
+        """
+        if not customer_id: customer_id = self.customer_id
+        client = self._get_client()
+        svc = client.get_service("AdGroupCriterionService")
+        op = client.get_type("AdGroupCriterionOperation")
+        op.update.resource_name = action.get('resource_name')
+        op.update.final_urls.append(action.get('new_url'))
+        op.update_mask.paths.append("final_urls")
+        await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
+        return {'summary': f"Final URL ключа '{action.get('keyword', '')}' обновлён на {action.get('new_url')}"}
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id:
