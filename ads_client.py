@@ -214,6 +214,8 @@ class GoogleAdsClient:
                 ad_group_criterion.status,
                 ad_group_criterion.quality_info.quality_score,
                 ad_group_criterion.final_urls,
+                ad_group_criterion.cpc_bid_micros,
+                ad_group_criterion.effective_cpc_bid_micros,
                 campaign.name,
                 ad_group.id,
                 ad_group.name,
@@ -234,22 +236,32 @@ class GoogleAdsClient:
             rows = await self._search(customer_id, query)
             keywords = []
             for row in rows:
+                crit = row.ad_group_criterion
+                current_bid = crit.cpc_bid_micros / 1_000_000 if crit.cpc_bid_micros else None
+                effective_bid = crit.effective_cpc_bid_micros / 1_000_000 if crit.effective_cpc_bid_micros else None
                 keywords.append({
-                    'resource_name': row.ad_group_criterion.resource_name,
-                    'keyword': row.ad_group_criterion.keyword.text,
-                    'match_type': row.ad_group_criterion.keyword.match_type.name,
-                    'status': row.ad_group_criterion.status.name,
+                    'resource_name': crit.resource_name,
+                    'keyword': crit.keyword.text,
+                    'match_type': crit.keyword.match_type.name,
+                    'status': crit.status.name,
                     'campaign': row.campaign.name,
                     'ad_group': row.ad_group.name,
                     'ad_group_id': row.ad_group.id,
-                    'final_urls': list(row.ad_group_criterion.final_urls) if row.ad_group_criterion.final_urls else [],
+                    'final_urls': list(crit.final_urls) if crit.final_urls else [],
                     'impressions': row.metrics.impressions,
                     'clicks': row.metrics.clicks,
                     'ctr': round(row.metrics.ctr * 100, 2),
+                    # ВАЖНО: 'cpc' — это ИСТОРИЧЕСКАЯ средняя цена клика за
+                    # последние 30 дней (усреднённая по всему периоду, включая
+                    # дни ДО любого недавнего изменения ставки). НЕ путать с
+                    # текущей назначенной ставкой! Для проверки "применилось
+                    # ли изменение ставки" используй ТОЛЬКО 'current_bid'.
                     'cpc': round(row.metrics.average_cpc / 1_000_000, 2),
+                    'current_bid': current_bid,
+                    'effective_bid': effective_bid,
                     'spend': round(row.metrics.cost_micros / 1_000_000, 2),
                     'conversions': round(row.metrics.conversions, 1),
-                    'quality_score': row.ad_group_criterion.quality_info.quality_score,
+                    'quality_score': crit.quality_info.quality_score,
                 })
             return {'keywords': keywords, 'total': len(keywords), 'date_from': date_from, 'date_to': date_to, 'account': account}
         except Exception as e:
@@ -466,6 +478,29 @@ class GoogleAdsClient:
                     'spend': round(row.metrics.cost_micros / 1_000_000, 2),
                     'conversions': round(row.metrics.conversions, 1),
                 })
+
+            # ВАЖНО: search_term_view.status (Google-computed ADDED/EXCLUDED/
+            # NONE) иногда обновляется с задержкой относительно момента
+            # добавления минус-слова. Чтобы не полагаться на потенциально
+            # устаревшее значение, дополнительно сверяем каждый запрос
+            # напрямую со СВЕЖИМ списком текущих минус-слов кампании —
+            # это авторитетный, мгновенный источник истины.
+            try:
+                neg_result = await self.get_negative_keywords_list(account=account)
+                negative_texts = {n['term'].strip().lower() for n in neg_result.get('negatives', [])}
+            except Exception as e:
+                log.warning(f"Не удалось сверить search terms с текущими минус-словами: {e}")
+                negative_texts = set()
+
+            for t in terms:
+                term_lower = t['term'].strip().lower()
+                # Broad-match минус-слово исключает запрос, если ВСЕ слова
+                # минус-слова встречаются где-либо в тексте запроса.
+                t['currently_excluded'] = any(
+                    all(word in term_lower for word in neg.split())
+                    for neg in negative_texts
+                ) if negative_texts else (t['status'] == 'EXCLUDED')
+
             return {'terms': terms, 'days': days, 'account': account}
         except Exception as e:
             log.error(f"get_search_terms({account}) error: {e}")
