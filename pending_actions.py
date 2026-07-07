@@ -105,6 +105,50 @@ class PendingActions:
             return action
         return None
 
+    def record_execution_result(self, action_id: str, verified) -> None:
+        """
+        Сохраняет результат первичной проверки после выполнения действия.
+        verified: True/False/None (см. verify_action). Если verified не
+        True (то есть либо явно расходится с ожиданием, либо тип действия
+        не поддерживает автоматическую проверку) — действие помечается
+        для отложенной повторной проверки через ~24 часа, чтобы поймать
+        случаи, когда первичная проверка была ошибочной или неприменимой,
+        и владелец не остался бы уверен в успехе, который не подтверждён.
+        """
+        action = self._store.get(action_id)
+        if not action:
+            return
+        action["executed_at"] = datetime.now().isoformat()
+        action["initial_verified"] = verified
+        action["needs_reverify"] = verified is not True
+        action["reverify_done"] = False
+
+    def get_actions_needing_reverify(self, min_hours_since_execution: int = 20) -> list[dict]:
+        """
+        Возвращает действия, которые: были выполнены, изначально НЕ были
+        железно подтверждены (verified != True), ещё не проверялись повторно,
+        и с момента выполнения прошло не менее min_hours_since_execution часов
+        (даём время на возможную задержку синхронизации в Google Ads API,
+        и заодно защищаемся от повторной проверки слишком рано).
+        """
+        cutoff = datetime.now() - timedelta(hours=min_hours_since_execution)
+        result = []
+        for action in self._store.values():
+            if not action.get("needs_reverify") or action.get("reverify_done"):
+                continue
+            try:
+                executed = datetime.fromisoformat(action.get("executed_at", ""))
+            except ValueError:
+                continue
+            if executed <= cutoff:
+                result.append(action)
+        return result
+
+    def mark_reverified(self, action_id: str) -> None:
+        action = self._store.get(action_id)
+        if action:
+            action["reverify_done"] = True
+
     def pending_count(self) -> int:
         return sum(1 for a in self._store.values() if a["status"] == "pending")
 
