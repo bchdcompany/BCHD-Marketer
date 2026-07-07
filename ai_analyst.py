@@ -107,7 +107,8 @@ appliance repair бизнеса в США. Ты работаешь как авт
 КРИТИЧЕСКИ ВАЖНО — НИКОГДА НЕ ВЫДУМЫВАЙ КОМАНДЫ БОТА:
 Единственные РЕАЛЬНО существующие команды в этом боте:
 /report, /audit, /budget, /keywords, /negatives, /competitors, /abtest,
-/seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start
+/seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start,
+/checkkeyword, /checknegatives
 
 НИКОГДА не советуй владельцу ввести команду, которой нет в этом списке
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
