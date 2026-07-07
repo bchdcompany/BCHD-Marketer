@@ -1243,6 +1243,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", result_text)
                     return
                 summary_parts = []
+                any_cards_created = False
                 for acc in accounts_list:
                     data_result = await ads_client.get_search_terms(account=acc)
                     analysis = await ai_analyst.find_negative_keywords(data_result)
@@ -1267,6 +1268,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         try:
                             action_id = pending.add(action)
                             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                            any_cards_created = True
                         except Exception as ve:
                             # PendingActionValidationError или любая другая ошибка валидации —
                             # не прерываем весь цикл, просто пропускаем эту карточку
@@ -1277,7 +1279,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         "ℹ️ *LSA:* минус-слова не применимы (Google определяет аудиторию автоматически)",
                         parse_mode="Markdown",
                     )
-                await query.edit_message_text("✅ Анализ завершён — карточки одобрения отправлены выше.")
+                if any_cards_created:
+                    await query.edit_message_text("✅ Анализ завершён — карточки одобрения отправлены выше.")
+                else:
+                    await query.edit_message_text(
+                        "✅ Анализ завершён — нерелевантных запросов не найдено, "
+                        "минус-слова добавлять не требуется. Карточек одобрения нет."
+                    )
                 await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка negatives callback: {e}")
