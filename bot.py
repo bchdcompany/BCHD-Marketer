@@ -1103,7 +1103,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"❌ Ошибка: {e}")
         return
 
-    reply = result.get("reply", "Не удалось получить ответ.")
+    if "reply" not in result:
+        log.error(f"chat_action вернул результат без ключа 'reply': {result}")
+    reply = result.get("reply", "⚠️ Ответ получен, но в неожиданном формате (без текста). Попробуй переформулировать вопрос.")
     reply = _guard_against_hallucinated_execution(reply)
     await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
     await _append_history(ctx, chat_id, question, reply)
