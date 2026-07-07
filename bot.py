@@ -28,7 +28,7 @@ from telegram.ext import (
 from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
-from pending_actions import PendingActions
+from pending_actions import PendingActions, STALE_AFTER_HOURS
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -484,6 +484,17 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Ошибка /roas: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+async def scheduled_purge_pending(app):
+    """Раз в сутки чистит очень старые записи в очереди одобрения (>72ч),
+    чтобы память процесса не росла бесконечно при долгой работе."""
+    try:
+        removed = pending.purge_stale(max_age_hours=72)
+        if removed:
+            log.info(f"Очищено {removed} устаревших записей из очереди одобрения")
+    except Exception as e:
+        log.error(f"Ошибка очистки очереди одобрения: {e}")
 
 
 async def scheduled_weekly_roas(app):
@@ -970,7 +981,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not action:
                 await query.edit_message_text("⚠️ Действие не найдено или уже выполнено.")
                 return
-            await query.edit_message_text(f"⏳ Применяю: {action['description']}...")
+            stale_note = ""
+            if action.get("stale_when_approved"):
+                stale_note = (
+                    f"\n\n⚠️ *Внимание:* эта карточка была создана более "
+                    f"{STALE_AFTER_HOURS} часов назад. "
+                    f"Данные могли устареть (кто-то мог изменить кампанию вручную). "
+                    f"Рекомендую перепроверить перед следующим одобрением."
+                )
+                log.warning(f"Одобрена устаревшая карточка {param}: {action.get('description')}")
+            await query.edit_message_text(f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
             try:
                 result = await ads_client.execute_action(action)
             except Exception as e:
@@ -1127,7 +1147,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "negatives":
             await query.edit_message_text(f"🚫 Минус-слова: {account_label}... (~30 сек)")
             try:
-                accounts_list = ["ads", "lsa"] if account == "both" else [account]
+                # LSA не поддерживает минус-слова (как и обычные ключевые слова) —
+                # Google сам определяет аудиторию. Обрабатываем только Google Ads.
+                accounts_list = ["ads"] if account in ("lsa", "both") else [account]
+                if account == "lsa":
+                    result_text = (
+                        "ℹ️ *LSA не использует минус-слова*\n\n"
+                        "Local Services Ads работает иначе — Google сам определяет, "
+                        "кому показывать объявления. Минус-слова доступны только для "
+                        "Google Ads (936)."
+                    )
+                    await _safe_edit(query, result_text, parse_mode="Markdown")
+                    await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", result_text)
+                    return
                 summary_parts = []
                 for acc in accounts_list:
                     data_result = await ads_client.get_search_terms(account=acc)
@@ -1150,8 +1182,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             "risks": "Проверь список перед применением",
                             "negatives": negatives,
                         }
-                        action_id = pending.add(action)
-                        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        try:
+                            action_id = pending.add(action)
+                            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        except Exception as ve:
+                            # PendingActionValidationError или любая другая ошибка валидации —
+                            # не прерываем весь цикл, просто пропускаем эту карточку
+                            log.warning(f"Карточка минус-слов не создана ({acc}): {ve}")
+                if account == "both":
+                    await _safe_send(
+                        ctx.bot, config.OWNER_CHAT_ID,
+                        "ℹ️ *LSA:* минус-слова не применимы (Google определяет аудиторию автоматически)",
+                        parse_mode="Markdown",
+                    )
                 await query.edit_message_text("✅ Анализ завершён — карточки одобрения отправлены выше.")
                 await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
@@ -1486,6 +1529,7 @@ def main():
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
+    scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
