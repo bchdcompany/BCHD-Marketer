@@ -255,6 +255,8 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif lsa_data and lsa_data.get('error'):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
+        text += await _get_thumbtack_summary_line()
+
         await _safe_edit(msg, text, parse_mode="Markdown")
 
         # Сохраняем в историю
@@ -1721,6 +1723,30 @@ def _format_both_summary(data: dict) -> str:
     return text
 
 
+async def _get_thumbtack_summary_line(days: int = 30) -> str:
+    """
+    Короткая строка по Thumbtack (расход, джобы, выручка) за период —
+    используется в ежедневных отчётах, чтобы канал не оставался невидимым
+    в промежутках между еженедельной детальной проверкой (scheduled_thumbtack_check).
+    """
+    try:
+        date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
+        date_from = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        thumbtack_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
+        result = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
+        jobs = result.get('total_jobs', 0)
+        revenue = result.get('total_revenue', 0)
+        line = f"\n*Thumbtack (расчётно):* ${thumbtack_cost:.2f} / {jobs} джоб(ов)"
+        if jobs > 0:
+            line += f" / выручка ${revenue:.2f}"
+        elif thumbtack_cost > 0:
+            line += " ⚠️ бюджет потрачен, джобов не найдено"
+        return line
+    except Exception as e:
+        log.error(f"Ошибка получения сводки Thumbtack: {e}")
+        return ""
+
+
 def _format_audit(data: dict, analysis: dict) -> str:
     campaigns = data.get('campaigns', [])
     text = f"🔍 *Аудит {data.get('account', '').upper()} — {data.get('date_from')} — {data.get('date_to')}*\n\n"
@@ -1793,6 +1819,7 @@ async def scheduled_morning_report(app):
         data = await ads_client.get_both_accounts_summary()
         text = f"☀️ *Утренний отчёт — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
         text += _format_both_summary(data)
+        text += await _get_thumbtack_summary_line()
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
@@ -1836,6 +1863,7 @@ async def scheduled_evening_summary(app):
         data = await ads_client.get_both_accounts_summary()
         text = f"🌙 *Итоги дня — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
         text += _format_both_summary(data)
+        text += await _get_thumbtack_summary_line()
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка вечернего итога: {e}")
