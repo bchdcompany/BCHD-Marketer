@@ -1312,7 +1312,20 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _append_history(ctx, chat_id, question, reply)
 
     blocked_actions = 0
-    for action in result.get("proposed_actions", []):
+    proposed = result.get("proposed_actions", [])
+    MAX_ACTIONS_PER_RESPONSE = 8
+    if len(proposed) > MAX_ACTIONS_PER_RESPONSE:
+        log.warning(f"ИИ предложил {len(proposed)} действий за раз — обрезаю до {MAX_ACTIONS_PER_RESPONSE}")
+        proposed = proposed[:MAX_ACTIONS_PER_RESPONSE]
+        await ctx.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                f"ℹ️ Предложено больше {MAX_ACTIONS_PER_RESPONSE} действий за раз — "
+                f"показаны первые {MAX_ACTIONS_PER_RESPONSE}. Напиши \"продолжи\", "
+                f"чтобы получить оставшиеся."
+            ),
+        )
+    for action in proposed:
         try:
             action.setdefault("account", accounts[0])
             action.setdefault("data_summary", action.get("reasoning", ""))
