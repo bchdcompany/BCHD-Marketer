@@ -1948,6 +1948,24 @@ async def scheduled_seasonal_check(app):
 
 # ── main ─────────────────────────────────────────────────
 
+async def cmd_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Fallback для любой команды без зарегистрированного обработчика.
+    Часто срабатывает случайно — ИИ в тексте иногда упоминает слаг
+    страницы сайта вида "/hvac" или "/washer", Telegram автоматически
+    делает такой текст кликабельной "командой", и без этого fallback
+    владелец при нажатии не получал вообще никакой реакции от бота.
+    """
+    if not _is_owner(update):
+        return
+    command_text = update.message.text if update.message else "?"
+    await update.message.reply_text(
+        f"ℹ️ Команда {command_text} не существует.\n\n"
+        f"Возможно, это была ссылка на страницу сайта, которую Telegram "
+        f"ошибочно распознал как команду бота. Список реальных команд — /start.",
+    )
+
+
 async def _on_startup(app):
     await init_db()
 
@@ -1976,6 +1994,12 @@ def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    # Fallback ПОСЛЕДНИМ: ловит любую команду, для которой нет обработчика
+    # выше (например, ИИ иногда упоминает в тексте слаги вроде "/hvac",
+    # "/washer" как название страницы сайта — Telegram автоматически
+    # превращает такой текст в кликабельную команду, и без этого fallback
+    # владелец при нажатии получал полную тишину без всякой реакции бота).
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
     scheduler = AsyncIOScheduler(timezone=NY_TZ)
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
