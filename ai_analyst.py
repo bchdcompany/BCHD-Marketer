@@ -20,7 +20,7 @@ class AIAnalyst:
 
     def __init__(self, config):
         self.config = config
-        self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, timeout=60.0)
+        self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, timeout=180.0)
         self.model = config.CLAUDE_MODEL
 
         self.system_prompt = """
