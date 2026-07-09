@@ -1244,6 +1244,25 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-60 сек)")
+
+    # Keepalive: обновляем "Анализирую..." каждые 30 сек чтобы пользователь видел прогресс
+    # и чтобы Telegram не потерял сообщение из-за долгой обработки
+    keepalive_running = True
+    keepalive_counter = [0]
+    async def _keepalive():
+        dots = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        while keepalive_running:
+            await asyncio.sleep(25)
+            if not keepalive_running:
+                break
+            keepalive_counter[0] += 1
+            try:
+                d = dots[keepalive_counter[0] % len(dots)]
+                await thinking_msg.edit_text(f"{d} Анализирую... ({keepalive_counter[0] * 25}с)")
+            except Exception:
+                pass
+    keepalive_task = asyncio.create_task(_keepalive())
+
     context_data = {}
     try:
         if "campaigns" in data_needed:
@@ -1295,10 +1314,19 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
 
+    keepalive_running = False
+    keepalive_task.cancel()
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
     try:
-        result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
+        result = await asyncio.wait_for(
+            ai_analyst.chat_action(question, context_data, action_type, history=history),
+            timeout=150.0  # 2.5 мин — хватит даже для сложного анализа
+        )
+    except asyncio.TimeoutError:
+        log.error("chat_action превысил таймаут 150 сек")
+        await thinking_msg.edit_text("⏱ Анализ занял слишком много времени. Попробуй задать вопрос конкретнее или запроси только одну кампанию.")
+        return
     except Exception as e:
         log.error(f"Ошибка chat_action: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка: {e}")
@@ -1876,9 +1904,15 @@ async def scheduled_evening_summary(app):
         return
     log.info("Вечерний итог")
     try:
-        data = await ads_client.get_both_accounts_summary()
+        # Вечерний отчёт показывает данные ЗА СЕГОДНЯ (days=1),
+        # а не за 30 дней как утренний — чтобы цифры были разными
+        data_today = await ads_client.get_both_accounts_summary(days=1)
+        data_30 = await ads_client.get_both_accounts_summary()
         text = f"🌙 *Итоги дня — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
-        text += _format_both_summary(data)
+        text += "*За сегодня:*\n"
+        text += _format_both_summary(data_today)
+        text += "\n*За 30 дней (накопительно):*\n"
+        text += _format_both_summary(data_30)
         text += await _get_thumbtack_summary_line()
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
