@@ -365,6 +365,46 @@ class GoogleAdsClient:
             pages.append(page_data)
         return {'pages': pages}
 
+    async def get_campaign_status(self, search_text: str, account: str = "ads") -> dict:
+        """
+        Прямая диагностическая проверка: находит кампании, чьё название
+        содержит search_text, и возвращает их РЕАЛЬНЫЙ текущий статус
+        (ENABLED/PAUSED/REMOVED) напрямую из Google Ads API. Используется
+        для однозначной проверки "реально ли кампания включена/выключена"
+        без участия ИИ-анализа или доверия к тексту его ответа.
+        """
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {'error': f'Customer ID для {account} не настроен', 'matches': []}
+
+        safe_text = search_text.replace("'", "\\'")
+        query = f"""
+            SELECT
+                campaign.id,
+                campaign.resource_name,
+                campaign.name,
+                campaign.status,
+                campaign.advertising_channel_type
+            FROM campaign
+            WHERE campaign.name LIKE '%{safe_text}%'
+              AND campaign.status != 'REMOVED'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            matches = []
+            for row in rows:
+                matches.append({
+                    'campaign_id': row.campaign.id,
+                    'resource_name': row.campaign.resource_name,
+                    'name': row.campaign.name,
+                    'status': row.campaign.status.name,
+                    'channel_type': row.campaign.advertising_channel_type.name,
+                })
+            return {'matches': matches, 'search_text': search_text, 'account': account}
+        except Exception as e:
+            log.error(f"get_campaign_status({search_text}) error: {e}")
+            return {'error': str(e), 'matches': []}
+
     async def get_keyword_current_bid(self, search_text: str, account: str = "ads") -> dict:
         """
         Прямая диагностическая проверка: находит ключевые слова, текст которых
