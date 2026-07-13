@@ -227,10 +227,17 @@ async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
     try:
         return await edit_fn(text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
+        if "Message is not modified" in str(e):
+            # Безобидно: новое содержимое совпадает со старым — Telegram
+            # просто отказывается делать no-op запрос. Ничего не сломано,
+            # результат уже виден пользователю как надо.
+            return None
         log.warning(f"Не удалось отредактировать с parse_mode={parse_mode} ({e}), редактирую как обычный текст")
         try:
             return await edit_fn(text, **kwargs)
         except BadRequest as e2:
+            if "Message is not modified" in str(e2):
+                return None
             log.error(f"Не удалось отредактировать сообщение даже без Markdown: {e2}")
             fallback = text[:1000] + "\n\n⚠️ Остальная часть ответа не поместилась и была потеряна."
             return await edit_fn(fallback)
@@ -1497,7 +1504,15 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest as e:
+        # "Query is too old" — безобидная ошибка Telegram: callback устарел
+        # (например, обработка предыдущего нажатия заняла много времени).
+        # Сама операция (execute_action и т.д.) ниже всё равно выполнится
+        # нормально — просто не показываем "часики" на кнопке. Не стоит
+        # тревожить владельца этим как "внутренней ошибкой".
+        log.warning(f"Не удалось ответить на callback query (не критично): {e}")
 
     if update.effective_user.id != config.OWNER_CHAT_ID:
         return
@@ -1512,7 +1527,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if cmd == "approve":
             action = pending.approve(param)
             if not action:
-                await query.edit_message_text("⚠️ Действие не найдено или уже выполнено.")
+                await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
             stale_note = ""
             if action.get("stale_when_approved"):
@@ -1523,16 +1538,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"Рекомендую перепроверить перед следующим одобрением."
                 )
                 log.warning(f"Одобрена устаревшая карточка {param}: {action.get('description')}")
-            await query.edit_message_text(f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
+            await _safe_edit(query, f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
             try:
                 result = await ads_client.execute_action(action)
             except Exception as e:
                 log.error(f"Ошибка выполнения {param}: {e}")
                 friendly = _translate_google_ads_error(e)
-                await query.edit_message_text(f"❌ Ошибка: {friendly}")
+                await _safe_edit(query, f"❌ Ошибка: {friendly}")
                 return
 
-            await query.edit_message_text(f"🔍 Перепроверяю фактическое состояние...")
+            await _safe_edit(query, f"🔍 Перепроверяю фактическое состояние...")
             # Небольшая пауза перед проверкой: у Google Ads API бывает
             # задержка синхронизации между mutate и последующим search —
             # без неё verify_action может ошибочно показать "не применилось",
@@ -1575,14 +1590,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif cmd == "reject":
             action = pending.reject(param)
             if action:
-                await query.edit_message_text(f"❌ Отклонено: {action['description']}")
+                await _safe_edit(query, f"❌ Отклонено: {action['description']}")
             return
 
         account = param
         account_label = {"ads": "Google Ads (936)", "lsa": "LSA (667)", "both": "Оба аккаунта"}.get(account, account)
 
         if cmd == "report":
-            await query.edit_message_text(f"📊 Отчёт: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"📊 Отчёт: {account_label}... (~30 сек)")
             try:
                 if account == "both":
                     data_result = await ads_client.get_both_accounts_summary()
@@ -1596,10 +1611,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await _save_cmd_result(ctx, chat_id, f"/report ({account_label})", text)
             except Exception as e:
                 log.error(f"Ошибка report callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "audit":
-            await query.edit_message_text(f"🔍 Аудит: {account_label}... (~40 сек)")
+            await _safe_edit(query, f"🔍 Аудит: {account_label}... (~40 сек)")
             try:
                 if account == "both":
                     data_result = await ads_client.get_both_accounts_summary()
@@ -1619,10 +1634,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
             except Exception as e:
                 log.error(f"Ошибка audit callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "budget":
-            await query.edit_message_text(f"💰 Бюджет: {account_label}... (~20 сек)")
+            await _safe_edit(query, f"💰 Бюджет: {account_label}... (~20 сек)")
             try:
                 if account == "both":
                     ads_b = await ads_client.get_budget_data(account="ads")
@@ -1655,10 +1670,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await _save_cmd_result(ctx, chat_id, f"/budget ({account_label})", text)
             except Exception as e:
                 log.error(f"Ошибка budget callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "keywords":
-            await query.edit_message_text(f"🔑 Ключевые слова: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"🔑 Ключевые слова: {account_label}... (~30 сек)")
             try:
                 accounts_list = ["ads"] if account in ("lsa", "both") else [account]
                 if account == "lsa":
@@ -1687,10 +1702,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await _save_cmd_result(ctx, chat_id, f"/keywords ({account_label})", result_text)
             except Exception as e:
                 log.error(f"Ошибка keywords callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "negatives":
-            await query.edit_message_text(f"🚫 Минус-слова: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"🚫 Минус-слова: {account_label}... (~30 сек)")
             try:
                 # LSA не поддерживает минус-слова (как и обычные ключевые слова) —
                 # Google сам определяет аудиторию. Обрабатываем только Google Ads.
@@ -1743,19 +1758,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         parse_mode="Markdown",
                     )
                 if any_cards_created:
-                    await query.edit_message_text("✅ Анализ завершён — карточки одобрения отправлены выше.")
+                    await _safe_edit(query, "✅ Анализ завершён — карточки одобрения отправлены выше.")
                 else:
-                    await query.edit_message_text(
+                    await _safe_edit(query, 
                         "✅ Анализ завершён — нерелевантных запросов не найдено, "
                         "минус-слова добавлять не требуется. Карточек одобрения нет."
                     )
                 await _save_cmd_result(ctx, chat_id, f"/negatives ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка negatives callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "competitors":
-            await query.edit_message_text(f"🏆 Конкуренты: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"🏆 Конкуренты: {account_label}... (~30 сек)")
             try:
                 accounts_list = ["ads", "lsa"] if account == "both" else [account]
                 summary_parts = []
@@ -1768,15 +1783,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     text = f"*{'Google Ads' if acc == 'ads' else 'LSA'} — конкуренты:*\n{analysis.get('position_summary', '')}\n\n{analysis.get('summary', '')}"
                     summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
-                await query.edit_message_text("✅ Анализ конкурентов завершён.")
+                await _safe_edit(query, "✅ Анализ конкурентов завершён.")
                 if summary_parts:
                     await _save_cmd_result(ctx, chat_id, f"/competitors ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка competitors callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "abtest":
-            await query.edit_message_text(f"🧪 A/B тест: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"🧪 A/B тест: {account_label}... (~30 сек)")
             try:
                 accounts_list = ["ads", "lsa"] if account == "both" else [account]
                 summary_parts = []
@@ -1788,15 +1803,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     text = f"*A/B тест {acc_label}:* {len(results)} групп\n{analysis.get('summary', 'Нет данных')}"
                     summary_parts.append(text)
                     await _safe_send(ctx.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
-                await query.edit_message_text("✅ A/B анализ завершён.")
+                await _safe_edit(query, "✅ A/B анализ завершён.")
                 if summary_parts:
                     await _save_cmd_result(ctx, chat_id, f"/abtest ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка abtest callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
         elif cmd == "seasonal":
-            await query.edit_message_text(f"🍂 Сезонный план: {account_label}... (~30 сек)")
+            await _safe_edit(query, f"🍂 Сезонный план: {account_label}... (~30 сек)")
             try:
                 accounts_list = ["ads", "lsa"] if account == "both" else [account]
                 season_data = ads_client.get_current_season_recommendations()
@@ -1823,12 +1838,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         }
                         action_id = pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
-                await query.edit_message_text("✅ Сезонный план готов — карточки отправлены выше.")
+                await _safe_edit(query, "✅ Сезонный план готов — карточки отправлены выше.")
                 if summary_parts:
                     await _save_cmd_result(ctx, chat_id, f"/seasonal ({account_label})", "\n\n".join(summary_parts))
             except Exception as e:
                 log.error(f"Ошибка seasonal callback: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                await _safe_edit(query, f"❌ Ошибка: {e}")
 
 
 # ── Вспомогательные форматтеры ───────────────────────────
