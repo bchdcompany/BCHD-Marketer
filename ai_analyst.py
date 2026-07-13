@@ -20,7 +20,7 @@ class AIAnalyst:
 
     def __init__(self, config):
         self.config = config
-        self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, timeout=180.0)
+        self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, timeout=60.0)
         self.model = config.CLAUDE_MODEL
 
         self.system_prompt = """
@@ -119,7 +119,7 @@ appliance repair бизнеса в США. Ты работаешь как авт
 Единственные РЕАЛЬНО существующие команды в этом боте:
 /report, /audit, /budget, /keywords, /negatives, /competitors, /abtest,
 /seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start,
-/checkkeyword, /checknegatives, /history, /reviewnegatives
+/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign
 
 НИКОГДА не советуй владельцу ввести команду, которой нет в этом списке
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
@@ -603,21 +603,31 @@ summary типа "Все ключи показывают CTR выше порог
    лиды за прошлый месяц", "прослушай звонки за неделю"),
    unsupported (если действие про Google Ads, но не входит в список), none
    (если intent="chat" и звонки слушать не нужно)
-3. Для action_type="audit_lsa_calls" определи ТОЧНЫЙ период:
+3. period_date_from / period_date_to — ОПРЕДЕЛИ ТОЧНЫЙ ПЕРИОД ДЛЯ ЛЮБОГО
+   ЗАПРОСА (не только про звонки LSA), если владелец упоминает период явно:
    - Если владелец называет конкретный календарный период (месяц по имени —
-     "май", "апрель", "июнь"; "прошлый месяц"; конкретный квартал и т.п.) —
-     вычисли РЕАЛЬНЫЕ границы этого периода как date_from и date_to в формате
-     YYYY-MM-DD, используя сегодняшнюю дату выше. Например, если сегодня
-     2026-07-05 и владелец просит "май" — это 2026-05-01 — 2026-05-31.
-     "прошлый месяц" — предыдущий календарный месяц целиком.
-     Если год не указан и месяц ещё не наступил в этом году — бери прошлый год.
-     В этом случае days верни как 0 (не используется).
+     "май", "апрель", "июнь"; "прошлый месяц"; "с 1 по 10 июля"; конкретный
+     квартал и т.п.) — вычисли РЕАЛЬНЫЕ границы этого периода как
+     period_date_from и period_date_to в формате YYYY-MM-DD, используя
+     сегодняшнюю дату выше. Например, если сегодня 2026-07-10 и владелец
+     просит "май" — это 2026-05-01 — 2026-05-31. "прошлый месяц" —
+     предыдущий календарный месяц целиком. "этот месяц" / "текущий месяц" —
+     с 1-го числа текущего месяца по сегодня (month-to-date). Если год не
+     указан и месяц ещё не наступил в этом году — бери прошлый год.
+   - Если период НЕ упомянут явно (вопрос без указания времени) — верни
+     period_date_from и period_date_to как пустые строки "" — тогда система
+     по умолчанию будет использовать календарный месяц до сегодняшнего дня
+     (month-to-date), НЕ скользящее окно "последние 30 дней".
+   - Это поле используется для ВСЕХ типов данных (campaigns, budgets,
+     keywords и т.д.), а не только для LSA-звонков.
+4. Для action_type="audit_lsa_calls" ДОПОЛНИТЕЛЬНО определи days (используется
+   только если period_date_from/period_date_to выше не заданы):
    - Если период относительный и без привязки к календарю ("за неделю",
      "за последние 30 дней", "за 2 недели") — верни days (целое число: неделя→7,
-     месяц/30 дней→30, квартал→90, 2 недели→14), а date_from/date_to оставь
-     пустыми строками "".
-   - Если период не указан вообще — используй days=7, date_from/date_to = "".
-   Если action_type не audit_lsa_calls — days=0, date_from="", date_to="".
+     месяц/30 дней→30, квартал→90, 2 недели→14).
+   - Если период не указан вообще для LSA-звонков — используй days=7.
+   Если action_type не audit_lsa_calls — days=0 (не используется, применяется
+   period_date_from/period_date_to или month-to-date по умолчанию).
 4. data_needed — СПИСОК типов данных, нужных для полного ответа (можно
    несколько, если вопрос широкий). Доступные типы:
    - campaigns (сводка по кампаниям — расход, конверсии, impression share)
@@ -680,21 +690,31 @@ summary типа "Все ключи показывают CTR выше порог
 уточнение без явного упоминания аккаунта).
 
 Верни ТОЛЬКО JSON:
-{{"intent": "chat|action", "action_type": "...", "days": 0, "date_from": "", "date_to": "", "data_needed": ["..."], "account": "ads|lsa|both"}}
+{{"intent": "chat|action", "action_type": "...", "days": 0, "date_from": "", "date_to": "",
+  "period_date_from": "", "period_date_to": "", "data_needed": ["..."], "account": "ads|lsa|both"}}
 """
         result = await self._call_claude(
             prompt, max_tokens=300, history=history,
-            required_keys=["intent", "action_type", "days", "date_from", "date_to", "data_needed", "account"],
+            required_keys=["intent", "action_type", "days", "date_from", "date_to",
+                            "period_date_from", "period_date_to", "data_needed", "account"],
         )
         if "_error" in result:
-            return {"intent": "chat", "action_type": "none", "days": 0, "date_from": "", "date_to": "", "data_needed": ["campaigns"], "account": "both"}
+            return {
+                "intent": "chat", "action_type": "none", "days": 0,
+                "date_from": "", "date_to": "", "period_date_from": "", "period_date_to": "",
+                "data_needed": ["campaigns"], "account": "both",
+            }
         if isinstance(result.get("data_needed"), str):
             result["data_needed"] = [result["data_needed"]] if result["data_needed"] != "none" else []
         return result
 
     async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
+        period_info = context_data.get("_period", {})
+        period_label = f"{period_info.get('date_from', '?')} — {period_info.get('date_to', '?')}"
         prompt = f"""
-Вот актуальные данные (последние 30 дней):
+Вот актуальные данные за период {period_label} (см. context_data["_period"]
+ниже для точных границ — используй ИМЕННО эти даты, если упоминаешь период
+в ответе; НЕ пиши "последние 30 дней", если реальный период другой):
 
 {json.dumps(context_data, ensure_ascii=False, indent=2)}
 
