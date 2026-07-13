@@ -369,14 +369,18 @@ class GoogleAdsClient:
         """
         Прямая диагностическая проверка: находит кампании, чьё название
         содержит search_text, и возвращает их РЕАЛЬНЫЙ текущий статус
-        (ENABLED/PAUSED/REMOVED) напрямую из Google Ads API. Используется
-        для однозначной проверки "реально ли кампания включена/выключена"
+        (ENABLED/PAUSED/REMOVED) плюс историю за последние 90 дней (расход,
+        конверсии, показы) напрямую из Google Ads API. Используется для
+        однозначной проверки "реально ли кампания включена/выключена" и
+        "какая из похожих кампаний реально боевая, а какая мёртвая/дубликат" —
         без участия ИИ-анализа или доверия к тексту его ответа.
         """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'matches': []}
 
+        date_from = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        date_to = datetime.now().strftime("%Y-%m-%d")
         safe_text = search_text.replace("'", "\\'")
         query = f"""
             SELECT
@@ -384,23 +388,45 @@ class GoogleAdsClient:
                 campaign.resource_name,
                 campaign.name,
                 campaign.status,
-                campaign.advertising_channel_type
+                campaign.advertising_channel_type,
+                metrics.cost_micros,
+                metrics.conversions,
+                metrics.impressions,
+                metrics.clicks
             FROM campaign
             WHERE campaign.name LIKE '%{safe_text}%'
               AND campaign.status != 'REMOVED'
+              AND segments.date BETWEEN '{date_from}' AND '{date_to}'
         """
         try:
             rows = await self._search(customer_id, query)
-            matches = []
+            # Одна кампания может встретиться в нескольких строках (сегменты
+            # по дате не запрошены явно, но GAQL всё равно может вернуть
+            # несколько строк на кампанию) — агрегируем по campaign.id.
+            agg = {}
             for row in rows:
-                matches.append({
-                    'campaign_id': row.campaign.id,
-                    'resource_name': row.campaign.resource_name,
-                    'name': row.campaign.name,
-                    'status': row.campaign.status.name,
-                    'channel_type': row.campaign.advertising_channel_type.name,
-                })
-            return {'matches': matches, 'search_text': search_text, 'account': account}
+                cid = row.campaign.id
+                if cid not in agg:
+                    agg[cid] = {
+                        'campaign_id': cid,
+                        'resource_name': row.campaign.resource_name,
+                        'name': row.campaign.name,
+                        'status': row.campaign.status.name,
+                        'channel_type': row.campaign.advertising_channel_type.name,
+                        'cost_90d': 0.0,
+                        'conversions_90d': 0.0,
+                        'impressions_90d': 0,
+                        'clicks_90d': 0,
+                    }
+                agg[cid]['cost_90d'] += row.metrics.cost_micros / 1_000_000
+                agg[cid]['conversions_90d'] += row.metrics.conversions
+                agg[cid]['impressions_90d'] += row.metrics.impressions
+                agg[cid]['clicks_90d'] += row.metrics.clicks
+            for v in agg.values():
+                v['cost_90d'] = round(v['cost_90d'], 2)
+                v['conversions_90d'] = round(v['conversions_90d'], 1)
+            matches = list(agg.values())
+            return {'matches': matches, 'search_text': search_text, 'account': account, 'history_days': 90}
         except Exception as e:
             log.error(f"get_campaign_status({search_text}) error: {e}")
             return {'error': str(e), 'matches': []}
