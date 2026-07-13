@@ -299,6 +299,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/pending — ожидающие одобрения\n"
         f"/schedule — расписание задач\n"
         f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
+        f"/checkcampaign <текст> — прямая проверка реального статуса кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
         f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
         f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
@@ -556,6 +557,48 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
             text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
+
+
+async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Прямая диагностическая команда: /checkcampaign <текст> — находит
+    кампании (в ОБОИХ аккаунтах — Google Ads и LSA), содержащие этот текст
+    в названии, и показывает их РЕАЛЬНЫЙ текущий статус напрямую из Google
+    Ads API. Никакого ИИ-анализа — только сырые факты, чтобы однозначно
+    проверить, реально ли кампания включена/выключена.
+    Использование: /checkcampaign BCHD/2
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /checkcampaign <текст названия>\nНапример: /checkcampaign BCHD/2")
+        return
+    search_text = " ".join(ctx.args)
+
+    msg = await update.message.reply_text(f"🔍 Ищу кампании, содержащие '{search_text}'...")
+    all_matches = []
+    for acc in (["ads", "lsa"] if config.lsa_configured else ["ads"]):
+        try:
+            result = await ads_client.get_campaign_status(search_text, account=acc)
+            if not result.get("error"):
+                all_matches.extend(result.get("matches", []))
+        except Exception as e:
+            log.error(f"Ошибка /checkcampaign для {acc}: {e}")
+
+    if not all_matches:
+        await _safe_edit(msg, f"Кампаний, содержащих '{search_text}', не найдено ни в Google Ads, ни в LSA.")
+        return
+
+    text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа):*\n\n"
+    for m in all_matches:
+        text += f"*\"{m['name']}\"*\n"
+        text += f"• Тип: {m['channel_type']}\n"
+        text += f"• Статус: **{m['status']}**\n"
+        text += f"• ID: `{m['campaign_id']}`\n\n"
+    await _safe_edit(msg, text, parse_mode="Markdown")
 
 
 async def cmd_check_keyword(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2131,6 +2174,8 @@ async def scheduled_seasonal_check(app):
 
 # ── main ─────────────────────────────────────────────────
 
+_last_conflict_notify_time = None
+
 async def global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Глобальный обработчик — ловит ЛЮБОЕ необработанное исключение в любом
@@ -2141,10 +2186,44 @@ async def global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     за сессию (например, telegram.error.BadRequest: Message_too_long,
     когда ответ ИИ превышал лимит Telegram в 4096 символов).
     """
+    global _last_conflict_notify_time
     log.error(f"Необработанное исключение: {ctx.error}", exc_info=ctx.error)
+
+    error_str = str(ctx.error)
+    is_conflict = "Conflict" in type(ctx.error).__name__ or "terminated by other getUpdates" in error_str
+
+    if is_conflict:
+        # Два инстанса бота одновременно опрашивают Telegram — обычно
+        # кратковременный эффект передеплоя (Railway на миг запускает новый
+        # процесс до полной остановки старого). Самоустраняется без
+        # вмешательства. НЕ тот же класс проблемы, что зависание из-за
+        # длинного ответа — не стоит присылать вводящий в заблуждение совет
+        # "переформулируй короче". Также гасим повторные уведомления в
+        # течение 2 минут, чтобы не заспамить одним и тем же сообщением
+        # (оба конфликтующих инстанса ловят эту ошибку одновременно).
+        now = datetime.now(NY_TZ)
+        if _last_conflict_notify_time and (now - _last_conflict_notify_time).total_seconds() < 120:
+            return
+        _last_conflict_notify_time = now
+        try:
+            if config.OWNER_CHAT_ID:
+                await ctx.bot.send_message(
+                    chat_id=config.OWNER_CHAT_ID,
+                    text=(
+                        "ℹ️ Обнаружены два одновременных инстанса бота (обычно "
+                        "кратковременный эффект передеплоя в Railway). Должно "
+                        "само устраниться за несколько секунд. Если повторяется "
+                        "часто вне передеплоев — проверь в Railway, что у сервиса "
+                        "ровно 1 реплика (Settings -> Replicas)."
+                    ),
+                )
+        except Exception as notify_error:
+            log.error(f"Не удалось уведомить владельца об ошибке: {notify_error}")
+        return
+
     try:
         if config.OWNER_CHAT_ID:
-            error_text = str(ctx.error)[:300]
+            error_text = error_str[:300]
             await ctx.bot.send_message(
                 chat_id=config.OWNER_CHAT_ID,
                 text=(
@@ -2202,6 +2281,7 @@ def main():
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
+    app.add_handler(CommandHandler("checkcampaign", cmd_check_campaign))
     app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
