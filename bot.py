@@ -151,6 +151,35 @@ def _account_keyboard(prefix: str) -> InlineKeyboardMarkup:
     ]])
 
 
+def _translate_google_ads_error(e: Exception) -> str:
+    """
+    Переводит типовые сырые ошибки Google Ads API (gRPC-исключения) в
+    понятный человеку текст вместо стены технического текста. Покрывает
+    только самые частые случаи — для остального возвращает укороченный
+    оригинал, чтобы не терять диагностическую информацию совсем.
+    """
+    text = str(e)
+    if "RESOURCE_NOT_FOUND" in text:
+        return (
+            "Этот ресурс (кампания/ключ/бюджет) больше не существует в Google Ads — "
+            "скорее всего, он был удалён или изменён вручную уже ПОСЛЕ того, как эта "
+            "карточка была создана (карточка могла ждать одобрения долго). Отклони это "
+            "действие и запроси свежий анализ той же темы — я соберу актуальные данные заново."
+        )
+    if "LOCAL_SERVICES" in text or "OPERATION_NOT_PERMITTED_FOR_CONTEXT" in text:
+        return (
+            "Это действие невозможно для кампании типа Local Services (LSA) — такие "
+            "кампании не поддерживают ключевые слова/минус-слова. Похоже, карточка "
+            "была создана для кампании не того типа."
+        )
+    if "QUOTA_EXCEEDED" in text or "RESOURCE_EXHAUSTED" in text:
+        return "Превышена квота запросов к Google Ads API. Попробуй ещё раз через несколько минут."
+    if "AUTHENTICATION" in text or "AUTHORIZATION" in text:
+        return "Проблема с авторизацией в Google Ads API — возможно, истёк токен доступа. Нужна переавторизация."
+    # Неизвестный тип ошибки — возвращаем укороченный оригинал, а не всю стену текста
+    return text[:400] + ("..." if len(text) > 400 else "")
+
+
 TELEGRAM_MESSAGE_LIMIT = 4096
 _TRUNCATION_SUFFIX = "\n\n_(сообщение обрезано — оно было длиннее лимита Telegram)_"
 
@@ -1499,7 +1528,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 result = await ads_client.execute_action(action)
             except Exception as e:
                 log.error(f"Ошибка выполнения {param}: {e}")
-                await query.edit_message_text(f"❌ Ошибка: {e}")
+                friendly = _translate_google_ads_error(e)
+                await query.edit_message_text(f"❌ Ошибка: {friendly}")
                 return
 
             await query.edit_message_text(f"🔍 Перепроверяю фактическое состояние...")
