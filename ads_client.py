@@ -106,9 +106,9 @@ class GoogleAdsClient:
             log.error(f"get_spend_for_period({account}) error: {e}")
             return {'error': str(e), 'spend': 0, 'account': account}
 
-    async def get_both_accounts_summary(self) -> dict:
-        ads_data = await self.get_full_audit_data(account="ads")
-        lsa_data = await self.get_full_audit_data(account="lsa") if self.lsa_customer_id else None
+    async def get_both_accounts_summary(self, date_from: str = None, date_to: str = None) -> dict:
+        ads_data = await self.get_full_audit_data(account="ads", date_from=date_from, date_to=date_to)
+        lsa_data = await self.get_full_audit_data(account="lsa", date_from=date_from, date_to=date_to) if self.lsa_customer_id else None
         total_spend = ads_data['total_spend']
         total_conversions = ads_data['total_conversions']
         if lsa_data and not lsa_data.get('error'):
@@ -124,13 +124,21 @@ class GoogleAdsClient:
             }
         }
 
-    async def get_full_audit_data(self, account: str = "ads") -> dict:
+    async def get_full_audit_data(self, account: str = "ads", date_from: str = None, date_to: str = None) -> dict:
+        """
+        date_from/date_to (формат YYYY-MM-DD) — необязательные, задают
+        КОНКРЕТНЫЙ КАЛЕНДАРНЫЙ период (например, "1-30 июня"). Если не
+        заданы — используется скользящее окно "последние 30 дней от сегодня"
+        (старое поведение по умолчанию, для обратной совместимости с уже
+        существующими вызовами).
+        """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'campaigns': [], 'total_spend': 0, 'total_conversions': 0}
 
-        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        if not date_from or not date_to:
+            date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")
 
         query = f"""
             SELECT
@@ -192,7 +200,7 @@ class GoogleAdsClient:
             log.error(f"get_full_audit_data({account}) error: {e}")
             return {'error': str(e), 'account': account, 'campaigns': [], 'total_spend': 0, 'total_conversions': 0}
 
-    async def get_keywords_analysis(self, account: str = "ads") -> dict:
+    async def get_keywords_analysis(self, account: str = "ads", date_from: str = None, date_to: str = None) -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'keywords': []}
@@ -203,8 +211,9 @@ class GoogleAdsClient:
                 'keywords': [], 'account': account,
             }
 
-        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        if not date_from or not date_to:
+            date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")
 
         query = f"""
             SELECT
