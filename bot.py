@@ -595,12 +595,17 @@ async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(msg, f"Кампаний, содержащих '{search_text}', не найдено ни в Google Ads, ни в LSA.")
         return
 
-    text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа):*\n\n"
+    text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа) — история за 90 дней:*\n\n"
     for m in all_matches:
         text += f"*\"{m['name']}\"*\n"
         text += f"• Тип: {m['channel_type']}\n"
         text += f"• Статус: **{m['status']}**\n"
-        text += f"• ID: `{m['campaign_id']}`\n\n"
+        text += f"• ID: `{m['campaign_id']}`\n"
+        text += f"• Расход за 90 дней: ${m.get('cost_90d', 0):.2f}\n"
+        text += f"• Конверсии за 90 дней: {m.get('conversions_90d', 0):.0f}\n"
+        text += f"• Показы за 90 дней: {m.get('impressions_90d', 0)}\n\n"
+    if len(all_matches) > 1:
+        text += "_Сравни расход и конверсии — кампания с реальной историей, вероятно, и есть \"боевая\", привязанная к карточке лидов._"
     await _safe_edit(msg, text, parse_mode="Markdown")
 
 
