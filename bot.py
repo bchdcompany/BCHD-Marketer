@@ -301,6 +301,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/schedule — расписание задач\n"
         f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
         f"/checkcampaign <текст> — прямая проверка реального статуса кампании (без ИИ)\n"
+        f"/enablecampaign <текст/ID> — гарантированная карточка на включение кампании (без ИИ)\n"
+        f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
         f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
         f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
@@ -600,6 +602,90 @@ async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += f"• Статус: **{m['status']}**\n"
         text += f"• ID: `{m['campaign_id']}`\n\n"
     await _safe_edit(msg, text, parse_mode="Markdown")
+
+
+async def _cmd_toggle_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE, target_status: str):
+    """
+    Общая логика для /enablecampaign и /pausecampaign — создаёт карточку
+    одобрения НАПРЯМУЮ В КОДЕ, БЕЗ УЧАСТИЯ ИИ. Использует тот же прямой
+    запрос к Google Ads API, что и /checkcampaign, чтобы найти campaign_id.
+    Это сделано как максимально надёжный обходной путь на случай, если
+    свободный чат с ИИ не создаёт реальную карточку (proposed_actions
+    пустой, хотя текст утверждает обратное) — этот путь гарантированно
+    создаёт настоящую карточку с кнопками, минуя генерацию JSON моделью.
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+    if not ctx.args:
+        action_word = "включить" if target_status == "ENABLED" else "поставить на паузу"
+        await update.message.reply_text(f"Использование: команда <текст названия или ID кампании>\nНапример, чтобы {action_word} кампанию.")
+        return
+    search_text = " ".join(ctx.args)
+
+    msg = await update.message.reply_text(f"🔍 Ищу кампанию '{search_text}'...")
+    all_matches = []
+    for acc in (["ads", "lsa"] if config.lsa_configured else ["ads"]):
+        try:
+            result = await ads_client.get_campaign_status(search_text, account=acc)
+            if not result.get("error"):
+                for m in result.get("matches", []):
+                    m["account"] = acc
+                    all_matches.append(m)
+        except Exception as e:
+            log.error(f"Ошибка поиска кампании: {e}")
+
+    # Поддержка поиска по числовому ID (если search_text — просто цифры)
+    if not all_matches and search_text.strip().isdigit():
+        for acc in (["ads", "lsa"] if config.lsa_configured else ["ads"]):
+            try:
+                result = await ads_client.get_campaign_status("", account=acc)
+            except Exception:
+                result = {"matches": []}
+            for m in result.get("matches", []):
+                if str(m.get("campaign_id")) == search_text.strip():
+                    m["account"] = acc
+                    all_matches.append(m)
+
+    if not all_matches:
+        await _safe_edit(msg, f"Кампаний, соответствующих '{search_text}', не найдено ни в одном аккаунте.")
+        return
+    if len(all_matches) > 1:
+        names = "\n".join(f"• {m['name']} (ID {m['campaign_id']}, {m['account']})" for m in all_matches)
+        await _safe_edit(msg, f"Найдено несколько кампаний — уточни запрос:\n{names}")
+        return
+
+    m = all_matches[0]
+    action_type = "enable_campaign" if target_status == "ENABLED" else "pause_campaign"
+    action = {
+        "type": action_type,
+        "account": m["account"],
+        "campaign_id": m["campaign_id"],
+        "campaign_name": m["name"],
+        "description": f"{'Включить' if target_status == 'ENABLED' else 'Поставить на паузу'} кампанию '{m['name']}' (создано напрямую, без ИИ, по прямому запросу владельца)",
+        "reasoning": "Прямая команда владельца, в обход ИИ-анализа — для максимальной надёжности.",
+        "data_summary": f"Текущий статус: {m['status']}",
+        "expected_impact": "",
+        "risks": "Прямое действие по явной команде владельца.",
+        "urgency": "high",
+        "urgency_label": "Высокая",
+        "confidence": "high",
+    }
+    action_id = pending.add(action)
+    await _safe_edit(msg, f"✅ Карточка создана для кампании '{m['name']}' (текущий статус: {m['status']}).")
+    await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+
+
+async def cmd_enable_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/enablecampaign <текст или ID> — гарантированно создаёт карточку на включение, в обход ИИ."""
+    await _cmd_toggle_campaign(update, ctx, "ENABLED")
+
+
+async def cmd_pause_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/pausecampaign <текст или ID> — гарантированно создаёт карточку на паузу, в обход ИИ."""
+    await _cmd_toggle_campaign(update, ctx, "PAUSED")
 
 
 async def cmd_check_keyword(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2315,6 +2401,8 @@ def main():
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
     app.add_handler(CommandHandler("checkcampaign", cmd_check_campaign))
+    app.add_handler(CommandHandler("enablecampaign", cmd_enable_campaign))
+    app.add_handler(CommandHandler("pausecampaign", cmd_pause_campaign))
     app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
