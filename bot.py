@@ -570,18 +570,17 @@ async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Ads API. Никакого ИИ-анализа — только сырые факты, чтобы однозначно
     проверить, реально ли кампания включена/выключена.
     Использование: /checkcampaign BCHD/2
+    Без аргумента — показывает ВСЕ кампании в обоих аккаунтах (полный список).
     """
     if not _is_owner(update):
         return
     if not config.google_ads_configured:
         await update.message.reply_text("⚠️ Google Ads API не настроен.")
         return
-    if not ctx.args:
-        await update.message.reply_text("Использование: /checkcampaign <текст названия>\nНапример: /checkcampaign BCHD/2")
-        return
-    search_text = " ".join(ctx.args)
+    search_text = " ".join(ctx.args) if ctx.args else ""
 
-    msg = await update.message.reply_text(f"🔍 Ищу кампании, содержащие '{search_text}'...")
+    search_label = f"содержащие '{search_text}'" if search_text else "все кампании"
+    msg = await update.message.reply_text(f"🔍 Ищу {search_label}...")
     all_matches = []
     for acc in (["ads", "lsa"] if config.lsa_configured else ["ads"]):
         try:
@@ -592,7 +591,7 @@ async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.error(f"Ошибка /checkcampaign для {acc}: {e}")
 
     if not all_matches:
-        await _safe_edit(msg, f"Кампаний, содержащих '{search_text}', не найдено ни в Google Ads, ни в LSA.")
+        await _safe_edit(msg, f"Кампаний ({search_label}) не найдено ни в Google Ads, ни в LSA.")
         return
 
     text = f"🔍 *Прямая проверка Google Ads API (без ИИ-анализа) — история за 90 дней:*\n\n"
