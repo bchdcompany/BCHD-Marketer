@@ -151,15 +151,47 @@ def _account_keyboard(prefix: str) -> InlineKeyboardMarkup:
     ]])
 
 
+TELEGRAM_MESSAGE_LIMIT = 4096
+_TRUNCATION_SUFFIX = "\n\n_(сообщение обрезано — оно было длиннее лимита Telegram)_"
+
+
+def _truncate_for_telegram(text: str) -> str:
+    """
+    Telegram жёстко ограничивает одно сообщение 4096 символами. Если это
+    не учесть, send_message/edit_message_text падает с BadRequest:
+    Message_too_long — и, в отличие от ошибки парсинга Markdown, повторная
+    отправка БЕЗ parse_mode эту проблему НЕ решает (текст всё ещё слишком
+    длинный), из-за чего retry падает с ТОЙ ЖЕ ошибкой. Если это исключение
+    никто не ловит (а глобального error handler'а раньше не было) — задача
+    просто тихо умирает, и "Анализирую..." висит вечно без единого ответа.
+    Обрезаем ЗАРАНЕЕ, чтобы это в принципе не могло случиться.
+    """
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return text
+    cutoff = TELEGRAM_MESSAGE_LIMIT - len(_TRUNCATION_SUFFIX)
+    return text[:cutoff] + _TRUNCATION_SUFFIX
+
+
 async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwargs):
+    text = _truncate_for_telegram(text)
     try:
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
         log.warning(f"Не удалось отправить с parse_mode={parse_mode} ({e}), отправляю как обычный текст")
-        return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        try:
+            return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except BadRequest as e2:
+            # Даже без Markdown не получилось (например, текст всё ещё
+            # слишком длинный по каким-то причинам) — режем жёстче и шлём
+            # короткое сообщение об ошибке, лишь бы не оставить владельца
+            # без ответа вообще.
+            log.error(f"Не удалось отправить сообщение даже без Markdown: {e2}")
+            fallback = text[:1000] + "\n\n⚠️ _Остальная часть ответа не поместилась и была потеряна._"
+            return await bot.send_message(chat_id=chat_id, text=fallback, **kwargs)
 
 
 async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
+    text = _truncate_for_telegram(text)
     edit_fn = getattr(target, "edit_message_text", None) or getattr(target, "edit_text", None)
     if edit_fn is None:
         raise AttributeError(f"{type(target)} не поддерживает редактирование текста")
@@ -167,15 +199,26 @@ async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
         return await edit_fn(text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
         log.warning(f"Не удалось отредактировать с parse_mode={parse_mode} ({e}), редактирую как обычный текст")
-        return await edit_fn(text, **kwargs)
+        try:
+            return await edit_fn(text, **kwargs)
+        except BadRequest as e2:
+            log.error(f"Не удалось отредактировать сообщение даже без Markdown: {e2}")
+            fallback = text[:1000] + "\n\n⚠️ Остальная часть ответа не поместилась и была потеряна."
+            return await edit_fn(fallback)
 
 
 async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
+    text = _truncate_for_telegram(text)
     try:
         return await message.reply_text(text, parse_mode=parse_mode, **kwargs)
     except BadRequest as e:
         log.warning(f"Не удалось ответить с parse_mode={parse_mode} ({e}), отвечаю как обычный текст")
-        return await message.reply_text(text, **kwargs)
+        try:
+            return await message.reply_text(text, **kwargs)
+        except BadRequest as e2:
+            log.error(f"Не удалось ответить даже без Markdown: {e2}")
+            fallback = text[:1000] + "\n\n⚠️ Остальная часть ответа не поместилась и была потеряна."
+            return await message.reply_text(fallback)
 
 
 async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
@@ -214,6 +257,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/seasonal — сезонные корректировки\n"
         f"/both — сводка по обоим аккаунтам\n"
         f"/roas — реальный ROAS по всем каналам (Google + LSA + Thumbtack, на основе джобов из Workiz)\n"
+        f"/month [YYYY-MM] — отчёт за конкретный календарный месяц (без аргумента — текущий месяц с 1-го числа)\n"
         f"/auditcalls [дней] — аудит оплаченных LSA-звонков за период\n"
         f"/checklead <lead_id> — прослушать и оценить конкретный LSA-лид\n"
         f"/pending — ожидающие одобрения\n"
@@ -235,12 +279,15 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("🔀 Собираю данные по обоим аккаунтам... (~40 сек)")
     try:
-        data = await ads_client.get_both_accounts_summary()
+        today = datetime.now(NY_TZ)
+        month_from = today.replace(day=1).strftime("%Y-%m-%d")
+        month_to = today.strftime("%Y-%m-%d")
+        data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
         combined = data.get('combined', {})
         ads_data = data.get('google_ads', {})
         lsa_data = data.get('lsa', {})
 
-        text = f"📊 *Сводка по всем аккаунтам — последние 30 дней*\n\n"
+        text = f"📊 *Сводка по всем аккаунтам — {month_from} — {month_to}*\n\n"
         text += f"💰 *Итого потрачено:* ${combined.get('total_spend', 0):.2f}\n"
         text += f"📞 *Всего конверсий:* {combined.get('total_conversions', 0):.0f}\n"
         if combined.get('avg_cpa'):
@@ -258,7 +305,8 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif lsa_data and lsa_data.get('error'):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
-        text += await _get_thumbtack_summary_line()
+        thumbtack_days = (today - today.replace(day=1)).days + 1
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
 
         await _safe_edit(msg, text, parse_mode="Markdown")
 
@@ -577,6 +625,55 @@ async def cmd_check_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _safe_edit(msg, chunks[0], parse_mode="Markdown")
     for chunk in chunks[1:]:
         await _safe_send(ctx.bot, config.OWNER_CHAT_ID, chunk, parse_mode="Markdown")
+
+
+async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Отчёт за КОНКРЕТНЫЙ календарный месяц (не скользящее окно 30 дней).
+    Использование:
+    /month — текущий месяц с 1-го числа по сегодня (month-to-date)
+    /month 2026-06 — конкретный месяц целиком
+    """
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+
+    today = datetime.now(NY_TZ)
+    if ctx.args:
+        try:
+            year, month = map(int, ctx.args[0].split("-"))
+            date_from = f"{year:04d}-{month:02d}-01"
+            if month == 12:
+                next_month_first = datetime(year + 1, 1, 1)
+            else:
+                next_month_first = datetime(year, month + 1, 1)
+            last_day = (next_month_first - timedelta(days=1)).day
+            # Не запрашиваем дни в будущем, если это текущий месяц
+            if year == today.year and month == today.month:
+                date_to = today.strftime("%Y-%m-%d")
+            else:
+                date_to = f"{year:04d}-{month:02d}-{last_day:02d}"
+        except (ValueError, IndexError):
+            await update.message.reply_text("⚠️ Использование: /month 2026-06 (год-месяц) или просто /month для текущего месяца")
+            return
+    else:
+        date_from = today.replace(day=1).strftime("%Y-%m-%d")
+        date_to = today.strftime("%Y-%m-%d")
+
+    msg = await update.message.reply_text(f"📅 Считаю данные за {date_from} — {date_to}...")
+    try:
+        data = await ads_client.get_both_accounts_summary(date_from=date_from, date_to=date_to)
+        text = f"📅 *Отчёт за период {date_from} — {date_to}*\n\n"
+        text += _format_both_summary(data)
+        thumbtack_days = (datetime.strptime(date_to, "%Y-%m-%d") - datetime.strptime(date_from, "%Y-%m-%d")).days + 1
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
+        await _safe_edit(msg, text, parse_mode="Markdown")
+        await _save_cmd_result(ctx, update.effective_chat.id, f"/month ({date_from} — {date_to})", text)
+    except Exception as e:
+        log.error(f"Ошибка /month: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
 
 async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1245,28 +1342,23 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(thinking_msg, "📊 Собираю данные... (~20-60 сек)")
 
-    # Keepalive: обновляем "Анализирую..." каждые 30 сек чтобы пользователь видел прогресс
-    # и чтобы Telegram не потерял сообщение из-за долгой обработки
-    keepalive_running = True
-    keepalive_counter = [0]
-    async def _keepalive():
-        dots = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        while keepalive_running:
-            await asyncio.sleep(25)
-            if not keepalive_running:
-                break
-            keepalive_counter[0] += 1
-            try:
-                d = dots[keepalive_counter[0] % len(dots)]
-                await thinking_msg.edit_text(f"{d} Анализирую... ({keepalive_counter[0] * 25}с)")
-            except Exception:
-                pass
-    keepalive_task = asyncio.create_task(_keepalive())
+    # Определяем период: если владелец явно назвал календарный период
+    # ("за июнь", "с 1 по 10 июля") — используем его. Если нет — по
+    # умолчанию берём КАЛЕНДАРНЫЙ МЕСЯЦ ДО СЕГОДНЯ (month-to-date), а НЕ
+    # скользящее окно "последние 30 дней" — это даёт стабильные, предсказуемые
+    # цифры, не меняющиеся день ото дня из-за сдвига окна.
+    period_from = classification.get("period_date_from") or None
+    period_to = classification.get("period_date_to") or None
+    if not period_from or not period_to:
+        today = datetime.now(NY_TZ)
+        period_from = today.replace(day=1).strftime("%Y-%m-%d")
+        period_to = today.strftime("%Y-%m-%d")
 
     context_data = {}
+    context_data["_period"] = {"date_from": period_from, "date_to": period_to}
     try:
         if "campaigns" in data_needed:
-            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
         if "budgets" in data_needed:
             context_data["budgets"] = {}
             for acc in accounts:
@@ -1274,7 +1366,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if "keywords" in data_needed:
             context_data["keywords"] = {}
             for acc in accounts:
-                context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc)
+                context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc, date_from=period_from, date_to=period_to)
         if "search_terms" in data_needed:
             context_data["search_terms"] = {}
             for acc in accounts:
@@ -1314,19 +1406,10 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
 
-    keepalive_running = False
-    keepalive_task.cancel()
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
     try:
-        result = await asyncio.wait_for(
-            ai_analyst.chat_action(question, context_data, action_type, history=history),
-            timeout=150.0  # 2.5 мин — хватит даже для сложного анализа
-        )
-    except asyncio.TimeoutError:
-        log.error("chat_action превысил таймаут 150 сек")
-        await thinking_msg.edit_text("⏱ Анализ занял слишком много времени. Попробуй задать вопрос конкретнее или запроси только одну кампанию.")
-        return
+        result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
     except Exception as e:
         log.error(f"Ошибка chat_action: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка: {e}")
@@ -1756,7 +1839,10 @@ def _format_both_summary(data: dict) -> str:
     combined = data.get('combined', {})
     ads = data.get('google_ads', {})
     lsa = data.get('lsa', {})
-    text = f"📊 *Сводка по всем аккаунтам — 30 дней*\n\n"
+    period_from = ads.get('date_from', '')
+    period_to = ads.get('date_to', '')
+    period_label = f" — {period_from} — {period_to}" if period_from and period_to else ""
+    text = f"📊 *Сводка по всем аккаунтам{period_label}*\n\n"
     text += f"💰 Итого: ${combined.get('total_spend', 0):.2f}\n"
     text += f"📞 Конверсии: {combined.get('total_conversions', 0):.0f}\n"
     if combined.get('avg_cpa'):
@@ -1860,10 +1946,14 @@ async def scheduled_morning_report(app):
         return
     log.info("Утренний отчёт (оба аккаунта)")
     try:
-        data = await ads_client.get_both_accounts_summary()
-        text = f"☀️ *Утренний отчёт — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
+        today = datetime.now(NY_TZ)
+        month_from = today.replace(day=1).strftime("%Y-%m-%d")
+        month_to = today.strftime("%Y-%m-%d")
+        data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
+        text = f"☀️ *Утренний отчёт — {today.strftime('%d.%m.%Y')}*\n\n"
         text += _format_both_summary(data)
-        text += await _get_thumbtack_summary_line()
+        thumbtack_days = (today - today.replace(day=1)).days + 1
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
@@ -1904,16 +1994,14 @@ async def scheduled_evening_summary(app):
         return
     log.info("Вечерний итог")
     try:
-        # Вечерний отчёт показывает данные ЗА СЕГОДНЯ (days=1),
-        # а не за 30 дней как утренний — чтобы цифры были разными
-        data_today = await ads_client.get_both_accounts_summary(days=1)
-        data_30 = await ads_client.get_both_accounts_summary()
-        text = f"🌙 *Итоги дня — {datetime.now(NY_TZ).strftime('%d.%m.%Y')}*\n\n"
-        text += "*За сегодня:*\n"
-        text += _format_both_summary(data_today)
-        text += "\n*За 30 дней (накопительно):*\n"
-        text += _format_both_summary(data_30)
-        text += await _get_thumbtack_summary_line()
+        today = datetime.now(NY_TZ)
+        month_from = today.replace(day=1).strftime("%Y-%m-%d")
+        month_to = today.strftime("%Y-%m-%d")
+        data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
+        text = f"🌙 *Итоги дня — {today.strftime('%d.%m.%Y')}*\n\n"
+        text += _format_both_summary(data)
+        thumbtack_days = (today - today.replace(day=1)).days + 1
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка вечернего итога: {e}")
@@ -1998,6 +2086,34 @@ async def scheduled_seasonal_check(app):
 
 # ── main ─────────────────────────────────────────────────
 
+async def global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Глобальный обработчик — ловит ЛЮБОЕ необработанное исключение в любом
+    хендлере. Без него (как было раньше) любая непойманная ошибка просто
+    тихо убивает задачу: сообщение "Анализирую..." остаётся висеть
+    навсегда, владелец не получает вообще никакой реакции и не понимает,
+    что что-то сломалось. Это и было причиной множественных "зависаний"
+    за сессию (например, telegram.error.BadRequest: Message_too_long,
+    когда ответ ИИ превышал лимит Telegram в 4096 символов).
+    """
+    log.error(f"Необработанное исключение: {ctx.error}", exc_info=ctx.error)
+    try:
+        if config.OWNER_CHAT_ID:
+            error_text = str(ctx.error)[:300]
+            await ctx.bot.send_message(
+                chat_id=config.OWNER_CHAT_ID,
+                text=(
+                    f"⚠️ *Внутренняя ошибка бота:* `{type(ctx.error).__name__}`\n"
+                    f"{error_text}\n\n"
+                    f"Если видел зависшее \"Анализирую...\" перед этим — вот что "
+                    f"реально произошло. Попробуй переформулировать запрос короче."
+                ),
+                parse_mode="Markdown",
+            )
+    except Exception as notify_error:
+        log.error(f"Не удалось уведомить владельца об ошибке: {notify_error}")
+
+
 async def cmd_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Fallback для любой команды без зарегистрированного обработчика.
@@ -2039,6 +2155,7 @@ def main():
     app.add_handler(CommandHandler("checklead", cmd_checklead))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
+    app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
     app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
@@ -2050,6 +2167,7 @@ def main():
     # превращает такой текст в кликабельную команду, и без этого fallback
     # владелец при нажатии получал полную тишину без всякой реакции бота).
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
+    app.add_error_handler(global_error_handler)
 
     scheduler = AsyncIOScheduler(timezone=NY_TZ)
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
