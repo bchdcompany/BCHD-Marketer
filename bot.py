@@ -305,6 +305,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
         f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
+        f"/clearmemory — очистить память переписки (начать с чистого листа)\n"
         f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
         parse_mode="Markdown",
     )
@@ -2361,6 +2362,42 @@ async def global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
         log.error(f"Не удалось уведомить владельца об ошибке: {notify_error}")
 
 
+async def cmd_clear_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Полностью очищает память переписки бота (chat_history в Postgres и
+    fallback в памяти процесса) для этого чата. Полезно после запутанной
+    сессии с противоречивыми фактами (например, кампания то удалена, то
+    нет) — чтобы ИИ начал следующий разговор с чистого листа, без риска
+    "зомби-фактов" из старой истории (см. правило в system_prompt про
+    приоритет свежих данных над историей чата).
+    НЕ трогает: сами данные в Google Ads, очередь pending-действий,
+    memory_user_edits — только историю СВОБОДНОГО ЧАТА.
+    """
+    if not _is_owner(update):
+        return
+    chat_id = update.effective_chat.id
+    deleted_count = 0
+    if DATABASE_URL:
+        try:
+            pool = await _get_db_pool()
+            async with pool.acquire() as conn:
+                result = await conn.execute("DELETE FROM chat_history WHERE chat_id = $1", chat_id)
+                # asyncpg возвращает строку вида "DELETE 42"
+                try:
+                    deleted_count = int(result.split()[-1])
+                except (ValueError, IndexError):
+                    pass
+        except Exception as e:
+            log.error(f"Ошибка очистки истории в Postgres: {e}")
+            await update.message.reply_text(f"❌ Ошибка при очистке памяти: {e}")
+            return
+    ctx.chat_data["history"] = []
+    await update.message.reply_text(
+        f"🧹 Память переписки очищена ({deleted_count} записей удалено). "
+        f"Начинаем с чистого листа — данные в Google Ads и очередь одобрения не затронуты."
+    )
+
+
 async def cmd_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Fallback для любой команды без зарегистрированного обработчика.
@@ -2416,6 +2453,7 @@ def main():
     # "/washer" как название страницы сайта — Telegram автоматически
     # превращает такой текст в кликабельную команду, и без этого fallback
     # владелец при нажатии получал полную тишину без всякой реакции бота).
+    app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
     app.add_error_handler(global_error_handler)
 
