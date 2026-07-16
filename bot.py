@@ -68,6 +68,9 @@ async def init_db():
         return
     try:
         pool = await _get_db_pool()
+        # Передаём пул в pending — карточки теперь в Postgres
+        pending.set_pool(pool)
+        await pending._ensure_table()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -272,14 +275,22 @@ async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
             [
                 InlineKeyboardButton("⏸ Пауза", callback_data=f"approve:{action_id}"),
                 InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_keywords:{action_id}"),
+            ],
+            [
+                InlineKeyboardButton("💬 Уточнить", callback_data=f"comment:{action_id}"),
                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
-            ]
+            ],
         ])
     else:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Применить", callback_data=f"approve:{action_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
-        ]])
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Применить", callback_data=f"approve:{action_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
+            ],
+            [
+                InlineKeyboardButton("💬 Уточнить", callback_data=f"comment:{action_id}"),
+            ],
+        ])
     await _safe_send(bot, chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
 
 
@@ -1451,6 +1462,32 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    # Если владелец пишет уточнение к карточке (после нажатия "💬 Уточнить")
+    awaiting_action_id = ctx.user_data.pop("awaiting_comment_for", None)
+    if awaiting_action_id:
+        await pending.add_comment(awaiting_action_id, question)
+        # Отвечаем с учётом контекста карточки
+        action = await pending.get(awaiting_action_id)
+        if action:
+            context_prompt = (
+                f"Владелец задал вопрос или уточнение к предложенному действию:\n"
+                f"Действие: {action.get('description', '')}\n"
+                f"Обоснование бота: {action.get('reasoning', '')}\n"
+                f"Вопрос владельца: {question}\n\n"
+                f"Ответь на вопрос конкретно. Если ключи без лендинга — объясни "
+                f"что лучше: привязать лендинг и оставить, или паузировать. "
+                f"Не создавай новых карточек — только объясни."
+            )
+            answer = await ai_analyst.answer_question(context_prompt)
+            await update.message.reply_text(
+                f"💬 *По карточке `{awaiting_action_id}`:*\n\n{answer}\n\n"
+                f"_Карточка по-прежнему ждёт одобрения._",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"⚠️ Карточка `{awaiting_action_id}` не найдена.", parse_mode="Markdown")
+        return
+
     chat_id = update.effective_chat.id
     history = await _get_history(ctx, chat_id)
 
@@ -1911,7 +1948,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat_id  # для сохранения в историю
 
         if cmd == "approve":
-            action = pending.approve(param)
+            action = await pending.approve(param)
             if not action:
                 await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
@@ -1973,7 +2010,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         elif cmd == "delete_keywords":
-            action = pending.approve(param)
+            action = await pending.approve(param)
             if not action:
                 await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
@@ -1995,9 +2032,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         elif cmd == "reject":
-            action = pending.reject(param)
+            action = await pending.reject(param)
             if action:
-                await _safe_edit(query, f"❌ Отклонено: {action['description']}")
+                status = action.get("status", "rejected")
+                if status == "rejected":
+                    await _safe_edit(query, f"❌ Отклонено: {action.get('description', param)}")
+                else:
+                    await _safe_edit(query, f"⚠️ Действие уже имеет статус '{status}'.")
+            else:
+                await _safe_edit(query, "⚠️ Карточка не найдена (бот перезапускался). Теперь это исправлено — карточки хранятся в Postgres.")
+            return
+
+        elif cmd == "comment":
+            ctx.user_data["awaiting_comment_for"] = param
+            await _safe_edit(query, f"💬 Напиши свой вопрос или уточнение — я отвечу и обновлю карточку.\n\n🆔 `{param}`", parse_mode="Markdown")
             return
 
         account = param
