@@ -1232,14 +1232,25 @@ class GoogleAdsClient:
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
+        # LSA бюджет управляется через Google Ads UI, НЕ через CampaignBudgetService.
+        # Вызов даёт INVALID_ARGUMENT — блокируем явно.
+        if self._is_lsa(customer_id):
+            raise LsaUnsupportedActionError(
+                "Изменение бюджета LSA через API невозможно — LSA-бюджет управляется "
+                "только через Google Ads UI (Local Services → Budget). "
+                "Измени недельный бюджет LSA вручную в интерфейсе."
+            )
+        budget_id = action.get("budget_id")
+        if not budget_id:
+            raise ValueError("budget_id не указан в действии budget_change")
         client = self._get_client()
         svc = client.get_service("CampaignBudgetService")
         op = client.get_type("CampaignBudgetOperation")
-        op.update.resource_name = f"customers/{customer_id}/campaignBudgets/{action.get('budget_id')}"
-        op.update.amount_micros = int(action.get('proposed_budget', 0) * 1_000_000)
+        op.update.resource_name = f"customers/{customer_id}/campaignBudgets/{budget_id}"
+        op.update.amount_micros = int(action.get("proposed_budget", 0) * 1_000_000)
         op.update_mask.paths.append("amount_micros")
         await asyncio.to_thread(svc.mutate_campaign_budgets, customer_id=customer_id, operations=[op])
-        return {'summary': f"Бюджет изменён на ${action.get('proposed_budget'):.2f}/день"}
+        return {"summary": f"Бюджет изменён на ${action.get('proposed_budget'):.2f}/день"}
 
     async def _update_bid(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
