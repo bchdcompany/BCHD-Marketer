@@ -237,6 +237,8 @@ class GoogleAdsClient:
             FROM keyword_view
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
               AND ad_group_criterion.status != 'REMOVED'
+              AND campaign.status != 'REMOVED'
+              AND ad_group.status != 'REMOVED'
             ORDER BY metrics.cost_micros DESC
             LIMIT 200
         """
@@ -539,6 +541,8 @@ class GoogleAdsClient:
                 metrics.conversions
             FROM search_term_view
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
+              AND campaign.status != 'REMOVED'
+              AND ad_group.status != 'REMOVED'
               AND metrics.impressions > 5
             ORDER BY metrics.impressions DESC
             LIMIT 500
