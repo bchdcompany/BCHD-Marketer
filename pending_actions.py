@@ -151,30 +151,31 @@ class PendingActions:
         if self._pool:
             try:
                 async with self._pool.acquire() as conn:
+                    # Один запрос внутри блока — обновляем если pending
                     row = await conn.fetchrow(
                         "UPDATE pending_actions SET status='rejected', updated_at=now() "
                         "WHERE action_id=$1 AND status='pending' "
                         "RETURNING action_data",
                         action_id
                     )
-                if row:
-                    data = json.loads(row["action_data"])
-                    data["status"] = "rejected"
-                    data["reject_reason"] = reason
-                    return data
-                # Уже не pending — возвращаем что есть
-                row = await conn.fetchrow(
-                    "SELECT action_data, status FROM pending_actions WHERE action_id=$1",
-                    action_id
-                )
-                if row:
-                    data = json.loads(row["action_data"])
-                    data["status"] = row["status"]
-                    return data
-                return None
+                    if row:
+                        data = json.loads(row["action_data"])
+                        data["status"] = "rejected"
+                        data["reject_reason"] = reason
+                        return data
+                    # Не было pending — берём текущий статус (тоже внутри with)
+                    row2 = await conn.fetchrow(
+                        "SELECT action_data, status FROM pending_actions WHERE action_id=$1",
+                        action_id
+                    )
+                    if row2:
+                        data = json.loads(row2["action_data"])
+                        data["status"] = row2["status"]
+                        return data
+                    return None
             except Exception as e:
                 log.error(f"pending_actions.reject DB error: {e}")
-        # fallback
+        # fallback память
         action = self._store.get(action_id)
         if action and action["status"] == "pending":
             action["status"] = "rejected"
