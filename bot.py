@@ -1977,13 +1977,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not action:
                 await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
-            # Меняем тип на удаление перед выполнением
-            action['type'] = 'remove_keywords'
-            await _safe_edit(query, f"⏳ Удаляю ключевые слова: {action['description']}...")
+            await _safe_edit(query, f"⏳ Удаляю ключевые слова (необратимо): {action['description']}...")
             try:
+                # Вызываем delete_keywords напрямую — НЕ через execute_action
                 result = await ads_client.delete_keywords(action)
-                await _safe_edit(query, f"✅ *Удалено:* {action['description']}\n\n{result.get('summary', '')}", parse_mode="Markdown")
+                summary = result.get('summary', '')
+                await _safe_edit(
+                    query,
+                    f"🗑 *Удалено (необратимо):* {action['description']}\n\n{summary}",
+                    parse_mode="Markdown"
+                )
+                log.info(f"delete_keywords SUCCESS: {summary}")
             except Exception as e:
+                log.error(f"delete_keywords FAILED: {e}")
                 friendly = _translate_google_ads_error(e)
                 await _safe_edit(query, f"❌ Ошибка удаления: {friendly}")
             return
