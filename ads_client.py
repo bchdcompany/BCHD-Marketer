@@ -1135,9 +1135,23 @@ class GoogleAdsClient:
                 expected_url = action.get('new_url')
                 if not rn or not expected_url:
                     return {'verified': None, 'note': 'Нет resource_name/new_url для перепроверки'}
-                query = f"SELECT ad_group_criterion.final_urls FROM ad_group_criterion WHERE ad_group_criterion.resource_name = '{rn}'"
+                # Фильтр campaign.status != REMOVED — исключаем удалённые кампании,
+                # иначе ключи из BCHD/2 и других удалённых кампаний попадают в выборку
+                query = (
+                    f"SELECT ad_group_criterion.final_urls, campaign.status "
+                    f"FROM ad_group_criterion "
+                    f"WHERE ad_group_criterion.resource_name = '{rn}' "
+                    f"AND campaign.status != 'REMOVED' "
+                    f"AND ad_group.status != 'REMOVED'"
+                )
                 rows = await self._search(customer_id, query)
-                actual_urls = list(rows[0].ad_group_criterion.final_urls) if rows and rows[0].ad_group_criterion.final_urls else []
+                if not rows:
+                    return {
+                        'verified': False,
+                        'note': 'Ключ не найден в активных кампаниях — возможно, принадлежит удалённой кампании',
+                        'expected_url': expected_url
+                    }
+                actual_urls = list(rows[0].ad_group_criterion.final_urls) if rows[0].ad_group_criterion.final_urls else []
                 return {'verified': expected_url in actual_urls, 'actual_final_urls': actual_urls, 'expected_url': expected_url}
 
             else:
@@ -1340,21 +1354,43 @@ class GoogleAdsClient:
     async def _update_keyword_final_url(self, action: dict, customer_id: str = None) -> dict:
         """
         Обновляет Final URL конкретного ключевого слова (ad_group_criterion.
-        final_urls) — override на уровне ключа, который направляет клики по
-        этому ключу на конкретную посадочную страницу вместо базового URL
-        объявления. Используется, когда владелец предоставил ссылку на
-        специализированную страницу (например, /dishwasher), чтобы поднять
-        релевантность лендинга и Quality Score для этого ключа.
+        final_urls). Перед мутацией проверяем что ключ принадлежит активной
+        (не удалённой) кампании — иначе Google Ads API вернёт INVALID_ARGUMENT.
         """
         if not customer_id: customer_id = self.customer_id
+        rn = action.get('resource_name')
+        new_url = action.get('new_url')
+        if not rn:
+            raise ValueError("resource_name не указан в действии update_final_url")
+        if not new_url:
+            raise ValueError("new_url не указан в действии update_final_url")
+
+        # Проверяем что ключ существует в АКТИВНОЙ (не удалённой) кампании.
+        # Google Ads API возвращает INVALID_ARGUMENT если пытаться мутировать
+        # критерий из кампании со статусом REMOVED.
+        check_query = (
+            f"SELECT ad_group_criterion.resource_name, campaign.status, ad_group.status "
+            f"FROM ad_group_criterion "
+            f"WHERE ad_group_criterion.resource_name = '{rn}' "
+            f"AND campaign.status != 'REMOVED' "
+            f"AND ad_group.status != 'REMOVED'"
+        )
+        rows = await self._search(customer_id, check_query)
+        if not rows:
+            raise ValueError(
+                f"Ключ '{action.get('keyword', rn)}' не найден в активных кампаниях. "
+                f"Возможно, он принадлежит удалённой кампании (BCHD/2 или другой). "
+                f"Пропускаю — изменение не применено."
+            )
+
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         op = client.get_type("AdGroupCriterionOperation")
-        op.update.resource_name = action.get('resource_name')
-        op.update.final_urls.append(action.get('new_url'))
+        op.update.resource_name = rn
+        op.update.final_urls.append(new_url)
         op.update_mask.paths.append("final_urls")
         await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
-        return {'summary': f"Final URL ключа '{action.get('keyword', '')}' обновлён на {action.get('new_url')}"}
+        return {'summary': f"Final URL ключа '{action.get('keyword', '')}' обновлён на {new_url}"}
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id:
