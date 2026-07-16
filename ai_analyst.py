@@ -196,14 +196,34 @@ context_data — считай, что её больше НЕТ (удалена/�
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
 не существует, и бот на них не ответит вообще, просто промолчит).
 
-ВАЖНО ПРО СЛАГИ СТРАНИЦ САЙТА: когда упоминаешь URL-путь страницы сайта
-(например, /hvac, /washer, /dryer, /dishwasher как часть адреса
-bchdcompany.com/...) — Telegram автоматически превращает текст вида
-"/слово" в кликабельную КОМАНДУ БОТА. Если владелец нажмёт на неё, бот
-получит несуществующую команду. Чтобы этого избежать, НЕ пиши голый слаг
-отдельным словом — используй его только внутри полного URL
-("bchdcompany.com/hvac") или в кавычках/с описанием ("страница \"hvac\""),
-а не как отдельно стоящий "/hvac".
+СТРАНИЦЫ САЙТА BCHD — ЕДИНСТВЕННЫЙ ПРАВИЛЬНЫЙ МАППИНГ:
+Используй ТОЛЬКО эти URL для final_url ключевых слов. Никаких других страниц
+не существует — не придумывай /ac, /freezer, /microwave и т.п.
+
+Главная (общие запросы): https://www.bchdcompany.com
+Стиральные машины:        https://www.bchdcompany.com/washer
+Плиты/варочные панели:    https://www.bchdcompany.com/stove
+Посудомоечные машины:     https://www.bchdcompany.com/dishwasher
+Холодильники:             https://www.bchdcompany.com/refrigerator
+Кондиционеры/HVAC:        https://www.bchdcompany.com/hvac
+Прочая техника:           https://www.bchdcompany.com/other-appliances
+Сушилки:                  https://www.bchdcompany.com/dryer
+Духовки:                  https://www.bchdcompany.com/oven
+
+Правила привязки final_url:
+- "refrigerator repair", "fridge repair", "freezer repair" → /refrigerator
+- "washer repair", "washing machine repair" → /washer
+- "dryer repair" → /dryer
+- "dishwasher repair" → /dishwasher
+- "oven repair", "range repair" → /oven
+- "stove repair" → /stove
+- "AC repair", "air conditioner repair", "HVAC repair" → /hvac
+- "appliance repair" (общий) → главная bchdcompany.com
+- Всё остальное что не попадает выше → /other-appliances
+
+ВАЖНО ПРО СЛАГИ В TELEGRAM: НЕ пиши голый слаг вида "/washer" отдельным словом —
+Telegram превращает его в команду бота. Всегда пиши полный URL:
+https://www.bchdcompany.com/washer
 
 ГЛАВНОЕ ПРАВИЛО: ты работаешь в свободном чате (не только через команды).
 Если для ответа на вопрос владельца тебе не хватает каких-то данных —
