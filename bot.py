@@ -264,10 +264,22 @@ async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
 
 async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
     text = report_gen.format_approval_card(action_id, action)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Применить", callback_data=f"approve:{action_id}"),
-        InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
-    ]])
+    action_type = action.get('type', '')
+
+    # Для ключевых слов — три варианта: Пауза / Удалить / Отклонить
+    if action_type == 'pause_keywords':
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⏸ Пауза", callback_data=f"approve:{action_id}"),
+                InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_keywords:{action_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
+            ]
+        ])
+    else:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Применить", callback_data=f"approve:{action_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject:{action_id}"),
+        ]])
     await _safe_send(bot, chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
 
 
@@ -1958,6 +1970,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"Проверь вручную в Google Ads UI._"
                 )
             await _safe_edit(query, text, parse_mode="Markdown")
+            return
+
+        elif cmd == "delete_keywords":
+            action = pending.approve(param)
+            if not action:
+                await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
+                return
+            # Меняем тип на удаление перед выполнением
+            action['type'] = 'remove_keywords'
+            await _safe_edit(query, f"⏳ Удаляю ключевые слова: {action['description']}...")
+            try:
+                result = await ads_client.delete_keywords(action)
+                await _safe_edit(query, f"✅ *Удалено:* {action['description']}\n\n{result.get('summary', '')}", parse_mode="Markdown")
+            except Exception as e:
+                friendly = _translate_google_ads_error(e)
+                await _safe_edit(query, f"❌ Ошибка удаления: {friendly}")
             return
 
         elif cmd == "reject":
