@@ -1176,35 +1176,79 @@ class GoogleAdsClient:
             log.error(f"verify_action({action_type}) error: {e}")
             return {'verified': False, 'error': str(e)}
 
+    async def _validate_keyword_resource_names(self, customer_id: str, keywords: list) -> tuple:
+        if not keywords:
+            return [], []
+        valid, skipped = [], []
+        for kw in keywords:
+            rn = kw.get('resource_name', '').strip()
+            if not rn:
+                skipped.append({**kw, '_skip_reason': 'пустой resource_name'})
+                continue
+            try:
+                rows = await self._search(customer_id,
+                    f"SELECT ad_group_criterion.resource_name FROM ad_group_criterion "
+                    f"WHERE ad_group_criterion.resource_name = '{rn}' "
+                    f"AND campaign.status != 'REMOVED' AND ad_group.status != 'REMOVED'"
+                )
+                if rows:
+                    valid.append(kw)
+                else:
+                    skipped.append({**kw, '_skip_reason': 'не найден в активных кампаниях'})
+            except Exception as e:
+                skipped.append({**kw, '_skip_reason': f'ошибка: {e}'})
+        if skipped:
+            log.warning(f"Пропущено {len(skipped)} ключей: "
+                       f"{[k.get('keyword','?') + ': ' + k.get('_skip_reason','?') for k in skipped]}")
+        return valid, skipped
+
     async def _pause_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         self._assert_not_lsa_for_keywords(customer_id, 'pause_keywords')
+        valid_kws, skipped_kws = await self._validate_keyword_resource_names(
+            customer_id, action.get('keywords', []))
+        if not valid_kws:
+            skip_info = '; '.join(k.get('keyword', '?') for k in skipped_kws)
+            raise ValueError(f"Нет валидных ключей для паузирования. Пропущено: {skip_info}")
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         ops = []
-        for kw in action.get('keywords', []):
+        for kw in valid_kws:
             op = client.get_type("AdGroupCriterionOperation")
             op.update.resource_name = kw['resource_name']
             op.update.status = client.enums.AdGroupCriterionStatusEnum.PAUSED
             op.update_mask.paths.append("status")
             ops.append(op)
-        if ops: await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
-        return {'summary': f"Поставлено на паузу: {len(ops)} ключей"}
+        if ops:
+            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
+        summary = f"Поставлено на паузу: {len(ops)} ключей"
+        if skipped_kws:
+            summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
+        return {'summary': summary}
 
     async def _enable_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         self._assert_not_lsa_for_keywords(customer_id, 'enable_keywords')
+        valid_kws, skipped_kws = await self._validate_keyword_resource_names(
+            customer_id, action.get('keywords', []))
+        if not valid_kws:
+            skip_info = '; '.join(k.get('keyword', '?') for k in skipped_kws)
+            raise ValueError(f"Нет валидных ключей для активации. Пропущено: {skip_info}")
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         ops = []
-        for kw in action.get('keywords', []):
+        for kw in valid_kws:
             op = client.get_type("AdGroupCriterionOperation")
             op.update.resource_name = kw['resource_name']
             op.update.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
             op.update_mask.paths.append("status")
             ops.append(op)
-        if ops: await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
-        return {'summary': f"Активировано ключей: {len(ops)}"}
+        if ops:
+            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
+        summary = f"Активировано ключей: {len(ops)}"
+        if skipped_kws:
+            summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
+        return {'summary': summary}
 
     async def _add_negative_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
