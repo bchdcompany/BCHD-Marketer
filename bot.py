@@ -705,7 +705,7 @@ async def _cmd_toggle_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE, t
         "urgency_label": "Высокая",
         "confidence": "high",
     }
-    action_id = pending.add(action)
+    action_id = await pending.add(action)
     await _safe_edit(msg, f"✅ Карточка создана для кампании '{m['name']}' (текущий статус: {m['status']}).")
     await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
@@ -925,7 +925,7 @@ async def scheduled_reverify_executed_actions(app):
     узнать правду, а не жить с ложным ощущением "всё сделано".
     """
     try:
-        to_check = pending.get_actions_needing_reverify(min_hours_since_execution=20)
+        to_check = await pending.get_actions_needing_reverify(min_hours_since_execution=20)
     except Exception as e:
         log.error(f"Ошибка получения действий для отложенной перепроверки: {e}")
         return
@@ -937,7 +937,7 @@ async def scheduled_reverify_executed_actions(app):
             log.error(f"Ошибка отложенной перепроверки {action_id}: {e}")
             continue
         verified = verification.get("verified")
-        pending.mark_reverified(action_id)
+        await pending.mark_reverified(action_id)
         if verified is True:
             text = (
                 f"✅ *Отложенная перепроверка подтвердила успех:* {action.get('description')}\n\n"
@@ -1026,7 +1026,7 @@ async def scheduled_thumbtack_check(app):
 async def cmd_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
-    actions = pending.all_pending()
+    actions = await pending.all_pending()
     if not actions:
         await update.message.reply_text("✅ Нет ожидающих действий.")
         return
@@ -1051,7 +1051,7 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    history = pending.get_history(limit=limit)
+    history = await pending.get_history(limit=limit)
     if not history:
         await update.message.reply_text(
             "📋 Журнал пуст (за время с последнего рестарта бота действий не было)."
@@ -1163,7 +1163,7 @@ async def cmd_review_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "confidence": "medium",
         }
         try:
-            action_id = pending.add(action)
+            action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
             log.warning(f"Не удалось создать карточку для рискованного минус-слова: {e}")
@@ -1231,7 +1231,7 @@ async def cmd_checklead(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'expected_impact': 'Возможный возврат средств + более релевантные лиды',
             'requires_approval': True,
         }
-        action_id = pending.add(action)
+        action_id = await pending.add(action)
         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
 
@@ -1285,7 +1285,7 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                         'expected_impact': 'Возможный возврат средств + более релевантные лиды',
                         'requires_approval': True,
                     }
-                    action_id = pending.add(action)
+                    action_id = await pending.add(action)
                     await _send_approval_card(bot, config.OWNER_CHAT_ID, action_id, action)
                     disputed_count += 1
                 continue
@@ -1326,7 +1326,7 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
                     'expected_impact': 'Возможный возврат средств',
                     'requires_approval': True,
                 }
-                action_id = pending.add(action)
+                action_id = await pending.add(action)
                 await _send_approval_card(bot, config.OWNER_CHAT_ID, action_id, action)
                 disputed_count += 1
         except Exception as e:
@@ -1672,7 +1672,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 blocked_actions += 1
                 continue
 
-            action_id = pending.add(action)
+            action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
             log.error(f"Ошибка создания карточки одобрения из чата: {e}")
@@ -1819,7 +1819,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action.setdefault("requires_approval", True)
             if not _action_ids_verified(action, context_data):
                 continue
-            action_id = pending.add(action)
+            action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
             log.error(f"Ошибка карточки из голосового: {e}")
@@ -1984,7 +1984,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
             log.info(f"VERIFY_ACTION RESULT: action_id={param}, type={action.get('type')}, verification={verification}")
             verified = verification.get("verified")
-            pending.record_execution_result(param, verified)
+            await pending.record_execution_result(param, verified)
             if verified is True:
                 text = (
                     f"✅ *Выполнено и подтверждено:* {action['description']}\n\n"
@@ -2085,7 +2085,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if account != "both":
                     for action in analysis.get("recommendations", []):
                         action["account"] = account
-                        action_id = pending.add(action)
+                        action_id = await pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
             except Exception as e:
                 log.error(f"Ошибка audit callback: {e}")
@@ -2118,7 +2118,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             "proposed_budget": rec.get("proposed_budget"),
                             "budget_id": rec.get("budget_id"),
                         }
-                        action_id = pending.add(action)
+                        action_id = await pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 await _safe_edit(query, text, parse_mode="Markdown")
                 # Сохраняем в историю
@@ -2147,7 +2147,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     analysis = await ai_analyst.analyze_keywords(data_result)
                     texts.append(f"*Google Ads ({len(data_result.get('keywords', []))} ключей):*\n{analysis.get('summary', 'Нет данных')}")
                     for action in _build_keyword_actions(analysis, acc):
-                        action_id = pending.add(action)
+                        action_id = await pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 if account == "both":
                     texts.append("ℹ️ *LSA:* ключевые слова не используются (Google определяет аудиторию автоматически)")
@@ -2199,7 +2199,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             "negatives": negatives,
                         }
                         try:
-                            action_id = pending.add(action)
+                            action_id = await pending.add(action)
                             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                             any_cards_created = True
                         except Exception as ve:
@@ -2291,7 +2291,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             "risks": "Изменения обратимы",
                             "adjustments": action_plan["adjustments"],
                         }
-                        action_id = pending.add(action)
+                        action_id = await pending.add(action)
                         await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                 await _safe_edit(query, "✅ Сезонный план готов — карточки отправлены выше.")
                 if summary_parts:
@@ -2482,7 +2482,7 @@ async def scheduled_budget_check(app):
                     "proposed_budget": rec.get("proposed_budget"),
                     "budget_id": rec.get("budget_id"),
                 }
-                action_id = pending.add(action)
+                action_id = await pending.add(action)
                 await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
     except Exception as e:
         log.error(f"Ошибка проверки бюджетов: {e}")
@@ -2519,7 +2519,7 @@ async def scheduled_weekly_audit(app):
             await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
             for action in analysis.get("recommendations", []):
                 action["account"] = account
-                action_id = pending.add(action)
+                action_id = await pending.add(action)
                 await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
     except Exception as e:
         log.error(f"Ошибка аудита: {e}")
@@ -2577,7 +2577,7 @@ async def scheduled_seasonal_check(app):
                     "risks": "Обратимо",
                     "adjustments": action_plan["adjustments"],
                 }
-                action_id = pending.add(action)
+                action_id = await pending.add(action)
                 await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
     except Exception as e:
         log.error(f"Ошибка сезонной оптимизации: {e}")
