@@ -1250,6 +1250,31 @@ class GoogleAdsClient:
             summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
         return {'summary': summary}
 
+    async def delete_keywords(self, action: dict) -> dict:
+        """
+        Удаляет ключевые слова (ad_group_criterion) — НЕОБРАТИМО.
+        Перед удалением валидирует resource_name через API.
+        """
+        customer_id = self.customer_id
+        valid_kws, skipped_kws = await self._validate_keyword_resource_names(
+            customer_id, action.get('keywords', []))
+        if not valid_kws:
+            skip_info = '; '.join(k.get('keyword', '?') for k in skipped_kws)
+            raise ValueError(f"Нет валидных ключей для удаления. Пропущено: {skip_info}")
+        client = self._get_client()
+        svc = client.get_service("AdGroupCriterionService")
+        ops = []
+        for kw in valid_kws:
+            op = client.get_type("AdGroupCriterionOperation")
+            op.remove = kw['resource_name']
+            ops.append(op)
+        if ops:
+            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
+        summary = f"Удалено ключей: {len(ops)} (необратимо)"
+        if skipped_kws:
+            summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
+        return {'summary': summary}
+
     async def _add_negative_keywords(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         self._assert_not_lsa_for_keywords(customer_id, 'add_negative_keywords')
