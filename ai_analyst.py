@@ -993,12 +993,26 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "risks": "Final URL меняется только для этого конкретного ключа
     (override), другие ключи в той же группе объявлений не затрагиваются",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+- remove_negative_keyword (удалить существующее минус-слово которое блокирует
+  полезный трафик — используй ТОЛЬКО если resource_name минус-слова реально
+  есть в context_data; тип ВСЕГДА "remove_negative_keyword" с подчёркиваниями):
+  {{"type": "remove_negative_keyword", "account": "ads", "resource_name": "...",
+    "term": "минус-слово которое удаляем", "description": "...",
+    "reasoning": "...", "risks": "Удалённое минус-слово может снова пропустить
+    нерелевантный трафик — убедись что слово действительно блокирует полезные запросы",
+    "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 - seasonal_adjustments:
   {{"type": "seasonal_adjustments", "account": "...",
     "adjustments": [{{"campaign_id": "...", "campaign_name": "...", "budget_id": "...",
     "current_budget": 0, "adjustment_pct": 0, "direction": "increase|decrease",
     "reason": "..."}}], "description": "...", "reasoning": "...", "risks": "...",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+
+КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
+pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
+budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
+update_final_url, seasonal_adjustments, dispute_lsa_lead
+НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
