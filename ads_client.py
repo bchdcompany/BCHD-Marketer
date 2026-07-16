@@ -1333,17 +1333,51 @@ class GoogleAdsClient:
 
     async def _remove_negative_keyword(self, action: dict, customer_id: str = None) -> dict:
         """
-        Удаляет конкретное минус-слово (campaign_criterion) — используется
-        для действий, найденных через /reviewnegatives (рискованные минус-
-        слова, которые могут блокировать релевантный трафик).
+        Удаляет минус-слово (campaign_criterion).
+        Если resource_name не передан или пустой — ищет его через API по тексту термина.
         """
         if not customer_id: customer_id = self.customer_id
+        term = action.get('term', '').strip().lower()
+        resource_name = action.get('resource_name', '').strip()
+
+        # Если resource_name не передан — ищем через API по тексту
+        if not resource_name:
+            if not term:
+                raise ValueError("Не указан ни resource_name, ни term для удаления минус-слова")
+            query = (
+                f"SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
+                f"FROM campaign_criterion "
+                f"WHERE campaign_criterion.type = 'KEYWORD' "
+                f"AND campaign_criterion.negative = true "
+                f"AND campaign.status != 'REMOVED'"
+            )
+            rows = await self._search(customer_id, query)
+            found = None
+            for row in rows:
+                if row.campaign_criterion.keyword.text.lower() == term:
+                    found = row.campaign_criterion.resource_name
+                    break
+            if not found:
+                # Попробуем частичное совпадение
+                for row in rows:
+                    if term in row.campaign_criterion.keyword.text.lower():
+                        found = row.campaign_criterion.resource_name
+                        break
+            if not found:
+                existing = [row.campaign_criterion.keyword.text for row in rows[:20]]
+                raise ValueError(
+                    f"Минус-слово '{term}' не найдено в кампании. "
+                    f"Существующие минус-слова: {existing}"
+                )
+            resource_name = found
+            log.info(f"_remove_negative_keyword: найден resource_name для '{term}': {resource_name}")
+
         client = self._get_client()
         svc = client.get_service("CampaignCriterionService")
         op = client.get_type("CampaignCriterionOperation")
-        op.remove = action.get('resource_name')
+        op.remove = resource_name
         await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=[op])
-        return {'summary': f"Минус-слово '{action.get('term', '')}' удалено"}
+        return {'summary': f"Минус-слово '{term or resource_name}' удалено из кампании"}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
