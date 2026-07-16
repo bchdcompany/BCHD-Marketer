@@ -1951,12 +1951,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 text = (
-                    f"📤 *Отправлено в Google Ads:* {action['description']}\n\n"
+                    f"⚠️ *Не подтверждено:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}\n\n"
-                    f"⚠️ _API принял запрос без ошибок, но автоматическое подтверждение "
-                    f"результата недоступно для этого типа действия — это НЕ гарантия, "
-                    f"что изменение реально применилось так, как ожидалось. Я перепроверю "
-                    f"это ещё раз через сутки и напишу, подтвердилось ли на самом деле._"
+                    f"_API принял запрос без ошибок, но перепроверить факт применения "
+                    f"автоматически невозможно для этого типа действия. "
+                    f"Проверь вручную в Google Ads UI._"
                 )
             await _safe_edit(query, text, parse_mode="Markdown")
             return
