@@ -1,18 +1,22 @@
 """
 BCHD Marketer Agent — Telegram бот
 Google Ads оптимизация с AI-анализом
-v5 — история команд: команды (/keywords, /audit, /budget, /report) сохраняются
-     в chat_history, чтобы агент помнил что уже было сделано и не повторял вопросы.
-     Лимит истории увеличен до 30 сообщений (15 обменов).
+v6 — голосовые сообщения (Groq Whisper), фото/скриншоты (Claude Vision),
+     жёсткая блокировка «зомби-фактов» BCHD/2 из истории,
+     /clearmemory теперь чистит ВСЮ историю (все chat_id).
 """
 
 import asyncio
+import io
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime, timedelta
 
 import asyncpg
+import base64
+import httpx
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -1635,6 +1639,241 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ── Голос и фото ────────────────────────────────────────
+
+async def _transcribe_voice(file_bytes: bytes, mime: str = "audio/ogg") -> str:
+    """
+    Транскрибирует голосовое сообщение через Groq Whisper.
+    Возвращает текст или бросает исключение.
+    """
+    groq_key = getattr(config, "GROQ_API_KEY", None) or os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        raise RuntimeError("GROQ_API_KEY не задан — голосовые сообщения недоступны")
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {groq_key}"},
+            files={"file": ("voice.ogg", file_bytes, mime)},
+            data={"model": "whisper-large-v3-turbo", "language": "ru"},
+        )
+        resp.raise_for_status()
+        return resp.json().get("text", "").strip()
+
+
+async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Принимает голосовое/аудио сообщение, транскрибирует через Groq Whisper,
+    затем передаёт текст в стандартный pipeline (как обычный текстовый запрос).
+    """
+    if not _is_owner(update):
+        return
+
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return
+
+    status_msg = await update.message.reply_text("🎙 Транскрибирую голосовое...")
+    try:
+        tg_file = await ctx.bot.get_file(voice.file_id)
+        file_bytes = await tg_file.download_as_bytearray()
+        question = await _transcribe_voice(bytes(file_bytes))
+    except Exception as e:
+        log.error(f"Ошибка транскрипции голоса: {e}")
+        await status_msg.edit_text(f"❌ Не удалось транскрибировать: {e}")
+        return
+
+    if not question:
+        await status_msg.edit_text("⚠️ Голосовое сообщение не распознано (пустой текст).")
+        return
+
+    await status_msg.edit_text(f"🎙 Распознано: _{question}_\n\n🧭 Определяю, что нужно...", parse_mode="Markdown")
+
+    # Передаём в тот же pipeline что и текст, но со status_msg вместо новой "думалки"
+    chat_id = update.effective_chat.id
+    history = await _get_history(ctx, chat_id)
+
+    if not config.google_ads_configured:
+        answer = await ai_analyst.answer_question(question, history=history)
+        answer = _guard_against_hallucinated_execution(answer)
+        await _safe_edit(status_msg, f"🎙 _{question}_\n\n{answer}", parse_mode="Markdown")
+        await _append_history(ctx, chat_id, question, answer)
+        return
+
+    try:
+        classification = await ai_analyst.classify_request(question, history=history)
+    except Exception as e:
+        log.error(f"Ошибка классификации голосового: {e}")
+        classification = {"intent": "chat", "action_type": "none", "days": 0, "data_needed": ["campaigns"], "account": "both"}
+
+    # Создаём фиктивный update.message с нужным текстом для переиспользования pipeline
+    # Проще — просто скопируем логику напрямую через уже разобранный question
+    data_needed = classification.get("data_needed", ["campaigns"])
+    if isinstance(data_needed, str):
+        data_needed = [data_needed] if data_needed != "none" else []
+    account_scope = classification.get("account", "both")
+    accounts = ["ads", "lsa"] if account_scope == "both" else [account_scope]
+
+    await _safe_edit(status_msg, f"🎙 _{question}_\n\n📊 Собираю данные...", parse_mode="Markdown")
+
+    period_from = classification.get("period_date_from") or None
+    period_to = classification.get("period_date_to") or None
+    if not period_from or not period_to:
+        today = datetime.now(NY_TZ)
+        period_from = today.replace(day=1).strftime("%Y-%m-%d")
+        period_to = today.strftime("%Y-%m-%d")
+
+    context_data = {}
+    context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    try:
+        if "campaigns" in data_needed:
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
+        if "budgets" in data_needed:
+            context_data["budgets"] = {}
+            for acc in accounts:
+                context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
+        if "keywords" in data_needed:
+            context_data["keywords"] = {}
+            for acc in accounts:
+                context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc, date_from=period_from, date_to=period_to)
+        if "search_terms" in data_needed:
+            context_data["search_terms"] = {}
+            for acc in accounts:
+                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
+        if not context_data or list(context_data.keys()) == ["_period"]:
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
+    except Exception as e:
+        log.error(f"Ошибка сбора данных для голосового: {e}")
+        await _safe_edit(status_msg, f"❌ Ошибка получения данных: {e}")
+        return
+
+    await _safe_edit(status_msg, f"🎙 _{question}_\n\n🤔 Анализирую...", parse_mode="Markdown")
+    action_type = classification.get("action_type", "none")
+    try:
+        result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
+    except Exception as e:
+        log.error(f"Ошибка chat_action (голос): {e}")
+        await _safe_edit(status_msg, f"❌ Ошибка анализа: {e}")
+        return
+
+    reply = result.get("reply", "⚠️ Ответ получен в неожиданном формате.")
+    reply = _guard_against_hallucinated_execution(reply)
+    full_reply = f"🎙 _{question}_\n\n{reply}"
+    await _safe_edit(status_msg, full_reply, parse_mode="Markdown")
+    await _append_history(ctx, chat_id, question, reply)
+
+    for action in result.get("proposed_actions", []):
+        try:
+            action.setdefault("account", accounts[0])
+            action.setdefault("data_summary", action.get("reasoning", ""))
+            action.setdefault("expected_impact", "")
+            action.setdefault("requires_approval", True)
+            if not _action_ids_verified(action, context_data):
+                continue
+            action_id = pending.add(action)
+            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        except Exception as e:
+            log.error(f"Ошибка карточки из голосового: {e}")
+
+
+async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Принимает фото/скриншот, отправляет в Claude Vision для анализа,
+    затем продолжает как обычный текстовый запрос (с контекстом из фото).
+    """
+    if not _is_owner(update):
+        return
+
+    caption = update.message.caption or ""
+    photo = update.message.photo[-1]  # наибольшее разрешение
+
+    status_msg = await update.message.reply_text("🖼 Анализирую скриншот...")
+    try:
+        tg_file = await ctx.bot.get_file(photo.file_id)
+        file_bytes = await tg_file.download_as_bytearray()
+        image_b64 = base64.b64encode(bytes(file_bytes)).decode()
+    except Exception as e:
+        log.error(f"Ошибка загрузки фото: {e}")
+        await status_msg.edit_text(f"❌ Не удалось загрузить фото: {e}")
+        return
+
+    # Отправляем в Claude Vision для получения текстового описания
+    try:
+        vision_response = await ai_analyst.client.messages.create(
+            model=ai_analyst.model,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Это скриншот из Google Ads или Telegram-бота BCHD Marketer. "
+                            f"Опиши что на нём: цифры, статусы кампаний, ключевые слова, ошибки. "
+                            f"Будь конкретным. Пользователь добавил подпись: '{caption}'"
+                            if caption else
+                            f"Это скриншот из Google Ads или Telegram-бота BCHD Marketer. "
+                            f"Опиши что на нём: цифры, статусы кампаний, ключевые слова, ошибки. Будь конкретным."
+                        ),
+                    },
+                ],
+            }],
+        )
+        vision_text = vision_response.content[0].text if vision_response.content else ""
+    except Exception as e:
+        log.error(f"Ошибка Vision анализа: {e}")
+        await status_msg.edit_text(f"❌ Ошибка анализа изображения: {e}")
+        return
+
+    # Формируем вопрос из описания + подписи пользователя
+    question = f"[Скриншот]\n{vision_text}"
+    if caption:
+        question = f"{caption}\n\n[Скриншот содержит:]\n{vision_text}"
+
+    await _safe_edit(status_msg, f"🖼 Вижу: _{vision_text[:200]}..._\n\n🧭 Анализирую...", parse_mode="Markdown")
+
+    chat_id = update.effective_chat.id
+    history = await _get_history(ctx, chat_id)
+
+    if not config.google_ads_configured:
+        answer = await ai_analyst.answer_question(question, history=history)
+        answer = _guard_against_hallucinated_execution(answer)
+        await _safe_edit(status_msg, answer, parse_mode="Markdown")
+        await _append_history(ctx, chat_id, question, answer)
+        return
+
+    try:
+        classification = await ai_analyst.classify_request(question, history=history)
+    except Exception as e:
+        classification = {"intent": "chat", "action_type": "none", "days": 0, "data_needed": ["campaigns"], "account": "both"}
+
+    context_data = {}
+    today = datetime.now(NY_TZ)
+    period_from = today.replace(day=1).strftime("%Y-%m-%d")
+    period_to = today.strftime("%Y-%m-%d")
+    context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    try:
+        context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
+    except Exception as e:
+        log.error(f"Ошибка сбора данных для фото: {e}")
+
+    action_type = classification.get("action_type", "none")
+    try:
+        result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
+    except Exception as e:
+        await _safe_edit(status_msg, f"❌ Ошибка: {e}")
+        return
+
+    reply = result.get("reply", "⚠️ Ответ в неожиданном формате.")
+    reply = _guard_against_hallucinated_execution(reply)
+    await _safe_edit(status_msg, reply, parse_mode="Markdown")
+    await _append_history(ctx, chat_id, question, reply)
+
+
 # ── Обработка кнопок ────────────────────────────────────
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2381,8 +2620,11 @@ async def cmd_clear_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             pool = await _get_db_pool()
             async with pool.acquire() as conn:
-                result = await conn.execute("DELETE FROM chat_history WHERE chat_id = $1", chat_id)
-                # asyncpg возвращает строку вида "DELETE 42"
+                # Чистим ВСЮ таблицу, а не только текущий chat_id —
+                # «зомби-факты» (например, BCHD/2) могут жить в записях
+                # другого chat_id (личный vs групповой) и продолжать
+                # всплывать даже после очистки "своего" chat_id.
+                result = await conn.execute("DELETE FROM chat_history")
                 try:
                     deleted_count = int(result.split()[-1])
                 except (ValueError, IndexError):
@@ -2393,7 +2635,7 @@ async def cmd_clear_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
     ctx.chat_data["history"] = []
     await update.message.reply_text(
-        f"🧹 Память переписки очищена ({deleted_count} записей удалено). "
+        f"🧹 Память переписки ПОЛНОСТЬЮ очищена ({deleted_count} записей удалено, все чаты). "
         f"Начинаем с чистого листа — данные в Google Ads и очередь одобрения не затронуты."
     )
 
@@ -2448,6 +2690,8 @@ def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     # Fallback ПОСЛЕДНИМ: ловит любую команду, для которой нет обработчика
     # выше (например, ИИ иногда упоминает в тексте слаги вроде "/hvac",
     # "/washer" как название страницы сайта — Telegram автоматически
