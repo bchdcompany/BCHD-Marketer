@@ -1428,11 +1428,12 @@ class GoogleAdsClient:
         resource_name = ""
 
         if not term:
-            # Последний шанс — пробуем взять из resource_name если term пустой
-            resource_name = action.get('resource_name', '').strip()
-            if not resource_name:
-                raise ValueError("Не указан term для удаления минус-слова")
+            raise ValueError(
+                "Не указан 'term' (текст минус-слова) для удаления. "
+                "resource_name игнорируется — нужен именно текст минус-слова."
+            )
 
+        if True:  # всегда ищем через API
             # Шаг 1: ищем на уровне кампании (campaign_criterion)
             camp_query = (
                 "SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
@@ -1488,9 +1489,17 @@ class GoogleAdsClient:
             resource_name = found_rn
             log.info(f"_remove_negative_keyword: '{term}' найдено на уровне {found_level}: {resource_name}")
 
+        # Финальная защита — никогда не отправляем пустой resource_name
+        if not resource_name or not resource_name.strip():
+            raise ValueError(
+                f"resource_name пустой после поиска минус-слова '{term}' — "
+                f"операция отменена во избежание OPERATION_REQUIRED от Google Ads API."
+            )
+
         # Определяем уровень по resource_name и выбираем нужный сервис
         client = self._get_client()
-        if "/adGroupCriteria/" in resource_name or "adGroupCriterion" in resource_name:
+        if "adGroupCriterion" in resource_name or "~" in resource_name:
+            # ad_group_criterion resource_name содержит ~ разделитель
             svc = client.get_service("AdGroupCriterionService")
             op = client.get_type("AdGroupCriterionOperation")
             op.remove = resource_name
