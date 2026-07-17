@@ -264,11 +264,16 @@ class GoogleAdsClient:
             settings_rows = await self._search(customer_id, settings_query)
             # Строим словарь: resource_name → настройки
             settings_map = {}
+            neg_skipped = []
             for row in settings_rows:
                 crit = row.ad_group_criterion
-                # Дополнительная фильтрация на нашей стороне — API иногда
-                # возвращает negative=TRUE несмотря на фильтр negative=FALSE
-                if getattr(crit, 'negative', False):
+                # Фильтруем минус-слова на нашей стороне
+                try:
+                    is_negative = bool(crit.negative)
+                except Exception:
+                    is_negative = False
+                if is_negative:
+                    neg_skipped.append(crit.keyword.text)
                     continue
                 rn = crit.resource_name
                 current_bid = crit.cpc_bid_micros / 1_000_000 if crit.cpc_bid_micros else None
@@ -290,6 +295,9 @@ class GoogleAdsClient:
                     'cpc': 0.0, 'spend': 0.0, 'conversions': 0.0,
                 }
 
+            if neg_skipped:
+                log.info(f"get_keywords_analysis: отфильтровано {len(neg_skipped)} минус-слов: {neg_skipped[:10]}")
+            log.info(f"get_keywords_analysis: найдено {len(settings_map)} реальных ключей")
             # Получаем исторические метрики и добавляем к настройкам
             try:
                 metrics_rows = await self._search(customer_id, metrics_query)
