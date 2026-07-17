@@ -1220,42 +1220,44 @@ class GoogleAdsClient:
             return {'verified': False, 'error': str(e)}
 
     async def _validate_keyword_resource_names(self, customer_id: str, keywords: list) -> tuple:
+        # Если resource_name не найден — ищем по тексту ключа и берём актуальный rn.
+        # Это решает проблему когда ИИ генерирует устаревший resource_name.
         if not keywords:
             return [], []
-        # Один батч-запрос для всех ключей вместо N запросов
-        rn_map = {}
-        for kw in keywords:
-            rn = kw.get('resource_name', '').strip()
-            if rn:
-                rn_map[rn] = kw
-        if not rn_map:
-            skipped = [{**kw, '_skip_reason': 'пустой resource_name'} for kw in keywords]
-            return [], skipped
-        # Запрашиваем все resource_names одним запросом через IN-подобный фильтр
-        rn_list = "', '".join(rn_map.keys())
         try:
-            rows = await self._search(customer_id,
-                f"SELECT ad_group_criterion.resource_name FROM ad_group_criterion "
-                f"WHERE ad_group_criterion.resource_name IN ('{rn_list}') "
-                f"AND campaign.status != 'REMOVED' AND ad_group.status != 'REMOVED'"
+            all_rows = await self._search(customer_id,
+                "SELECT ad_group_criterion.resource_name, "
+                "ad_group_criterion.keyword.text "
+                "FROM ad_group_criterion "
+                "WHERE ad_group_criterion.type = 'KEYWORD' "
+                "AND ad_group_criterion.status != 'REMOVED' "
+                "AND campaign.status != 'REMOVED' "
+                "AND ad_group.status != 'REMOVED'"
             )
-            found_rns = {row.ad_group_criterion.resource_name for row in rows}
         except Exception as e:
-            log.error(f"_validate_keyword_resource_names batch error: {e}")
-            # При ошибке батч-запроса — пропускаем всё
-            return [], [{**kw, '_skip_reason': f'ошибка валидации: {e}'} for kw in keywords]
+            log.error(f"_validate_keyword_resource_names error: {e}")
+            return [], [{**kw, '_skip_reason': f'ошибка API: {e}'} for kw in keywords]
+
+        by_rn = {row.ad_group_criterion.resource_name for row in all_rows}
+        by_text = {}
+        for row in all_rows:
+            txt = row.ad_group_criterion.keyword.text.strip().lower()
+            if txt not in by_text:
+                by_text[txt] = row.ad_group_criterion.resource_name
+
         valid, skipped = [], []
         for kw in keywords:
             rn = kw.get('resource_name', '').strip()
-            if not rn:
-                skipped.append({**kw, '_skip_reason': 'пустой resource_name'})
-            elif rn in found_rns:
+            kw_text = (kw.get('keyword') or kw.get('text', '')).strip().lower()
+            if rn and rn in by_rn:
                 valid.append(kw)
+            elif kw_text and kw_text in by_text:
+                actual_rn = by_text[kw_text]
+                log.info(f"_validate: '{kw_text}' найден по тексту -> {actual_rn}")
+                valid.append({**kw, 'resource_name': actual_rn})
             else:
-                skipped.append({**kw, '_skip_reason': 'не найден в активных кампаниях'})
-        if skipped:
-            log.warning(f"Пропущено {len(skipped)} ключей из {len(keywords)}: "
-                       f"{[k.get('keyword','?') for k in skipped[:5]]}")
+                log.warning(f"_validate: не найден rn='{rn}' text='{kw_text}'")
+                skipped.append({**kw, '_skip_reason': f'не найден: rn={rn}, text={kw_text}'})
         return valid, skipped
 
     async def _pause_keywords(self, action: dict, customer_id: str = None) -> dict:
