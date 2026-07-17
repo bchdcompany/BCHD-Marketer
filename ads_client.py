@@ -232,6 +232,7 @@ class GoogleAdsClient:
                 ad_group.name
             FROM ad_group_criterion
             WHERE ad_group_criterion.type = 'KEYWORD'
+              AND ad_group_criterion.negative = FALSE
               AND ad_group_criterion.status != 'REMOVED'
               AND campaign.status != 'REMOVED'
               AND ad_group.status != 'REMOVED'
@@ -1227,9 +1228,11 @@ class GoogleAdsClient:
         try:
             all_rows = await self._search(customer_id,
                 "SELECT ad_group_criterion.resource_name, "
-                "ad_group_criterion.keyword.text "
+                "ad_group_criterion.keyword.text, "
+                "ad_group_criterion.negative "
                 "FROM ad_group_criterion "
                 "WHERE ad_group_criterion.type = 'KEYWORD' "
+                "AND ad_group_criterion.negative = FALSE "
                 "AND ad_group_criterion.status != 'REMOVED' "
                 "AND campaign.status != 'REMOVED' "
                 "AND ad_group.status != 'REMOVED'"
