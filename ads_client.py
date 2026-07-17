@@ -1417,16 +1417,21 @@ class GoogleAdsClient:
     async def _remove_negative_keyword(self, action: dict, customer_id: str = None) -> dict:
         """
         Удаляет минус-слово.
-        Ищет на уровне КАМПАНИИ (campaign_criterion) и на уровне ГРУППЫ (ad_group_criterion).
-        NOT_FOUND возникал потому что слово было на уровне группы, а код искал только в кампании.
+        ВСЕГДА ищет по тексту через API — resource_name из action игнорируется,
+        так как он может быть resource_name поискового запроса (search_term),
+        а не минус-слова, что вызывает NOT_FOUND.
+        Ищет на уровне КАМПАНИИ и ГРУППЫ объявлений.
         """
         if not customer_id: customer_id = self.customer_id
         term = action.get('term', '').strip().lower()
-        resource_name = action.get('resource_name', '').strip()
+        # Намеренно игнорируем resource_name из action — он часто неправильный
+        resource_name = ""
 
-        if not resource_name:
-            if not term:
-                raise ValueError("Не указан ни resource_name, ни term для удаления минус-слова")
+        if not term:
+            # Последний шанс — пробуем взять из resource_name если term пустой
+            resource_name = action.get('resource_name', '').strip()
+            if not resource_name:
+                raise ValueError("Не указан term для удаления минус-слова")
 
             # Шаг 1: ищем на уровне кампании (campaign_criterion)
             camp_query = (
