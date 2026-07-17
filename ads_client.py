@@ -1333,51 +1333,87 @@ class GoogleAdsClient:
 
     async def _remove_negative_keyword(self, action: dict, customer_id: str = None) -> dict:
         """
-        Удаляет минус-слово (campaign_criterion).
-        Если resource_name не передан или пустой — ищет его через API по тексту термина.
+        Удаляет минус-слово.
+        Ищет на уровне КАМПАНИИ (campaign_criterion) и на уровне ГРУППЫ (ad_group_criterion).
+        NOT_FOUND возникал потому что слово было на уровне группы, а код искал только в кампании.
         """
         if not customer_id: customer_id = self.customer_id
         term = action.get('term', '').strip().lower()
         resource_name = action.get('resource_name', '').strip()
 
-        # Если resource_name не передан — ищем через API по тексту
         if not resource_name:
             if not term:
                 raise ValueError("Не указан ни resource_name, ни term для удаления минус-слова")
-            query = (
-                f"SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
-                f"FROM campaign_criterion "
-                f"WHERE campaign_criterion.type = 'KEYWORD' "
-                f"AND campaign_criterion.negative = true "
-                f"AND campaign.status != 'REMOVED'"
-            )
-            rows = await self._search(customer_id, query)
-            found = None
-            for row in rows:
-                if row.campaign_criterion.keyword.text.lower() == term:
-                    found = row.campaign_criterion.resource_name
-                    break
-            if not found:
-                # Попробуем частичное совпадение
-                for row in rows:
-                    if term in row.campaign_criterion.keyword.text.lower():
-                        found = row.campaign_criterion.resource_name
-                        break
-            if not found:
-                existing = [row.campaign_criterion.keyword.text for row in rows[:20]]
-                raise ValueError(
-                    f"Минус-слово '{term}' не найдено в кампании. "
-                    f"Существующие минус-слова: {existing}"
-                )
-            resource_name = found
-            log.info(f"_remove_negative_keyword: найден resource_name для '{term}': {resource_name}")
 
+            # Шаг 1: ищем на уровне кампании (campaign_criterion)
+            camp_query = (
+                "SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
+                "FROM campaign_criterion "
+                "WHERE campaign_criterion.type = 'KEYWORD' "
+                "AND campaign_criterion.negative = true "
+                "AND campaign.status != 'REMOVED'"
+            )
+            camp_rows = await self._search(customer_id, camp_query)
+            found_rn = None
+            found_level = None
+            for row in camp_rows:
+                if row.campaign_criterion.keyword.text.lower() == term:
+                    found_rn = row.campaign_criterion.resource_name
+                    found_level = "campaign"
+                    break
+            if not found_rn:
+                for row in camp_rows:
+                    if term in row.campaign_criterion.keyword.text.lower():
+                        found_rn = row.campaign_criterion.resource_name
+                        found_level = "campaign"
+                        break
+
+            # Шаг 2: если не нашли на уровне кампании — ищем на уровне группы объявлений
+            if not found_rn:
+                group_query = (
+                    "SELECT ad_group_criterion.resource_name, ad_group_criterion.keyword.text "
+                    "FROM ad_group_criterion "
+                    "WHERE ad_group_criterion.type = 'KEYWORD' "
+                    "AND ad_group_criterion.negative = true "
+                    "AND campaign.status != 'REMOVED' "
+                    "AND ad_group.status != 'REMOVED'"
+                )
+                group_rows = await self._search(customer_id, group_query)
+                for row in group_rows:
+                    if row.ad_group_criterion.keyword.text.lower() == term:
+                        found_rn = row.ad_group_criterion.resource_name
+                        found_level = "ad_group"
+                        break
+                if not found_rn:
+                    for row in group_rows:
+                        if term in row.ad_group_criterion.keyword.text.lower():
+                            found_rn = row.ad_group_criterion.resource_name
+                            found_level = "ad_group"
+                            break
+
+            if not found_rn:
+                camp_existing = [r.campaign_criterion.keyword.text for r in camp_rows[:10]]
+                raise ValueError(
+                    f"Минус-слово '{term}' не найдено ни на уровне кампании, ни на уровне группы. "
+                    f"Минус-слова кампании: {camp_existing}"
+                )
+            resource_name = found_rn
+            log.info(f"_remove_negative_keyword: '{term}' найдено на уровне {found_level}: {resource_name}")
+
+        # Определяем уровень по resource_name и выбираем нужный сервис
         client = self._get_client()
-        svc = client.get_service("CampaignCriterionService")
-        op = client.get_type("CampaignCriterionOperation")
-        op.remove = resource_name
-        await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=[op])
-        return {'summary': f"Минус-слово '{term or resource_name}' удалено из кампании"}
+        if "/adGroupCriteria/" in resource_name or "adGroupCriterion" in resource_name:
+            svc = client.get_service("AdGroupCriterionService")
+            op = client.get_type("AdGroupCriterionOperation")
+            op.remove = resource_name
+            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
+        else:
+            svc = client.get_service("CampaignCriterionService")
+            op = client.get_type("CampaignCriterionOperation")
+            op.remove = resource_name
+            await asyncio.to_thread(svc.mutate_campaign_criteria, customer_id=customer_id, operations=[op])
+
+        return {'summary': f"Минус-слово '{term or resource_name}' удалено"}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
