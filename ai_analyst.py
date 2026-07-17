@@ -1100,7 +1100,7 @@ remove_campaign, update_final_url, seasonal_adjustments, dispute_lsa_lead
 КОГДА ИСПОЛЬЗОВАТЬ remove_keywords:
 - Удалить обычное ключевое слово из кампании (не минус-слово)
 - Например: "sears repair near me" — нерелевантный бренд конкурента → remove_keywords
-- Формат: {"type": "remove_keywords", "keywords": [{"resource_name": "...", "keyword": "..."}]}
+- Формат: {{"type": "remove_keywords", "keywords": [{{"resource_name": "...", "keyword": "..."}}]}}
 
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword,
 removekeywords (без подчёркивания) и т.п.
