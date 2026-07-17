@@ -1437,12 +1437,14 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
     elif a_type == "update_final_url":
         rn = action.get("resource_name")
         new_url = action.get("new_url", "")
-        if rn and new_url:
+        kw_text = action.get("keyword", "").strip().lower()
+        if new_url:
             for kw in keywords_data:
-                if kw.get("resource_name") == rn:
-                    existing = kw.get("final_urls", [])
-                    if new_url in existing:
-                        return True, f"Лендинг уже = {new_url}"
+                existing = kw.get("final_urls", [])
+                rn_match = rn and kw.get("resource_name") == rn
+                text_match = kw_text and kw.get("keyword", "").strip().lower() == kw_text
+                if (rn_match or text_match) and new_url in existing:
+                    return True, f"Лендинг уже привязан: {new_url}"
     elif a_type == "pause_keywords":
         kws = action.get("keywords", [])
         if kws:
@@ -1623,6 +1625,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    # ВСЕГДА добавляем keywords в data_needed — это реальные настройки (статус,
+    # ставки, лендинги) из ad_group_criterion без кэша. Без этого бот предлагает
+    # действия которые уже выполнены (дублирует карточки).
+    if "keywords" not in data_needed and data_needed != ["none"]:
+        data_needed.append("keywords")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
@@ -1833,6 +1840,11 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    # ВСЕГДА добавляем keywords в data_needed — это реальные настройки (статус,
+    # ставки, лендинги) из ad_group_criterion без кэша. Без этого бот предлагает
+    # действия которые уже выполнены (дублирует карточки).
+    if "keywords" not in data_needed and data_needed != ["none"]:
+        data_needed.append("keywords")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
