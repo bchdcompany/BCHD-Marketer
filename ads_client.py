@@ -266,6 +266,10 @@ class GoogleAdsClient:
             settings_map = {}
             for row in settings_rows:
                 crit = row.ad_group_criterion
+                # Дополнительная фильтрация на нашей стороне — API иногда
+                # возвращает negative=TRUE несмотря на фильтр negative=FALSE
+                if getattr(crit, 'negative', False):
+                    continue
                 rn = crit.resource_name
                 current_bid = crit.cpc_bid_micros / 1_000_000 if crit.cpc_bid_micros else None
                 effective_bid = crit.effective_cpc_bid_micros / 1_000_000 if crit.effective_cpc_bid_micros else None
@@ -1247,9 +1251,12 @@ class GoogleAdsClient:
             log.error(f"_validate_keyword_resource_names error: {e}")
             return [], [{**kw, '_skip_reason': f'ошибка API: {e}'} for kw in keywords]
 
-        by_rn = {row.ad_group_criterion.resource_name for row in all_rows}
+        by_rn = {row.ad_group_criterion.resource_name for row in all_rows
+                  if not getattr(row.ad_group_criterion, 'negative', False)}
         by_text = {}
         for row in all_rows:
+            if getattr(row.ad_group_criterion, 'negative', False):
+                continue
             txt = row.ad_group_criterion.keyword.text.strip().lower()
             if txt not in by_text:
                 by_text[txt] = row.ad_group_criterion.resource_name
