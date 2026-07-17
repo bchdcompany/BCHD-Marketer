@@ -270,7 +270,8 @@ async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
     action_type = action.get('type', '')
 
     # Для ключевых слов — три варианта: Пауза / Удалить / Отклонить
-    if action_type == 'pause_keywords':
+    if action_type in ('pause_keywords', 'removekeywords', 'remove_keywords',
+                        'deletekeywords', 'delete_keywords'):
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("⏸ Пауза", callback_data=f"approve:{action_id}"),
