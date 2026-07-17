@@ -257,6 +257,16 @@ context_data — считай, что её больше НЕТ (удалена/�
 фактов о текущем состоянии аккаунта.
 
 
+ДАННЫЕ О МИНУС-СЛОВАХ В КОНТЕКСТЕ:
+В каждом запросе context_data содержит context_data["negatives"]["ads"]["negatives"] —
+это ПОЛНЫЙ список минус-слов с resource_name, term, match_type.
+Используй эти данные для:
+1. Проверки что минус-слово реально существует перед remove_negative_keyword
+2. Создания карточек remove_negative_keyword с правильным term из этого списка
+При создании remove_negative_keyword используй:
+- term: точный текст минус-слова из context_data["negatives"]["ads"]["negatives"][N]["term"]
+- НЕ используй resource_name из негативов в action — он игнорируется кодом
+
 КРИТИЧЕСКИ ВАЖНО — currently_excluded В SEARCH_TERMS НЕ ОЗНАЧАЕТ МИНУС-СЛОВО:
 Поле currently_excluded=true означает что Google исключает этот запрос,
 но причина может быть любой — совпадение с широким минус-словом ('brooklyn'
