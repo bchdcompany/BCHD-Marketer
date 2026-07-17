@@ -1625,11 +1625,12 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
-    # ВСЕГДА добавляем keywords в data_needed — это реальные настройки (статус,
-    # ставки, лендинги) из ad_group_criterion без кэша. Без этого бот предлагает
-    # действия которые уже выполнены (дублирует карточки).
+    # ВСЕГДА добавляем keywords в data_needed — реальные настройки из API.
     if "keywords" not in data_needed and data_needed != ["none"]:
         data_needed.append("keywords")
+    # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
+    if "negatives" not in data_needed and data_needed != ["none"]:
+        data_needed.append("negatives")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
@@ -1666,6 +1667,10 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     context_data["keywords"][acc] = await ads_client.get_keywords_analysis(account=acc)
                 kw_list = context_data["keywords"][acc].get("keywords", [])
                 context_data["landing_pages"][acc] = await ads_client.get_landing_pages_for_keywords(kw_list, account=acc)
+        if "negatives" in data_needed:
+            context_data["negatives"] = {}
+            for acc in ["ads"]:  # минус-слова только для Search, не LSA
+                context_data["negatives"][acc] = await ads_client.get_negative_keywords_list(account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
         if "seasonal" in data_needed:
@@ -1840,11 +1845,12 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
-    # ВСЕГДА добавляем keywords в data_needed — это реальные настройки (статус,
-    # ставки, лендинги) из ad_group_criterion без кэша. Без этого бот предлагает
-    # действия которые уже выполнены (дублирует карточки).
+    # ВСЕГДА добавляем keywords в data_needed — реальные настройки из API.
     if "keywords" not in data_needed and data_needed != ["none"]:
         data_needed.append("keywords")
+    # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
+    if "negatives" not in data_needed and data_needed != ["none"]:
+        data_needed.append("negatives")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
