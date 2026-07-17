@@ -251,6 +251,8 @@ class GoogleAdsClient:
                 metrics.conversions
             FROM keyword_view
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
+              AND ad_group_criterion.type = 'KEYWORD'
+              AND ad_group_criterion.negative = FALSE
               AND ad_group_criterion.status != 'REMOVED'
               AND campaign.status != 'REMOVED'
               AND ad_group.status != 'REMOVED'
@@ -497,9 +499,13 @@ class GoogleAdsClient:
                 ad_group_criterion.final_urls,
                 campaign.name,
                 ad_group.name
-            FROM keyword_view
+            FROM ad_group_criterion
             WHERE ad_group_criterion.keyword.text LIKE '%{safe_text}%'
+              AND ad_group_criterion.type = 'KEYWORD'
+              AND ad_group_criterion.negative = FALSE
               AND ad_group_criterion.status != 'REMOVED'
+              AND campaign.status != 'REMOVED'
+              AND ad_group.status != 'REMOVED'
         """
         try:
             rows = await self._search(customer_id, query)
