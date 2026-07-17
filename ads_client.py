@@ -215,7 +215,9 @@ class GoogleAdsClient:
             date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             date_to = datetime.now().strftime("%Y-%m-%d")
 
-        query = f"""
+        # Шаг 1: РЕАЛЬНЫЕ НАСТРОЙКИ — без фильтра по дате, только текущий статус.
+        # Это источник истины о том что СЕЙЧАС есть в аккаунте.
+        settings_query = """
             SELECT
                 ad_group_criterion.resource_name,
                 ad_group_criterion.keyword.text,
@@ -227,7 +229,19 @@ class GoogleAdsClient:
                 ad_group_criterion.effective_cpc_bid_micros,
                 campaign.name,
                 ad_group.id,
-                ad_group.name,
+                ad_group.name
+            FROM ad_group_criterion
+            WHERE ad_group_criterion.type = 'KEYWORD'
+              AND ad_group_criterion.status != 'REMOVED'
+              AND campaign.status != 'REMOVED'
+              AND ad_group.status != 'REMOVED'
+            LIMIT 300
+        """
+
+        # Шаг 2: ИСТОРИЧЕСКИЕ МЕТРИКИ — только для ключей которые реально существуют.
+        metrics_query = f"""
+            SELECT
+                ad_group_criterion.resource_name,
                 metrics.impressions,
                 metrics.clicks,
                 metrics.ctr,
@@ -239,42 +253,66 @@ class GoogleAdsClient:
               AND ad_group_criterion.status != 'REMOVED'
               AND campaign.status != 'REMOVED'
               AND ad_group.status != 'REMOVED'
-            ORDER BY metrics.cost_micros DESC
-            LIMIT 200
+            LIMIT 300
         """
 
         try:
-            rows = await self._search(customer_id, query)
-            keywords = []
-            for row in rows:
+            # Получаем реальные настройки
+            settings_rows = await self._search(customer_id, settings_query)
+            # Строим словарь: resource_name → настройки
+            settings_map = {}
+            for row in settings_rows:
                 crit = row.ad_group_criterion
+                rn = crit.resource_name
                 current_bid = crit.cpc_bid_micros / 1_000_000 if crit.cpc_bid_micros else None
                 effective_bid = crit.effective_cpc_bid_micros / 1_000_000 if crit.effective_cpc_bid_micros else None
-                keywords.append({
-                    'resource_name': crit.resource_name,
+                settings_map[rn] = {
+                    'resource_name': rn,
                     'keyword': crit.keyword.text,
                     'match_type': crit.keyword.match_type.name,
-                    'status': crit.status.name,
+                    'status': crit.status.name,  # РЕАЛЬНЫЙ текущий статус
                     'campaign': row.campaign.name,
                     'ad_group': row.ad_group.name,
                     'ad_group_id': row.ad_group.id,
                     'final_urls': list(crit.final_urls) if crit.final_urls else [],
-                    'impressions': row.metrics.impressions,
-                    'clicks': row.metrics.clicks,
-                    'ctr': round(row.metrics.ctr * 100, 2),
-                    # ВАЖНО: 'cpc' — это ИСТОРИЧЕСКАЯ средняя цена клика за
-                    # последние 30 дней (усреднённая по всему периоду, включая
-                    # дни ДО любого недавнего изменения ставки). НЕ путать с
-                    # текущей назначенной ставкой! Для проверки "применилось
-                    # ли изменение ставки" используй ТОЛЬКО 'current_bid'.
-                    'cpc': round(row.metrics.average_cpc / 1_000_000, 2),
-                    'current_bid': current_bid,
+                    'current_bid': current_bid,  # РЕАЛЬНАЯ текущая ставка
                     'effective_bid': effective_bid,
-                    'spend': round(row.metrics.cost_micros / 1_000_000, 2),
-                    'conversions': round(row.metrics.conversions, 1),
                     'quality_score': crit.quality_info.quality_score,
-                })
-            return {'keywords': keywords, 'total': len(keywords), 'date_from': date_from, 'date_to': date_to, 'account': account}
+                    # Метрики по умолчанию нули — заполним из metrics_query
+                    'impressions': 0, 'clicks': 0, 'ctr': 0.0,
+                    'cpc': 0.0, 'spend': 0.0, 'conversions': 0.0,
+                }
+
+            # Получаем исторические метрики и добавляем к настройкам
+            try:
+                metrics_rows = await self._search(customer_id, metrics_query)
+                for row in metrics_rows:
+                    rn = row.ad_group_criterion.resource_name
+                    if rn in settings_map:
+                        settings_map[rn].update({
+                            'impressions': row.metrics.impressions,
+                            'clicks': row.metrics.clicks,
+                            'ctr': round(row.metrics.ctr * 100, 2),
+                            'cpc': round(row.metrics.average_cpc / 1_000_000, 2),
+                            'spend': round(row.metrics.cost_micros / 1_000_000, 2),
+                            'conversions': round(row.metrics.conversions, 1),
+                        })
+                    # Если ключ есть в метриках но НЕТ в settings_map — он удалён,
+                    # игнорируем его (это и есть исправление "зомби-ключей")
+            except Exception as e:
+                log.warning(f"get_keywords_analysis: ошибка получения метрик (настройки уже есть): {e}")
+
+            keywords = list(settings_map.values())
+            keywords.sort(key=lambda x: x['spend'], reverse=True)
+
+            return {
+                'keywords': keywords,
+                'total': len(keywords),
+                'date_from': date_from,
+                'date_to': date_to,
+                'account': account,
+                '_note': 'Статус/ставки/лендинги — реальные настройки прямо сейчас. Метрики — за указанный период.'
+            }
         except Exception as e:
             log.error(f"get_keywords_analysis({account}) error: {e}")
             return {'error': str(e), 'keywords': [], 'account': account}
