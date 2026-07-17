@@ -1482,19 +1482,9 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
             ids_to_check.append(str(action["resource_name"]))
     elif a_type in ("pause_keywords", "enable_keywords",
                     "remove_keywords", "removekeywords", "delete_keywords"):
-        # Для операций с ключами проверяем по тексту ключа в context_data
-        kws_in_context = set()
-        for v in context_data.values():
-            if isinstance(v, dict) and "keywords" in v:
-                for kw in v.get("keywords", []):
-                    txt = kw.get("keyword", "").strip().lower()
-                    if txt:
-                        kws_in_context.add(txt)
-        for kw in action.get("keywords", []):
-            kw_text = (kw.get("keyword") or kw.get("text", "")).strip().lower()
-            if kw_text and kw_text not in kws_in_context:
-                log.warning(f"_action_ids_verified: ключ '{kw_text}' не найден в контексте")
-                return False
+        # Для паузы/удаления ключей НЕ блокируем по ID — resource_name
+        # проверяется непосредственно перед мутацией в ads_client._validate_keyword_resource_names.
+        # Двойная проверка здесь только создаёт ложные блокировки.
         return True
     elif a_type == "seasonal_adjustments":
         for adj in action.get("adjustments", []):
