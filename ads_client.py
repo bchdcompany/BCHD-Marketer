@@ -544,38 +544,79 @@ class GoogleAdsClient:
 
     async def get_negative_keywords_list(self, account: str = "ads") -> dict:
         """
-        Прямая диагностическая проверка: возвращает ПОЛНЫЙ текущий список
-        минус-слов на уровне кампаний (campaign_criterion, negative=true,
-        type=KEYWORD) напрямую из Google Ads API, без анализа ИИ.
+        Возвращает ПОЛНЫЙ список минус-слов — на уровне кампании И группы объявлений.
+        Ранее возвращались только campaign_criterion — из-за этого минус-слова
+        на уровне группы (ad_group_criterion) не были видны боту, и он путал
+        их с обычными ключами.
         """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'negatives': []}
 
-        query = """
-            SELECT
-                campaign_criterion.resource_name,
-                campaign_criterion.keyword.text,
-                campaign_criterion.keyword.match_type,
-                campaign.name
-            FROM campaign_criterion
-            WHERE campaign_criterion.type = 'KEYWORD'
-              AND campaign_criterion.negative = TRUE
-        """
+        negatives = []
+
+        # Уровень 1: минус-слова кампании
         try:
-            rows = await self._search(customer_id, query)
-            negatives = []
-            for row in rows:
+            camp_rows = await self._search(customer_id, """
+                SELECT
+                    campaign_criterion.resource_name,
+                    campaign_criterion.keyword.text,
+                    campaign_criterion.keyword.match_type,
+                    campaign.name
+                FROM campaign_criterion
+                WHERE campaign_criterion.type = 'KEYWORD'
+                  AND campaign_criterion.negative = TRUE
+            """)
+            for row in camp_rows:
                 negatives.append({
                     'resource_name': row.campaign_criterion.resource_name,
                     'term': row.campaign_criterion.keyword.text,
                     'match_type': row.campaign_criterion.keyword.match_type.name,
                     'campaign': row.campaign.name,
+                    'level': 'campaign',
                 })
-            return {'negatives': negatives, 'total': len(negatives), 'account': account}
         except Exception as e:
-            log.error(f"get_negative_keywords_list({account}) error: {e}")
-            return {'error': str(e), 'negatives': []}
+            log.error(f"get_negative_keywords_list campaign level error: {e}")
+
+        # Уровень 2: минус-слова группы объявлений
+        try:
+            group_rows = await self._search(customer_id, """
+                SELECT
+                    ad_group_criterion.resource_name,
+                    ad_group_criterion.keyword.text,
+                    ad_group_criterion.keyword.match_type,
+                    campaign.name,
+                    ad_group.name
+                FROM ad_group_criterion
+                WHERE ad_group_criterion.type = 'KEYWORD'
+                  AND ad_group_criterion.negative = TRUE
+                  AND campaign.status != 'REMOVED'
+                  AND ad_group.status != 'REMOVED'
+            """)
+            for row in group_rows:
+                negatives.append({
+                    'resource_name': row.ad_group_criterion.resource_name,
+                    'term': row.ad_group_criterion.keyword.text,
+                    'match_type': row.ad_group_criterion.keyword.match_type.name,
+                    'campaign': row.campaign.name,
+                    'ad_group': row.ad_group.name,
+                    'level': 'ad_group',
+                })
+        except Exception as e:
+            log.error(f"get_negative_keywords_list ad_group level error: {e}")
+
+        # Строим set всех текстов минус-слов для быстрой проверки
+        negative_terms = {n['term'].strip().lower() for n in negatives}
+        log.info(f"get_negative_keywords_list: найдено {len(negatives)} минус-слов "
+                 f"({sum(1 for n in negatives if n.get('level')=='campaign')} campaign + "
+                 f"{sum(1 for n in negatives if n.get('level')=='ad_group')} ad_group)")
+
+        return {
+            'negatives': negatives,
+            'negative_terms': list(negative_terms),  # удобный flat список для проверки
+            'total': len(negatives),
+            'account': account,
+        }
 
     async def get_search_terms(self, days: int = 30, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
