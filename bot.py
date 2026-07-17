@@ -1417,6 +1417,48 @@ async def scheduled_lsa_weekly_audit(app):
         log.error(f"Ошибка еженедельного аудита LSA: {e}")
 
 
+def _action_already_applied(action: dict, context_data: dict) -> tuple:
+    a_type = action.get("type", "")
+    keywords_data = []
+    for v in context_data.values():
+        if isinstance(v, dict) and "keywords" in v:
+            keywords_data.extend(v["keywords"])
+
+    if a_type == "update_bid":
+        rn = action.get("resource_name")
+        new_bid = action.get("new_bid")
+        if rn and new_bid:
+            for kw in keywords_data:
+                if kw.get("resource_name") == rn:
+                    current = kw.get("current_bid")
+                    if current and abs(float(current) - float(new_bid)) < 0.01:
+                        return True, f"Ставка уже ${current:.2f} — совпадает с предлагаемой"
+    elif a_type == "update_final_url":
+        rn = action.get("resource_name")
+        new_url = action.get("new_url", "")
+        if rn and new_url:
+            for kw in keywords_data:
+                if kw.get("resource_name") == rn:
+                    existing = kw.get("final_urls", [])
+                    if new_url in existing:
+                        return True, f"Лендинг уже = {new_url}"
+    elif a_type == "pause_keywords":
+        kws = action.get("keywords", [])
+        if kws:
+            rns = {k.get("resource_name") for k in kws}
+            paused = [kw for kw in keywords_data if kw.get("resource_name") in rns and kw.get("status") == "PAUSED"]
+            if len(paused) == len(kws):
+                return True, f"Все {len(kws)} ключей уже PAUSED"
+    elif a_type == "enable_keywords":
+        kws = action.get("keywords", [])
+        if kws:
+            rns = {k.get("resource_name") for k in kws}
+            enabled = [kw for kw in keywords_data if kw.get("resource_name") in rns and kw.get("status") == "ENABLED"]
+            if len(enabled) == len(kws):
+                return True, f"Все {len(kws)} ключей уже ENABLED"
+    return False, ""
+
+
 def _action_ids_verified(action: dict, context_data: dict) -> bool:
     import json as _json
     context_str = _json.dumps(context_data, ensure_ascii=False)
@@ -1660,6 +1702,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"чтобы получить оставшиеся."
             ),
         )
+    already_applied_count = 0
     for action in proposed:
         try:
             action.setdefault("account", accounts[0])
@@ -1670,6 +1713,13 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not _action_ids_verified(action, context_data):
                 log.warning(f"Действие заблокировано — ID не найдены в свежих данных: {action}")
                 blocked_actions += 1
+                continue
+
+            # Проверяем не применено ли уже это действие по текущим настройкам
+            already, reason = _action_already_applied(action, context_data)
+            if already:
+                log.info(f"Действие пропущено — уже применено: {action.get('type')} | {reason}")
+                already_applied_count += 1
                 continue
 
             action_id = await pending.add(action)
@@ -1684,6 +1734,14 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ {blocked_actions} предложенное действие заблокировано: "
                 f"ID не найдены в свежих данных этого запроса. "
                 f"Запроси данные заново явной командой."
+            ),
+        )
+    if already_applied_count:
+        await ctx.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                f"ℹ️ {already_applied_count} действие пропущено — уже применено "
+                f"по текущим настройкам Google Ads."
             ),
         )
 
