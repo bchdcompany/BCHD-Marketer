@@ -1986,10 +1986,37 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             verified = verification.get("verified")
             await pending.record_execution_result(param, verified)
             if verified is True:
+                # Формируем детали проверки в зависимости от типа действия
+                action_type = action.get('type', '')
+                verify_details = ""
+                if action_type == 'update_bid':
+                    actual = verification.get('actual_bid')
+                    expected = verification.get('expected_bid')
+                    if actual is not None:
+                        verify_details = f"\n📊 Текущая ставка в настройках: *${actual:.2f}* (ожидалось ${expected:.2f})"
+                elif action_type in ('pause_keywords', 'enable_keywords'):
+                    cnt = verification.get('verified_count', 0)
+                    total = verification.get('total', 0)
+                    status = 'PAUSED' if action_type == 'pause_keywords' else 'ENABLED'
+                    verify_details = f"\n📊 Статус в настройках: {cnt}/{total} ключей = {status}"
+                elif action_type == 'add_negative_keywords':
+                    missing = verification.get('missing_terms', [])
+                    expected = verification.get('expected_terms', [])
+                    if not missing:
+                        verify_details = f"\n📊 Все {len(expected)} минус-слов найдены в настройках кампании"
+                elif action_type == 'budget_change':
+                    actual = verification.get('actual_budget')
+                    if actual is not None:
+                        verify_details = f"\n📊 Текущий бюджет в настройках: *${actual:.2f}/день*"
+                elif action_type == 'remove_negative_keyword':
+                    verify_details = f"\n📊 Минус-слово отсутствует в настройках — удаление подтверждено"
+
                 text = (
                     f"✅ *Выполнено и подтверждено:* {action['description']}\n\n"
-                    f"{result.get('summary', str(result))}\n\n"
-                    f"_Подтверждено повторным запросом к Google Ads API — изменение реально применилось._"
+                    f"{result.get('summary', str(result))}"
+                    f"{verify_details}\n\n"
+                    f"_Проверено по текущим настройкам Google Ads (не по метрикам). "
+                    f"В отчётах изменение отразится через 3-24 часа._"
                 )
             elif verified is False:
                 text = (
