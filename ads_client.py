@@ -1231,14 +1231,39 @@ class GoogleAdsClient:
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
         ops = []
+        errors = []
         for kw in valid_kws:
-            op = client.get_type("AdGroupCriterionOperation")
-            op.update.resource_name = kw['resource_name']
-            op.update.status = client.enums.AdGroupCriterionStatusEnum.PAUSED
-            op.update_mask.paths.append("status")
-            ops.append(op)
+            rn = kw['resource_name']
+            try:
+                op = client.get_type("AdGroupCriterionOperation")
+                op.update.resource_name = rn
+                op.update.status = client.enums.AdGroupCriterionStatusEnum.PAUSED
+                op.update_mask.paths.append("status")
+                ops.append(op)
+            except Exception as e:
+                log.error(f"_pause_keywords: ошибка создания op для {kw.get('keyword')}: {e}")
+                errors.append(kw.get('keyword', rn))
         if ops:
-            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
+            try:
+                await asyncio.to_thread(svc.mutate_ad_group_criteria,
+                    customer_id=customer_id, operations=ops)
+            except Exception as e:
+                # Пробуем по одному чтобы найти проблемный ключ
+                log.error(f"_pause_keywords batch failed: {e} — пробуем по одному")
+                success, failed = 0, []
+                for op in ops:
+                    try:
+                        await asyncio.to_thread(svc.mutate_ad_group_criteria,
+                            customer_id=customer_id, operations=[op])
+                        success += 1
+                    except Exception as e2:
+                        log.error(f"_pause_keywords single op failed {op.update.resource_name}: {e2}")
+                        failed.append(op.update.resource_name)
+                if failed:
+                    raise ValueError(
+                        f"Не удалось паузировать {len(failed)} ключей: {failed}. "
+                        f"Успешно: {success}. Ошибка: {e}"
+                    )
         summary = f"Поставлено на паузу: {len(ops)} ключей"
         if skipped_kws:
             summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
@@ -1287,7 +1312,22 @@ class GoogleAdsClient:
             op.remove = kw['resource_name']
             ops.append(op)
         if ops:
-            await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=ops)
+            try:
+                await asyncio.to_thread(svc.mutate_ad_group_criteria,
+                    customer_id=customer_id, operations=ops)
+            except Exception as e:
+                log.error(f"delete_keywords batch failed: {e} — пробуем по одному")
+                success, failed = 0, []
+                for op in ops:
+                    try:
+                        await asyncio.to_thread(svc.mutate_ad_group_criteria,
+                            customer_id=customer_id, operations=[op])
+                        success += 1
+                    except Exception as e2:
+                        log.error(f"delete_keywords single failed {op.remove}: {e2}")
+                        failed.append(op.remove)
+                if failed and success == 0:
+                    raise ValueError(f"Не удалось удалить ключи: {failed}. Ошибка: {e}")
         summary = f"Удалено ключей: {len(ops)} (необратимо)"
         if skipped_kws:
             summary += f". Пропущено {len(skipped_kws)} (не в активных кампаниях)"
