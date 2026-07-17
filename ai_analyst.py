@@ -271,15 +271,28 @@ ad_group_criterion БЕЗ фильтра по дате — только акти
 2. Если не нашёл — НЕ создавай карточку, напиши "ключ не найден в аккаунте"
 3. Если нашёл — используй его resource_name из context_data
 
-ДАННЫЕ О МИНУС-СЛОВАХ В КОНТЕКСТЕ:
-В каждом запросе context_data содержит context_data["negatives"]["ads"]["negatives"] —
-это ПОЛНЫЙ список минус-слов с resource_name, term, match_type.
-Используй эти данные для:
-1. Проверки что минус-слово реально существует перед remove_negative_keyword
-2. Создания карточек remove_negative_keyword с правильным term из этого списка
-При создании remove_negative_keyword используй:
-- term: точный текст минус-слова из context_data["negatives"]["ads"]["negatives"][N]["term"]
-- НЕ используй resource_name из негативов в action — он игнорируется кодом
+ДАННЫЕ В КОНТЕКСТЕ — ДВА РАЗНЫХ СПИСКА:
+
+1. context_data["keywords"]["ads"]["keywords"] — ОБЫЧНЫЕ КЛЮЧЕВЫЕ СЛОВА
+   Это ключи по которым Google показывает наши объявления.
+   Только с ними можно делать: pause_keywords, enable_keywords,
+   update_bid, update_final_url, remove_keywords.
+
+2. context_data["negatives"]["ads"]["negatives"] — МИНУС-СЛОВА
+   Это слова которые БЛОКИРУЮТ нерелевантный трафик. Они УЖЕ работают правильно.
+   Только с ними можно делать: remove_negative_keyword (если блокируют нужный трафик).
+   НЕЛЬЗЯ делать pause_keywords или remove_keywords для минус-слов.
+
+ЖЁСТКОЕ ПРАВИЛО:
+Перед любым proposed_action найди ключ в ПРАВИЛЬНОМ списке:
+- pause/enable/update_bid/update_final_url/remove_keywords →
+  ищи ТОЛЬКО в context_data["keywords"]["ads"]["keywords"]
+- remove_negative_keyword →
+  ищи ТОЛЬКО в context_data["negatives"]["ads"]["negatives"]
+
+Если слово есть в negatives но НЕТ в keywords — это минус-слово.
+НЕ предлагай pause_keywords или remove_keywords для него.
+Напиши пользователю: "это минус-слово, оно уже блокирует нерелевантный трафик".
 
 КРИТИЧЕСКИ ВАЖНО — currently_excluded В SEARCH_TERMS НЕ ОЗНАЧАЕТ МИНУС-СЛОВО:
 Поле currently_excluded=true означает что Google исключает этот запрос,
