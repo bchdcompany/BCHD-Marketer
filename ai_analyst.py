@@ -1094,9 +1094,16 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
 
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
-budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead
-НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
+remove_keywords, budget_change, update_bid, pause_campaign, enable_campaign,
+remove_campaign, update_final_url, seasonal_adjustments, dispute_lsa_lead
+
+КОГДА ИСПОЛЬЗОВАТЬ remove_keywords:
+- Удалить обычное ключевое слово из кампании (не минус-слово)
+- Например: "sears repair near me" — нерелевантный бренд конкурента → remove_keywords
+- Формат: {"type": "remove_keywords", "keywords": [{"resource_name": "...", "keyword": "..."}]}
+
+НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword,
+removekeywords (без подчёркивания) и т.п.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
