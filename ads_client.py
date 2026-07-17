@@ -971,6 +971,11 @@ class GoogleAdsClient:
             'removenegativekeyword': self._remove_negative_keyword,
             'removenegativekeywords': self._remove_negative_keyword,
             'remove_negative_keywords': self._remove_negative_keyword,
+            # removekeywords = удалить обычные ключи (не минус-слова)
+            'removekeywords': self.delete_keywords,
+            'remove_keywords': self.delete_keywords,
+            'deletekeywords': self.delete_keywords,
+            'delete_keywords': self.delete_keywords,
             'addnegativekeywords': self._add_negative_keywords,
             'pausekeywords': self._pause_keywords,
             'enablekeywords': self._enable_keywords,
