@@ -375,7 +375,36 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
         thumbtack_days = (today - today.replace(day=1)).days + 1
-        text += await _get_thumbtack_summary_line(days=thumbtack_days)
+
+        # Реальные данные Thumbtack из Workiz
+        tt_budget = config.THUMBTACK_WEEKLY_BUDGET
+        tt_cost = round(tt_budget / 7 * thumbtack_days, 2)
+        try:
+            tt_result = await workiz_client.get_jobs_by_source("Thumbtack", month_from, month_to)
+            tt_jobs = tt_result.get("total_jobs", 0)
+            tt_revenue = tt_result.get("total_revenue", 0)
+            tt_collected = tt_result.get("total_collected", 0)
+            tt_jobs_list = tt_result.get("jobs", [])
+
+            text += f"\n*Thumbtack:* бюджет ${tt_budget:.0f}/нед (~${tt_cost:.0f} за период)\n"
+            if tt_jobs > 0:
+                tt_avg = round(tt_revenue / tt_jobs, 2)
+                tt_roas = round(tt_revenue / tt_cost, 2) if tt_cost > 0 else 0
+                tt_cpa = round(tt_cost / tt_jobs, 2) if tt_jobs > 0 else 0
+                roas_e = "🟢" if tt_roas >= 2 else "🟡" if tt_roas >= 1 else "🔴"
+                text += f"• Джобов: {tt_jobs} | Выручка: ${tt_revenue:.2f} | Собрано: ${tt_collected:.2f}\n"
+                text += f"• Средний чек: ${tt_avg:.2f} | {roas_e} ROAS: {tt_roas:.1f}x | CPA: ${tt_cpa:.2f}\n"
+                if tt_jobs_list:
+                    text += "• Работы:\n"
+                    for j in tt_jobs_list[:5]:
+                        text += f"  #{j.get('serial_id','?')} ${j.get('total',0):.0f} ({j.get('status','?')}) {j.get('created_date','')[:10]}\n"
+                    if tt_jobs > 5:
+                        text += f"  ...и ещё {tt_jobs - 5} работ\n"
+            else:
+                text += f"• Работ не найдено — проверь источник в Workiz\n"
+        except Exception as e:
+            log.error(f"Thumbtack в /both: {e}")
+            text += f"\n*Thumbtack:* бюджет ~${tt_cost:.0f} (ошибка загрузки данных)\n"
 
         await _safe_edit(msg, text, parse_mode="Markdown")
 
