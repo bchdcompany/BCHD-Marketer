@@ -2460,22 +2460,45 @@ def _format_both_summary(data: dict) -> str:
 
 async def _get_thumbtack_summary_line(days: int = 30) -> str:
     """
-    Короткая строка по Thumbtack (расход, джобы, выручка) за период —
-    используется в ежедневных отчётах, чтобы канал не оставался невидимым
-    в промежутках между еженедельной детальной проверкой (scheduled_thumbtack_check).
+    Реальные данные по Thumbtack из Workiz — джобы, выручка, ROAS.
     """
     try:
         date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
         date_from = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
-        thumbtack_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
+        thumbtack_budget = config.THUMBTACK_WEEKLY_BUDGET
+        thumbtack_cost = round(thumbtack_budget / 7 * days, 2)
+
         result = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
-        jobs = result.get('total_jobs', 0)
-        revenue = result.get('total_revenue', 0)
-        line = f"\n*Thumbtack (расчётно):* ${thumbtack_cost:.2f} / {jobs} джоб(ов)"
+        jobs = result.get("total_jobs", 0)
+        revenue = result.get("total_revenue", 0)
+        collected = result.get("total_collected", 0)
+        due = result.get("total_due", 0)
+        jobs_list = result.get("jobs", [])
+
+        line = f"\n*Thumbtack:* бюджет ${thumbtack_budget:.0f}/нед (~${thumbtack_cost:.0f} за период)"
         if jobs > 0:
-            line += f" / выручка ${revenue:.2f}"
-        elif thumbtack_cost > 0:
-            line += " ⚠️ бюджет потрачен, джобов не найдено"
+            avg_ticket = round(revenue / jobs, 2) if jobs else 0
+            line += f"\n  Джобов: {jobs} | Выручка: ${revenue:.2f} | Собрано: ${collected:.2f}"
+            if due > 0:
+                line += f" | Долг: ${due:.2f}"
+            line += f" | Средний чек: ${avg_ticket:.2f}"
+            if thumbtack_cost > 0:
+                roas = round(revenue / thumbtack_cost, 2)
+                cpa = round(thumbtack_cost / jobs, 2)
+                roas_emoji = "🟢" if roas >= 2 else "🟡" if roas >= 1 else "🔴"
+                line += f"\n  {roas_emoji} ROAS: {roas:.1f}x | CPA: ${cpa:.2f}"
+            if jobs_list:
+                line += "\n  Работы:"
+                for j in jobs_list[:5]:
+                    serial = j.get("serial_id", "?")
+                    total = j.get("total", 0)
+                    status = j.get("status", "?")
+                    date = j.get("created_date", "")[:10]
+                    line += f"\n  • #{serial} ${total:.0f} ({status}) {date}"
+                if jobs > 5:
+                    line += f"\n  • ...и ещё {jobs - 5} работ"
+        else:
+            line += f"\n  ⚠️ Работ с источником Thumbtack не найдено за период"
         return line
     except Exception as e:
         log.error(f"Ошибка получения сводки Thumbtack: {e}")
