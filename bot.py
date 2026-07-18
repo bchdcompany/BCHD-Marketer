@@ -34,6 +34,12 @@ from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
+try:
+    from strategy import StrategyMemory
+    _strategy_available = True
+except ImportError:
+    _strategy_available = False
+    log = __import__('logging').getLogger(__name__)
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -47,6 +53,7 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
+strategy_memory = StrategyMemory() if _strategy_available else None
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -71,6 +78,9 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
+        if strategy_memory:
+            strategy_memory.set_pool(pool)
+            await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -333,6 +343,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
         f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
+        f"/strategy — стратегический план на эту неделю\n"
         f"/clearmemory — очистить память переписки (начать с чистого листа)\n"
         f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
         parse_mode="Markdown",
@@ -375,36 +386,7 @@ async def cmd_both(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text += f"*LSA (667):* ⚠️ {lsa_data.get('error')}\n"
 
         thumbtack_days = (today - today.replace(day=1)).days + 1
-
-        # Реальные данные Thumbtack из Workiz
-        tt_budget = config.THUMBTACK_WEEKLY_BUDGET
-        tt_cost = round(tt_budget / 7 * thumbtack_days, 2)
-        try:
-            tt_result = await workiz_client.get_jobs_by_source("Thumbtack", month_from, month_to)
-            tt_jobs = tt_result.get("total_jobs", 0)
-            tt_revenue = tt_result.get("total_revenue", 0)
-            tt_collected = tt_result.get("total_collected", 0)
-            tt_jobs_list = tt_result.get("jobs", [])
-
-            text += f"\n*Thumbtack:* бюджет ${tt_budget:.0f}/нед (~${tt_cost:.0f} за период)\n"
-            if tt_jobs > 0:
-                tt_avg = round(tt_revenue / tt_jobs, 2)
-                tt_roas = round(tt_revenue / tt_cost, 2) if tt_cost > 0 else 0
-                tt_cpa = round(tt_cost / tt_jobs, 2) if tt_jobs > 0 else 0
-                roas_e = "🟢" if tt_roas >= 2 else "🟡" if tt_roas >= 1 else "🔴"
-                text += f"• Джобов: {tt_jobs} | Выручка: ${tt_revenue:.2f} | Собрано: ${tt_collected:.2f}\n"
-                text += f"• Средний чек: ${tt_avg:.2f} | {roas_e} ROAS: {tt_roas:.1f}x | CPA: ${tt_cpa:.2f}\n"
-                if tt_jobs_list:
-                    text += "• Работы:\n"
-                    for j in tt_jobs_list[:5]:
-                        text += f"  #{j.get('serial_id','?')} ${j.get('total',0):.0f} ({j.get('status','?')}) {j.get('created_date','')[:10]}\n"
-                    if tt_jobs > 5:
-                        text += f"  ...и ещё {tt_jobs - 5} работ\n"
-            else:
-                text += f"• Работ не найдено — проверь источник в Workiz\n"
-        except Exception as e:
-            log.error(f"Thumbtack в /both: {e}")
-            text += f"\n*Thumbtack:* бюджет ~${tt_cost:.0f} (ошибка загрузки данных)\n"
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
 
         await _safe_edit(msg, text, parse_mode="Markdown")
 
@@ -923,69 +905,9 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"📊 Считаю реальный ROAS за {days} дней...")
     try:
-        # Получаем расходы из Google Ads API
-        ads_spend = await ads_client.get_spend_for_period(date_from, date_to, account="ads")
-        lsa_spend = await ads_client.get_spend_for_period(date_from, date_to, account="lsa")
-        ads_cost = ads_spend.get("spend", 0)
-        lsa_cost = lsa_spend.get("spend", 0)
-        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
-
-        # ROAS из Workiz по всем каналам
-        # В Workiz источник "Google" включает и Search и LSA (до введения LSA тега)
-        # поэтому объединяем расходы Google Ads + LSA под ключом "Google"
-        roas_data = await workiz_client.get_roas_report(
-            date_from, date_to,
-            {"Google": ads_cost + lsa_cost, "Thumbtack": tt_cost}
-        )
-        channels = roas_data.get("channels", [])
-        summary = roas_data.get("summary", {})
-
-        text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
-        text += f"💰 *Расходы:*\n"
-        text += f"• Google Ads: ${ads_cost:.2f}\n"
-        text += f"• LSA: ${lsa_cost:.2f}\n"
-        text += f"• Thumbtack (бюджет ${config.THUMBTACK_WEEKLY_BUDGET:.0f}/нед): ${tt_cost:.2f}\n"
-        text += f"• Итого: ${ads_cost + lsa_cost + tt_cost:.2f}\n\n"
-
-        emoji_map = {"Google Ads": "🔍", "LSA": "📋", "Thumbtack": "📌",
-                     "Yelp": "⭐", "Google": "🔍", "Customer return": "🔄",
-                     "Referral from others": "🤝", "Website": "🌐"}
-
-        for ch in channels:
-            name = ch["channel"]
-            emoji = emoji_map.get(name, "📦")
-            jobs = ch["jobs_count"]
-            revenue = ch["total_revenue"]
-            collected = ch["collected"]
-            due = ch["outstanding"]
-            spend = ch.get("ad_spend", 0)
-            roas = ch.get("roas")
-            cpa = ch.get("cpa_real")
-            avg = ch.get("avg_ticket", 0)
-
-            text += f"{emoji} *{name}:*\n"
-            text += f"• Джобов: {jobs} | Выручка: ${revenue:.2f} | Собрано: ${collected:.2f}\n"
-            if due > 0:
-                text += f"• Долг: ${due:.2f}\n"
-            if avg > 0:
-                text += f"• Средний чек: ${avg:.2f}\n"
-            if roas is not None:
-                roas_e = "🟢" if roas >= 2 else "🟡" if roas >= 1 else "🔴"
-                text += f"• {roas_e} ROAS: {roas:.1f}x | CPA: ${cpa:.0f}\n"
-            text += "\n"
-
-        # Итого
-        total_rev = summary.get("total_revenue", 0)
-        total_spend = ads_cost + lsa_cost + tt_cost
-        total_jobs = summary.get("total_jobs", 0)
-        text += f"📈 *Итого:*\n"
-        text += f"• Расходы: ${total_spend:.2f} | Выручка: ${total_rev:.2f}\n"
-        if total_spend > 0 and total_rev > 0:
-            text += f"• Общий ROAS: {total_rev/total_spend:.1f}x\n"
-        if total_jobs > 0:
-            text += f"• Всего джобов: {total_jobs} | Средний чек: ${summary.get('avg_ticket',0):.2f}\n"
-
+        text = await _build_roas_report(date_from, date_to)
         await _safe_edit(msg, text, parse_mode="Markdown")
+        # Сохраняем в историю
         chat_id = update.effective_chat.id
         await _save_cmd_result(ctx, chat_id, f"/roas ({days} дней)", text)
     except Exception as e:
@@ -1432,44 +1354,6 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
         'already_submitted': already_submitted_count,
         'period_label': period_label,
     }
-
-
-
-async def cmd_jobs_no_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/jobsnosource — джобы без источника лида за текущий месяц."""
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("Loading jobs without source...")
-    try:
-        today = datetime.now(NY_TZ)
-        date_from = today.replace(day=1).strftime("%Y-%m-%d")
-        date_to = today.strftime("%Y-%m-%d")
-        result = await workiz_client.get_all_jobs_with_financials(date_from, date_to)
-        all_jobs = result.get("jobs", [])
-        no_source = [j for j in all_jobs
-                     if not (j.get("source_raw") or "").strip()]
-        if not no_source:
-            await _safe_edit(msg, "All jobs have a source assigned.")
-            return
-        total_rev = sum(j.get("total", 0) for j in no_source)
-        lines = [
-            "*Jobs without source -- " + date_from + " to " + date_to + "*",
-            "Found: " + str(len(no_source)) + " of " + str(len(all_jobs)),
-            "Total revenue: $" + f"{total_rev:.2f}",
-            "",
-        ]
-        for j in no_source[:30]:
-            serial = str(j.get("serial_id", "?"))
-            status = str(j.get("status", "?"))
-            total = j.get("total", 0)
-            date = str(j.get("created_date", ""))[:10]
-            lines.append("- #" + serial + " $" + f"{total:.0f}" + " " + status + " " + date)
-        if len(no_source) > 30:
-            lines.append("...and " + str(len(no_source) - 30) + " more")
-        await _safe_edit(msg, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        log.error("cmd_jobs_no_source: " + str(e))
-        await _safe_edit(msg, "Error: " + str(e))
 
 
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2587,45 +2471,22 @@ def _format_both_summary(data: dict) -> str:
 
 async def _get_thumbtack_summary_line(days: int = 30) -> str:
     """
-    Реальные данные по Thumbtack из Workiz — джобы, выручка, ROAS.
+    Короткая строка по Thumbtack (расход, джобы, выручка) за период —
+    используется в ежедневных отчётах, чтобы канал не оставался невидимым
+    в промежутках между еженедельной детальной проверкой (scheduled_thumbtack_check).
     """
     try:
         date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
         date_from = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
-        thumbtack_budget = config.THUMBTACK_WEEKLY_BUDGET
-        thumbtack_cost = round(thumbtack_budget / 7 * days, 2)
-
+        thumbtack_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
         result = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
-        jobs = result.get("total_jobs", 0)
-        revenue = result.get("total_revenue", 0)
-        collected = result.get("total_collected", 0)
-        due = result.get("total_due", 0)
-        jobs_list = result.get("jobs", [])
-
-        line = f"\n*Thumbtack:* бюджет ${thumbtack_budget:.0f}/нед (~${thumbtack_cost:.0f} за период)"
+        jobs = result.get('total_jobs', 0)
+        revenue = result.get('total_revenue', 0)
+        line = f"\n*Thumbtack (расчётно):* ${thumbtack_cost:.2f} / {jobs} джоб(ов)"
         if jobs > 0:
-            avg_ticket = round(revenue / jobs, 2) if jobs else 0
-            line += f"\n  Джобов: {jobs} | Выручка: ${revenue:.2f} | Собрано: ${collected:.2f}"
-            if due > 0:
-                line += f" | Долг: ${due:.2f}"
-            line += f" | Средний чек: ${avg_ticket:.2f}"
-            if thumbtack_cost > 0:
-                roas = round(revenue / thumbtack_cost, 2)
-                cpa = round(thumbtack_cost / jobs, 2)
-                roas_emoji = "🟢" if roas >= 2 else "🟡" if roas >= 1 else "🔴"
-                line += f"\n  {roas_emoji} ROAS: {roas:.1f}x | CPA: ${cpa:.2f}"
-            if jobs_list:
-                line += "\n  Работы:"
-                for j in jobs_list[:5]:
-                    serial = j.get("serial_id", "?")
-                    total = j.get("total", 0)
-                    status = j.get("status", "?")
-                    date = j.get("created_date", "")[:10]
-                    line += f"\n  • #{serial} ${total:.0f} ({status}) {date}"
-                if jobs > 5:
-                    line += f"\n  • ...и ещё {jobs - 5} работ"
-        else:
-            line += f"\n  ⚠️ Работ с источником Thumbtack не найдено за период"
+            line += f" / выручка ${revenue:.2f}"
+        elif thumbtack_cost > 0:
+            line += " ⚠️ бюджет потрачен, джобов не найдено"
         return line
     except Exception as e:
         log.error(f"Ошибка получения сводки Thumbtack: {e}")
@@ -2696,6 +2557,139 @@ def _build_keyword_actions(analysis: dict, account: str) -> list:
 
 # ── Расписание ───────────────────────────────────────────
 
+
+async def _build_weekly_strategy(app_or_bot=None) -> str:
+    """
+    Строит еженедельный стратегический план на основе:
+    - данных Google Ads за прошлую неделю
+    - реального ROAS из Workiz
+    - истории решений из strategy_memory
+    """
+    today = datetime.now(NY_TZ)
+    week_to = today.strftime("%Y-%m-%d")
+    week_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    month_from = today.replace(day=1).strftime("%Y-%m-%d")
+
+    # Данные Google Ads
+    try:
+        ads_data = await ads_client.get_both_accounts_summary(date_from=week_from, date_to=week_to)
+        combined = ads_data.get("combined", {})
+        google = ads_data.get("google_ads", {})
+        lsa = ads_data.get("lsa", {})
+    except Exception as e:
+        combined = google = lsa = {}
+
+    # ROAS из Workiz
+    try:
+        ads_cost = google.get("total_spend", 0)
+        lsa_cost = lsa.get("total_spend", 0)
+        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET, 2)
+        roas_data = await workiz_client.get_roas_report(
+            week_from, week_to,
+            {"Google": ads_cost + lsa_cost, "Thumbtack": tt_cost}
+        )
+        roas_channels = roas_data.get("channels", [])
+        roas_summary = roas_data.get("summary", {})
+    except Exception:
+        roas_channels = []
+        roas_summary = {}
+
+    # История решений
+    strategy_ctx = {}
+    if strategy_memory:
+        try:
+            strategy_ctx = await strategy_memory.build_context_for_agent()
+        except Exception:
+            pass
+
+    # Строим контекст для AI
+    context = {
+        "period": {"week_from": week_from, "week_to": week_to},
+        "google_ads_week": {
+            "spend": combined.get("total_spend", 0),
+            "conversions": combined.get("total_conversions", 0),
+            "avg_cpa": combined.get("avg_cpa", 0),
+            "search_spend": google.get("total_spend", 0),
+            "search_conv": google.get("total_conversions", 0),
+            "lsa_spend": lsa.get("total_spend", 0),
+            "lsa_conv": lsa.get("total_conversions", 0),
+        },
+        "workiz_roas": {
+            "channels": roas_channels,
+            "summary": roas_summary,
+        },
+        "thumbtack_budget": config.THUMBTACK_WEEKLY_BUDGET,
+        "strategy_context": strategy_ctx,
+    }
+
+    # Запрос к AI
+    try:
+        prompt = (
+            "На основе данных за прошлую неделю составь КОНКРЕТНЫЙ стратегический план "
+            "на следующие 7 дней для BCHD Appliance Repair. "
+            "Формат: 3-5 конкретных приоритета с обоснованием. "
+            "Учитывай историю принятых решений. "
+            "Не повторяй уже выполненные действия. "
+            "Будь конкретным: называй ключи, суммы, каналы. "
+            "Отвечай на русском языке."
+        )
+        result = await ai_analyst.chat_action(prompt, context, "strategy_plan")
+        plan_text = result.get("reply", "")
+    except Exception as e:
+        plan_text = f"Ошибка генерации плана: {e}"
+
+    # Сохраняем план в strategy_memory
+    if strategy_memory and plan_text:
+        try:
+            await strategy_memory.save_weekly_plan(plan_text, week_from, week_to)
+        except Exception:
+            pass
+
+    # Форматируем отчёт
+    text = f"🎯 *Стратегия на неделю — {today.strftime('%d.%m.%Y')}*\n"
+    text += f"На основе данных {week_from} — {week_to}\n\n"
+
+    # Кратко факты прошлой недели
+    spend = combined.get("total_spend", 0)
+    conv = combined.get("total_conversions", 0)
+    total_rev = roas_summary.get("total_revenue", 0)
+    text += f"*Прошлая неделя:*\n"
+    text += f"• Расход: ${spend:.2f} | Конверсии: {conv:.0f}"
+    if total_rev > 0:
+        text += f" | Выручка: ${total_rev:.2f}"
+    text += "\n\n"
+
+    text += f"*План на эту неделю:*\n{plan_text}"
+
+    return text
+
+
+async def cmd_strategy(update, ctx):
+    """/strategy — стратегический план на текущую неделю."""
+    if not _is_owner(update):
+        return
+    msg = await update.message.reply_text("🎯 Формирую стратегический план...")
+    try:
+        text = await _build_weekly_strategy()
+        await _safe_edit(msg, text, parse_mode="Markdown")
+        await _save_cmd_result(ctx, update.effective_chat.id, "/strategy", text)
+    except Exception as e:
+        log.error(f"Ошибка /strategy: {e}")
+        await _safe_edit(msg, f"❌ Ошибка: {e}")
+
+
+async def scheduled_weekly_strategy(app):
+    """Еженедельный стратегический план — каждый понедельник в 08:45."""
+    if not config.google_ads_configured:
+        return
+    log.info("Еженедельный стратегический план")
+    try:
+        text = await _build_weekly_strategy(app)
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка еженедельной стратегии: {e}")
+
+
 async def scheduled_morning_report(app):
     if not config.google_ads_configured:
         return
@@ -2704,104 +2698,11 @@ async def scheduled_morning_report(app):
         today = datetime.now(NY_TZ)
         month_from = today.replace(day=1).strftime("%Y-%m-%d")
         month_to = today.strftime("%Y-%m-%d")
-        thumbtack_days = (today - today.replace(day=1)).days + 1
-
-        # Загружаем данные параллельно
         data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
-        ads_data = data.get("google_ads", {})
-        lsa_data = data.get("lsa", {})
-        combined = data.get("combined", {})
-
-        # Impression Share — берём из уже загруженных данных кампаний
-        try:
-            imp_share = ads_data.get("impression_share", 0) or 0
-            rank_lost = ads_data.get("rank_lost_is", 0) or 0
-            budget_lost = ads_data.get("budget_lost_is", 0) or 0
-            # Если нет в summary — берём из campaigns
-            if not imp_share:
-                campaigns = ads_data.get("campaigns", [])
-                if campaigns:
-                    shares = [c.get("impression_share", 0) for c in campaigns if c.get("impression_share")]
-                    imp_share = round(sum(shares) / len(shares), 1) if shares else 0
-        except Exception:
-            imp_share = rank_lost = budget_lost = 0
-
-        # ROAS из Workiz
-        try:
-            ads_spend = ads_data.get("total_spend", 0)
-            lsa_spend = lsa_data.get("total_spend", 0)
-            tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * thumbtack_days, 2)
-            roas_data = await workiz_client.get_roas_report(
-                month_from, month_to,
-                {"Google Ads": ads_spend, "LSA": lsa_spend, "Thumbtack": tt_cost}
-            )
-            roas_summary = roas_data.get("summary", {})
-            total_revenue = roas_summary.get("total_revenue", 0)
-            overall_roas = roas_summary.get("overall_roas")
-        except Exception:
-            total_revenue = 0
-            overall_roas = None
-
-        # Формируем отчёт
-        text = f"☀️ *Утренний отчёт — {today.strftime('%d.%m.%Y')}*\n"
-        text += f"Период: {month_from} — {month_to}\n\n"
-
-        # Расходы и конверсии
-        total_spend = combined.get("total_spend", 0)
-        total_conv = combined.get("total_conversions", 0)
-        avg_cpa = combined.get("avg_cpa") or 0
-        text += f"💰 *Расходы:* ${total_spend:.2f}\n"
-        text += f"📞 *Конверсии:* {total_conv:.0f}"
-        if avg_cpa:
-            text += f" | CPA: ${avg_cpa:.2f}"
-        text += "\n"
-
-        # Выручка и ROAS
-        if total_revenue > 0:
-            text += f"💵 *Выручка (Workiz):* ${total_revenue:.2f}"
-            if overall_roas:
-                text += f" | ROAS: {overall_roas:.1f}x"
-            text += "\n"
-
-        # Impression Share
-        if imp_share > 0:
-            is_emoji = "🟢" if imp_share >= 50 else "🟡" if imp_share >= 30 else "🔴"
-            text += f"\n{is_emoji} *Impression Share:* {imp_share:.1f}%"
-            if rank_lost > 0:
-                text += f" (теряем {rank_lost:.1f}% из-за ранга)"
-            if budget_lost > 0:
-                text += f" (теряем {budget_lost:.1f}% из-за бюджета)"
-            text += "\n"
-
-        # Разбивка по каналам
-        text += f"\n*По каналам:*\n"
-        text += f"• Google Search: ${ads_data.get('total_spend', 0):.2f} / {ads_data.get('total_conversions', 0):.0f} конв.\n"
-        if lsa_data and not lsa_data.get("error"):
-            lsa_cpa = lsa_data.get("total_spend", 0) / lsa_data.get("total_conversions", 1) if lsa_data.get("total_conversions", 0) > 0 else 0
-            text += f"• LSA: ${lsa_data.get('total_spend', 0):.2f} / {lsa_data.get('total_conversions', 0):.0f} конв."
-            if lsa_cpa > 0:
-                text += f" | CPA: ${lsa_cpa:.0f}"
-            text += "\n"
-
-        # Thumbtack
-        tt_line = await _get_thumbtack_summary_line(days=thumbtack_days)
-        if tt_line:
-            text += "• " + tt_line.strip() + "\n"
-
-        # Аномалии
-        anomalies = []
-        if total_conv == 0 and today.day > 1:
-            anomalies.append("🚨 0 конверсий за месяц — проверь кампании")
-        if imp_share > 0 and imp_share < 25:
-            anomalies.append(f"🚨 IS {imp_share:.0f}% — критически низкий охват")
-        if avg_cpa > 100:
-            anomalies.append(f"⚠️ CPA ${avg_cpa:.0f} — выше целевого $50")
-
-        if anomalies:
-            text += "\n*Аномалии:*\n"
-            for a in anomalies:
-                text += f"{a}\n"
-
+        text = f"☀️ *Утренний отчёт — {today.strftime('%d.%m.%Y')}*\n\n"
+        text += _format_both_summary(data)
+        thumbtack_days = (today - today.replace(day=1)).days + 1
+        text += await _get_thumbtack_summary_line(days=thumbtack_days)
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
@@ -3076,7 +2977,7 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
-    app.add_handler(CommandHandler("jobsnosource", cmd_jobs_no_source))
+    app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
@@ -3109,6 +3010,7 @@ def main():
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
+    scheduler.add_job(scheduled_weekly_strategy,  "cron", day_of_week="mon", hour=8,  minute=45, args=[app])
     scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
