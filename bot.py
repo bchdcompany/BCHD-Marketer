@@ -923,9 +923,67 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"📊 Считаю реальный ROAS за {days} дней...")
     try:
-        text = await _build_roas_report(date_from, date_to)
+        # Получаем расходы из Google Ads API
+        ads_spend = await ads_client.get_spend_for_period(date_from, date_to, account="ads")
+        lsa_spend = await ads_client.get_spend_for_period(date_from, date_to, account="lsa")
+        ads_cost = ads_spend.get("spend", 0)
+        lsa_cost = lsa_spend.get("spend", 0)
+        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
+
+        # ROAS из Workiz по всем каналам
+        roas_data = await workiz_client.get_roas_report(
+            date_from, date_to,
+            {"Google Ads": ads_cost, "LSA": lsa_cost, "Thumbtack": tt_cost}
+        )
+        channels = roas_data.get("channels", [])
+        summary = roas_data.get("summary", {})
+
+        text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
+        text += f"💰 *Расходы:*\n"
+        text += f"• Google Ads: ${ads_cost:.2f}\n"
+        text += f"• LSA: ${lsa_cost:.2f}\n"
+        text += f"• Thumbtack (бюджет ${config.THUMBTACK_WEEKLY_BUDGET:.0f}/нед): ${tt_cost:.2f}\n"
+        text += f"• Итого: ${ads_cost + lsa_cost + tt_cost:.2f}\n\n"
+
+        emoji_map = {"Google Ads": "🔍", "LSA": "📋", "Thumbtack": "📌",
+                     "Yelp": "⭐", "Google": "🔍", "Customer return": "🔄",
+                     "Referral from others": "🤝", "Website": "🌐"}
+
+        for ch in channels:
+            name = ch["channel"]
+            emoji = emoji_map.get(name, "📦")
+            jobs = ch["jobs_count"]
+            revenue = ch["total_revenue"]
+            collected = ch["collected"]
+            due = ch["outstanding"]
+            spend = ch.get("ad_spend", 0)
+            roas = ch.get("roas")
+            cpa = ch.get("cpa_real")
+            avg = ch.get("avg_ticket", 0)
+
+            text += f"{emoji} *{name}:*\n"
+            text += f"• Джобов: {jobs} | Выручка: ${revenue:.2f} | Собрано: ${collected:.2f}\n"
+            if due > 0:
+                text += f"• Долг: ${due:.2f}\n"
+            if avg > 0:
+                text += f"• Средний чек: ${avg:.2f}\n"
+            if roas is not None:
+                roas_e = "🟢" if roas >= 2 else "🟡" if roas >= 1 else "🔴"
+                text += f"• {roas_e} ROAS: {roas:.1f}x | CPA: ${cpa:.0f}\n"
+            text += "\n"
+
+        # Итого
+        total_rev = summary.get("total_revenue", 0)
+        total_spend = ads_cost + lsa_cost + tt_cost
+        total_jobs = summary.get("total_jobs", 0)
+        text += f"📈 *Итого:*\n"
+        text += f"• Расходы: ${total_spend:.2f} | Выручка: ${total_rev:.2f}\n"
+        if total_spend > 0 and total_rev > 0:
+            text += f"• Общий ROAS: {total_rev/total_spend:.1f}x\n"
+        if total_jobs > 0:
+            text += f"• Всего джобов: {total_jobs} | Средний чек: ${summary.get('avg_ticket',0):.2f}\n"
+
         await _safe_edit(msg, text, parse_mode="Markdown")
-        # Сохраняем в историю
         chat_id = update.effective_chat.id
         await _save_cmd_result(ctx, chat_id, f"/roas ({days} дней)", text)
     except Exception as e:
