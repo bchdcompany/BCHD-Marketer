@@ -316,6 +316,9 @@ https://www.bchdcompany.com/washer
   скачивать содержимое этой страницы (title + текст) для самостоятельной
   оценки релевантности — БЕЗ участия владельца, тебе не нужно просить его
   открыть сайт и посмотреть самому
+- Обновлять заголовки RSA объявлений (до 15 заголовков) — действие update_ad_headlines.
+  Агент сначала получает текущие заголовки из get_ad_performance, затем формирует
+  новый полный список (все существующие + новые) и предлагает карточку.
 - Менять Final URL конкретного ключевого слова, если владелец предоставил
   ссылку на специализированную страницу — ты делаешь это сам через
   действие update_final_url, владельцу не нужно вручную заходить в
@@ -708,7 +711,6 @@ summary типа "Все ключи показывают CTR выше порог
             prompt = f"""
 Вот актуальные данные рекламных аккаунтов (последние 30 дней):
 
-{strategy_block}
 {json.dumps(context_data, ensure_ascii=False, indent=2)}
 
 Вопрос от владельца бизнеса: {question}
@@ -870,28 +872,6 @@ summary типа "Все ключи показывают CTR выше порог
     async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
         period_info = context_data.get("_period", {})
         period_label = f"{period_info.get('date_from', '?')} — {period_info.get('date_to', '?')}"
-
-        # ПЕРЕСТРОЙКА: извлекаем контекст памяти решений
-        strategy_ctx = context_data.pop('strategy_context', {})
-        strategy_block = ''
-        if strategy_ctx:
-            rd = strategy_ctx.get('recent_decisions', [])
-            rkw = strategy_ctx.get('recent_keyword_changes', [])
-            wp = strategy_ctx.get('week_strategy')
-            if rd:
-                strategy_block += '\n═══ ИСТОРИЯ РЕШЕНИЙ (7 дней) ═══\n'
-                for d in rd[:15]:
-                    em = '✅' if d['decision'] == 'approved' else '❌'
-                    strategy_block += f"{em} {d['when']} | {d['action_type']} | {d['target']}\n"
-            if rkw:
-                strategy_block += '\n═══ ИЗМЕНЕНИЯ КЛЮЧЕЙ (7 дней) ═══\n'
-                for k in rkw[:10]:
-                    strategy_block += f"• {k['when']} | {k['keyword']} | {k['change']}: {k['from']} → {k['to']}\n"
-            if wp:
-                strategy_block += '\n═══ ПЛАН НЕДЕЛИ ═══\n'
-                for g in wp.get('goals', []):
-                    strategy_block += f'• {g}\n'
-
         prompt = f"""
 Вот актуальные данные за период {period_label} (см. context_data["_period"]
 ниже для точных границ — используй ИМЕННО эти даты, если упоминаешь период
@@ -1065,6 +1045,7 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     стратегию назначения ставок (Maximize Conversions и т.п.), Google может
     игнорировать ручную ставку — стоит проверить bidding_strategy_type",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+- update_ad_headlines (обновление заголовков RSA объявления для улучшения QS/CTR)
 - update_final_url (изменение посадочной страницы КОНКРЕТНОГО ключевого
   слова — используй эту схему, когда владелец предоставил ссылку на
   специализированную страницу для определённого ключа/темы, и цель —
@@ -1079,6 +1060,18 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "description": "...", "reasoning": "...",
     "risks": "Final URL меняется только для этого конкретного ключа
     (override), другие ключи в той же группе объявлений не затрагиваются",
+    "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+- update_ad_headlines (обновить заголовки RSA объявления — используй когда
+  нужно добавить релевантные заголовки для улучшения QS или CTR. ВАЖНО: RSA
+  требует передавать ВСЕ заголовки целиком (существующие + новые). Сначала
+  получи текущие заголовки из ad_performance данных, затем составь полный
+  новый список. Минимум 3, максимум 15 заголовков, каждый до 30 символов):
+  {{"type": "update_ad_headlines", "account": "ads",
+    "resource_name": "resource_name объявления из ad_performance данных",
+    "headlines": ["Заголовок 1", "Заголовок 2", ..., "Новый заголовок"],
+    "current_headlines": ["список текущих заголовков для сравнения в карточке"],
+    "description": "...", "reasoning": "...",
+    "risks": "Изменение заголовков влияет на ВСЕ показы этого объявления. Google обучит RSA заново что может временно снизить CTR на 2-3 дня",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 - remove_negative_keyword (удалить существующее минус-слово которое блокирует
   полезный трафик — используй ТОЛЬКО если resource_name минус-слова реально
@@ -1100,6 +1093,14 @@ pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
 update_final_url, seasonal_adjustments, dispute_lsa_lead
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
+
+КРИТИЧЕСКИ ВАЖНО — update_ad_headlines:
+Когда агент предлагает изменить заголовки объявления — он должен:
+1. Взять ВСЕ текущие заголовки из context_data["ad_performance"]["ads"]
+2. Добавить к ним новые заголовки (не заменять, а добавить)
+3. Итоговый список включать в поле "headlines" — это будет полный новый набор
+4. Текущие заголовки включать в "current_headlines" для отображения в карточке
+5. resource_name брать из ad_group_ad.resource_name в ad_performance данных
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
