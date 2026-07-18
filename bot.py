@@ -2664,6 +2664,27 @@ async def _build_weekly_strategy(app_or_bot=None) -> str:
     return text
 
 
+async def _send_long_message(bot_or_app, chat_id: int, text: str):
+    """Отправляет длинный текст разбивая на части по 3800 символов."""
+    bot = getattr(bot_or_app, 'bot', bot_or_app)
+    if len(text) <= 3800:
+        await _safe_send(bot, chat_id, text, parse_mode="Markdown")
+        return
+    parts = []
+    while text:
+        if len(text) <= 3800:
+            parts.append(text)
+            break
+        # Ищем последний перенос строки в пределах 3800 символов
+        cut = text[:3800].rfind("\n")
+        if cut == -1:
+            cut = 3800
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    for part in parts:
+        await _safe_send(bot, chat_id, part, parse_mode="Markdown")
+
+
 async def cmd_strategy(update, ctx):
     """/strategy — стратегический план на текущую неделю."""
     if not _is_owner(update):
@@ -2671,8 +2692,9 @@ async def cmd_strategy(update, ctx):
     msg = await update.message.reply_text("🎯 Формирую стратегический план...")
     try:
         text = await _build_weekly_strategy()
-        await _safe_edit(msg, text, parse_mode="Markdown")
-        await _save_cmd_result(ctx, update.effective_chat.id, "/strategy", text)
+        await msg.delete()
+        await _send_long_message(update.get_bot(), update.effective_chat.id, text)
+        await _save_cmd_result(ctx, update.effective_chat.id, "/strategy", text[:3000])
     except Exception as e:
         log.error(f"Ошибка /strategy: {e}")
         await _safe_edit(msg, f"❌ Ошибка: {e}")
@@ -2685,7 +2707,7 @@ async def scheduled_weekly_strategy(app):
     log.info("Еженедельный стратегический план")
     try:
         text = await _build_weekly_strategy(app)
-        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+        await _send_long_message(app.bot, config.OWNER_CHAT_ID, text)
     except Exception as e:
         log.error(f"Ошибка еженедельной стратегии: {e}")
 
