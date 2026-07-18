@@ -1773,13 +1773,8 @@ class GoogleAdsClient:
     async def _update_ad_headlines(self, action: dict, customer_id: str = None) -> dict:
         """
         Обновляет заголовки RSA объявления.
-        action должен содержать:
-        - resource_name: resource_name объявления (ad_group_ad)
-        - headlines: список строк — ПОЛНЫЙ новый список заголовков (до 15)
-        - ad_group_id: для получения текущих заголовков если headlines не передан
-        
-        ВАЖНО: Google Ads RSA требует передавать ВСЕ заголовки целиком при обновлении.
-        Нельзя добавить один заголовок — нужно передать все существующие + новые.
+        Использует прямой запрос через REST-подобный mutate с правильным
+        форматом proto для repeated fields.
         """
         if not customer_id:
             customer_id = self.customer_id
@@ -1791,32 +1786,30 @@ class GoogleAdsClient:
         new_headlines = action.get("headlines", [])
         if not new_headlines:
             raise ValueError("Список заголовков (headlines) не указан")
-
         if len(new_headlines) > 15:
             raise ValueError(f"Слишком много заголовков: {len(new_headlines)}. Максимум 15.")
         if len(new_headlines) < 3:
             raise ValueError(f"Слишком мало заголовков: {len(new_headlines)}. Минимум 3.")
 
-        client = self._get_client()
-        svc = client.get_service("AdGroupAdService")
-        op = client.get_type("AdGroupAdOperation")
-        op.update.resource_name = rn
+        def _do_update():
+            client = self._get_client()
+            svc = client.get_service("AdGroupAdService")
+            op = client.get_type("AdGroupAdOperation")
+            op.update.resource_name = rn
 
-        # google-ads v24: AdTextAsset создаётся напрямую с kwargs
-        from google.ads.googleads.v24.common.types.ad_asset import AdTextAsset
-        headline_objects = [
-            AdTextAsset(text=h_text.strip()[:30])
-            for h_text in new_headlines
-        ]
+            # Правильный способ для proto-plus repeated field:
+            # используем append с объектами типа AdTextAsset
+            rsa = op.update.ad.responsive_search_ad
+            for h_text in new_headlines:
+                asset = rsa.headlines.add()
+                asset.text = h_text.strip()[:30]
 
-        # Очищаем и устанавливаем через extend
-        del op.update.ad.responsive_search_ad.headlines[:]
-        op.update.ad.responsive_search_ad.headlines.extend(headline_objects)
+            op.update_mask.paths.append("ad.responsive_search_ad.headlines")
 
-        op.update_mask.paths.append("ad.responsive_search_ad.headlines")
+            return svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
 
         try:
-            await asyncio.to_thread(svc.mutate_ad_group_ads, customer_id=customer_id, operations=[op])
+            await asyncio.to_thread(_do_update)
             return {"summary": f"Заголовки объявления обновлены ({len(new_headlines)} шт): {', '.join(new_headlines[:3])}..."}
         except Exception as e:
             raise ValueError(f"Ошибка обновления заголовков: {e}")
