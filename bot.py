@@ -1698,6 +1698,13 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
 
+    # Добавляем стратегический контекст — агент видит план недели и историю решений
+    if strategy_memory:
+        try:
+            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+        except Exception as e:
+            log.warning(f"strategy_context error (non-critical): {e}")
+
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
     try:
@@ -2075,6 +2082,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.info(f"VERIFY_ACTION RESULT: action_id={param}, type={action.get('type')}, verification={verification}")
             verified = verification.get("verified")
             await pending.record_execution_result(param, verified)
+            # Логируем в strategy_memory
+            if strategy_memory:
+                try:
+                    target = action.get("term") or action.get("keyword") or action.get("campaign_name") or action.get("description", "")[:50]
+                    await strategy_memory.log_decision(
+                        action_type=action.get("type", "unknown"),
+                        target=target,
+                        decision="approved",
+                        details={"verified": verified, "result": result.get("summary", "")[:200]},
+                    )
+                    # Если изменение ставки — записываем в keyword_history
+                    if action.get("type") == "update_bid" and action.get("keyword"):
+                        await strategy_memory.log_keyword_change(
+                            keyword=action["keyword"],
+                            change_type="bid_change",
+                            old_value=str(action.get("current_bid", "")),
+                            new_value=str(action.get("new_bid", "")),
+                            resource_name=action.get("resource_name", ""),
+                            verified=bool(verified),
+                        )
+                except Exception as se:
+                    log.warning(f"strategy_memory log error: {se}")
             if verified is True:
                 # Формируем детали проверки в зависимости от типа действия
                 action_type = action.get('type', '')
@@ -2154,6 +2183,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 status = action.get("status", "rejected")
                 if status == "rejected":
                     await _safe_edit(query, f"❌ Отклонено: {action.get('description', param)}")
+                    if strategy_memory:
+                        try:
+                            target = action.get("term") or action.get("keyword") or action.get("description", "")[:50]
+                            await strategy_memory.log_decision(
+                                action_type=action.get("type", "unknown"),
+                                target=target,
+                                decision="rejected",
+                            )
+                        except Exception:
+                            pass
                 else:
                     await _safe_edit(query, f"⚠️ Действие уже имеет статус '{status}'.")
             else:
