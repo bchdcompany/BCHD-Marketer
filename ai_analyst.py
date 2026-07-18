@@ -708,6 +708,7 @@ summary типа "Все ключи показывают CTR выше порог
             prompt = f"""
 Вот актуальные данные рекламных аккаунтов (последние 30 дней):
 
+{strategy_block}
 {json.dumps(context_data, ensure_ascii=False, indent=2)}
 
 Вопрос от владельца бизнеса: {question}
@@ -869,6 +870,28 @@ summary типа "Все ключи показывают CTR выше порог
     async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
         period_info = context_data.get("_period", {})
         period_label = f"{period_info.get('date_from', '?')} — {period_info.get('date_to', '?')}"
+
+        # ПЕРЕСТРОЙКА: извлекаем контекст памяти решений
+        strategy_ctx = context_data.pop('strategy_context', {})
+        strategy_block = ''
+        if strategy_ctx:
+            rd = strategy_ctx.get('recent_decisions', [])
+            rkw = strategy_ctx.get('recent_keyword_changes', [])
+            wp = strategy_ctx.get('week_strategy')
+            if rd:
+                strategy_block += '\n═══ ИСТОРИЯ РЕШЕНИЙ (7 дней) ═══\n'
+                for d in rd[:15]:
+                    em = '✅' if d['decision'] == 'approved' else '❌'
+                    strategy_block += f"{em} {d['when']} | {d['action_type']} | {d['target']}\n"
+            if rkw:
+                strategy_block += '\n═══ ИЗМЕНЕНИЯ КЛЮЧЕЙ (7 дней) ═══\n'
+                for k in rkw[:10]:
+                    strategy_block += f"• {k['when']} | {k['keyword']} | {k['change']}: {k['from']} → {k['to']}\n"
+            if wp:
+                strategy_block += '\n═══ ПЛАН НЕДЕЛИ ═══\n'
+                for g in wp.get('goals', []):
+                    strategy_block += f'• {g}\n'
+
         prompt = f"""
 Вот актуальные данные за период {period_label} (см. context_data["_period"]
 ниже для точных границ — используй ИМЕННО эти даты, если упоминаешь период
