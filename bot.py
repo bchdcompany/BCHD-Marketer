@@ -1346,72 +1346,54 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
 
 
 
+
 async def cmd_lsa_leads(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /lsaleads [дней] — показывает список всех LSA лидов с именем, телефоном,
-    датой и статусом. Используется для сопоставления с Workiz и обновления
-    источника лида.
-    Пример: /lsaleads 17  (за 17 дней)
+    /lsaleads - список всех LSA лидов: имя, телефон, дата, тип услуги, статус.
     """
-    if not await _check_owner(update):
+    if not _is_owner(update):
         return
-    args = ctx.args
-    days = 17
-    if args:
-        try:
-            days = int(args[0])
-        except ValueError:
-            pass
-
-    msg = await update.message.reply_text(f"📋 Загружаю LSA лиды за {days} дней...")
-
+    msg = await update.message.reply_text("Loading LSA leads...")
     try:
-        leads_data = await ads_client.get_lsa_leads(days=days, account="lsa")
+        leads_data = await ads_client.get_lsa_leads(days=18, account="lsa")
     except Exception as e:
-        await _safe_edit(msg, f"❌ Ошибка загрузки LSA лидов: {e}")
+        await _safe_edit(msg, "Error: " + str(e))
         return
-
-    leads = leads_data.get('leads', [])
+    leads = leads_data.get("leads", [])
     if not leads:
-        await _safe_edit(msg, f"📋 LSA лидов за {days} дней не найдено.")
+        await _safe_edit(msg, "No LSA leads found.")
         return
-
-    period = f"{leads_data.get('date_from')} — {leads_data.get('date_to')}"
-    charged = [l for l in leads if l.get('charged')]
-    free = [l for l in leads if not l.get('charged')]
-
-    text = f"📋 *LSA лиды — {period}*\n"
-    text += f"Всего: {len(leads)} | Оплачено: {len(charged)} | Бесплатных: {len(free)}\n\n"
-
-    # Оплаченные лиды
+    period = str(leads_data.get("date_from")) + " -- " + str(leads_data.get("date_to"))
+    charged = [l for l in leads if l.get("charged")]
+    free_leads = [l for l in leads if not l.get("charged")]
+    lines = ["*LSA Leads -- " + period + "*", "Total: " + str(len(leads)) + " | Paid: " + str(len(charged)) + " | Free: " + str(len(free_leads)), ""]
     if charged:
-        text += f"💰 *Оплаченные ({len(charged)}):*\n"
-        for lead in charged[:25]:
-            name = lead.get('consumer_name') or lead.get('name') or 'Без имени'
-            phone = lead.get('consumer_phone') or lead.get('phone') or '—'
-            date = (lead.get('creation_time') or lead.get('date') or '')[:10]
-            service = lead.get('service_type') or lead.get('category') or '—'
-            lead_id = lead.get('id', '?')
-            text += f"• {date} | {name} | {phone}\n"
-            text += f"  └ {service} | ID: {lead_id}\n"
-        text += "\n"
-
-    # Бесплатные лиды
-    if free:
-        text += f"🆓 *Бесплатные ({len(free)}):*\n"
-        for lead in free[:10]:
-            name = lead.get('consumer_name') or lead.get('name') or 'Без имени'
-            phone = lead.get('consumer_phone') or lead.get('phone') or '—'
-            date = (lead.get('creation_time') or lead.get('date') or '')[:10]
-            service = lead.get('service_type') or lead.get('category') or '—'
-            text += f"• {date} | {name} | {phone} | {service}\n"
-
-    # Отправляем по частям если длинный
+        lines.append("*Paid (" + str(len(charged)) + "):*")
+        for lead in charged[:30]:
+            name = lead.get("consumer_name") or lead.get("name") or "No name"
+            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
+            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
+            service = lead.get("service_type") or lead.get("category") or "--"
+            lead_id = str(lead.get("id", "?"))
+            lines.append("- " + date + " | " + name + " | " + phone)
+            lines.append("  " + service + " | ID: " + lead_id)
+        lines.append("")
+    if free_leads:
+        lines.append("*Free (" + str(len(free_leads)) + "):*")
+        for lead in free_leads[:15]:
+            name = lead.get("consumer_name") or lead.get("name") or "No name"
+            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
+            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
+            service = lead.get("service_type") or lead.get("category") or "--"
+            lines.append("- " + date + " | " + name + " | " + phone + " | " + service)
+    text = "\n".join(lines)
     if len(text) > 4000:
-        parts = [text[i:i+3900] for i in range(0, len(text), 3900)]
-        await _safe_edit(msg, parts[0], parse_mode="Markdown")
-        for part in parts[1:]:
-            await update.message.reply_text(part, parse_mode="Markdown")
+        for i in range(0, len(text), 3900):
+            part = text[i:i+3900]
+            if i == 0:
+                await _safe_edit(msg, part, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(part, parse_mode="Markdown")
     else:
         await _safe_edit(msg, text, parse_mode="Markdown")
 
