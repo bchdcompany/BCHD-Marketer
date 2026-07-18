@@ -931,9 +931,11 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * days, 2)
 
         # ROAS из Workiz по всем каналам
+        # В Workiz источник "Google" включает и Search и LSA (до введения LSA тега)
+        # поэтому объединяем расходы Google Ads + LSA под ключом "Google"
         roas_data = await workiz_client.get_roas_report(
             date_from, date_to,
-            {"Google Ads": ads_cost, "LSA": lsa_cost, "Thumbtack": tt_cost}
+            {"Google": ads_cost + lsa_cost, "Thumbtack": tt_cost}
         )
         channels = roas_data.get("channels", [])
         summary = roas_data.get("summary", {})
