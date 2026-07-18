@@ -45,29 +45,63 @@ class PendingActions:
         if not self._pool:
             return
         async with self._pool.acquire() as conn:
-            # Проверяем существует ли таблица со старой схемой (колонка 'id' вместо 'action_id')
-            old_schema = await conn.fetchval(
+            # Проверяем схему таблицы — если старая (есть user_id или нет updated_at) — мигрируем
+            has_updated_at = await conn.fetchval(
                 """SELECT column_name FROM information_schema.columns
-                   WHERE table_name='pending_actions' AND column_name='id' LIMIT 1"""
+                   WHERE table_name='pending_actions' AND column_name='updated_at' LIMIT 1"""
             )
-            if old_schema:
-                # Миграция: переименовываем колонку id → action_id
-                log.info("pending_actions: миграция схемы id → action_id")
-                await conn.execute("ALTER TABLE pending_actions RENAME COLUMN id TO action_id")
-
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS pending_actions (
-                    action_id TEXT PRIMARY KEY,
-                    action_data JSONB NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await conn.execute("""
-                ALTER TABLE pending_actions
-                ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT NULL
-            """)
+            has_old_schema = await conn.fetchval(
+                """SELECT column_name FROM information_schema.columns
+                   WHERE table_name='pending_actions' AND column_name='user_id' LIMIT 1"""
+            )
+            if has_old_schema or not has_updated_at:
+                # Старая схема — переименовываем и пересоздаём
+                log.info("pending_actions: обнаружена старая схема, выполняем миграцию")
+                await conn.execute("ALTER TABLE pending_actions RENAME TO pending_actions_old")
+                await conn.execute("""
+                    CREATE TABLE pending_actions (
+                        action_id TEXT PRIMARY KEY,
+                        action_data JSONB NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        comment TEXT DEFAULT NULL
+                    )
+                """)
+                # Мигрируем данные из старой таблицы если есть pending записи
+                await conn.execute("""
+                    INSERT INTO pending_actions (action_id, action_data, status, created_at, comment)
+                    SELECT action_id,
+                           jsonb_build_object(
+                               'id', action_id,
+                               'type', action_type,
+                               'description', description,
+                               'status', status
+                           ) || COALESCE(action_data, '{}'),
+                           status,
+                           created_at,
+                           comment
+                    FROM pending_actions_old
+                    WHERE status = 'pending'
+                    ON CONFLICT (action_id) DO NOTHING
+                """)
+                await conn.execute("DROP TABLE pending_actions_old")
+                log.info("pending_actions: миграция завершена")
+            else:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS pending_actions (
+                        action_id TEXT PRIMARY KEY,
+                        action_data JSONB NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        comment TEXT DEFAULT NULL
+                    )
+                """)
+                await conn.execute("""
+                    ALTER TABLE pending_actions
+                    ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT NULL
+                """)
 
     def validate_before_add(self, action: dict):
         action_type = action.get("type")
