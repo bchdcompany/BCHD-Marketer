@@ -34,6 +34,7 @@ from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
+from strategy import StrategyMemory
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -47,6 +48,7 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
+strategy_memory = StrategyMemory()
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -71,6 +73,8 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
+        strategy_memory.set_pool(pool)
+        await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -1682,6 +1686,14 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
         if not context_data:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
+
+        # ПЕРЕСТРОЙКА: добавляем контекст памяти решений
+        try:
+            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+        except Exception as e:
+            log.warning(f"strategy_context error (non-critical): {e}")
+            context_data["strategy_context"] = {}
+
     except Exception as e:
         log.error(f"Ошибка сбора данных для чата: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
@@ -2031,6 +2043,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not action:
                 await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
+            await strategy_memory.log_decision(
+                action_type=action.get('type', 'unknown'),
+                target=(action.get('keyword') or action.get('description', ''))[:60],
+                decision='approved', details=action)
             stale_note = ""
             if action.get("stale_when_approved"):
                 stale_note = (
@@ -2073,11 +2089,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     expected = verification.get('expected_bid')
                     if actual is not None:
                         verify_details = f"\n📊 Текущая ставка в настройках: *${actual:.2f}* (ожидалось ${expected:.2f})"
+                        kw_text = action.get('keyword', '')
+                        old_bid = str(action.get('current_bid', '?'))
+                        await strategy_memory.log_keyword_change(
+                            keyword=kw_text, change_type='bid_change',
+                            old_value=old_bid, new_value=str(actual), verified=True)
                 elif action_type in ('pause_keywords', 'enable_keywords'):
                     cnt = verification.get('verified_count', 0)
                     total = verification.get('total', 0)
                     status = 'PAUSED' if action_type == 'pause_keywords' else 'ENABLED'
                     verify_details = f"\n📊 Статус в настройках: {cnt}/{total} ключей = {status}"
+                    for kw in action.get('keywords', []):
+                        old_s = 'ENABLED' if action_type == 'pause_keywords' else 'PAUSED'
+                        await strategy_memory.log_keyword_change(
+                            keyword=kw.get('keyword', ''), change_type='status_change',
+                            old_value=old_s, new_value=status, verified=(cnt == total))
                 elif action_type == 'add_negative_keywords':
                     missing = verification.get('missing_terms', [])
                     expected = verification.get('expected_terms', [])
@@ -2142,6 +2168,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if action:
                 status = action.get("status", "rejected")
                 if status == "rejected":
+                    await strategy_memory.log_decision(
+                        action_type=action.get('type', 'unknown'),
+                        target=(action.get('keyword') or action.get('description', ''))[:60],
+                        decision='rejected', details=action)
                     await _safe_edit(query, f"❌ Отклонено: {action.get('description', param)}")
                 else:
                     await _safe_edit(query, f"⚠️ Действие уже имеет статус '{status}'.")
