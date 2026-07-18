@@ -1799,18 +1799,23 @@ class GoogleAdsClient:
 
             # Правильный способ для proto-plus repeated field:
             # используем append с объектами типа AdTextAsset
-            rsa = op.update.ad.responsive_search_ad
-            # RepeatedComposite (protobuf) использует append с объектом типа
-            # или proto.Message. Пробуем через type из клиента
-            from google.protobuf.message import Message
-            for h_text in new_headlines:
-                # Для RepeatedComposite нужен append объекта нужного типа
-                # Получаем тип через descriptor
-                headline_descriptor = rsa.DESCRIPTOR.fields_by_name["headlines"]
-                headline_msg_class = headline_descriptor.message_type._concrete_class
-                asset = headline_msg_class()
-                asset.text = h_text.strip()[:30]
-                rsa.headlines.append(asset)
+            # google-ads v31 использует proto-plus обёртку над protobuf.
+            # ResponsiveSearchAdInfo.headlines — это RepeatedComposite[AdTextAsset].
+            # Правильный способ: используем proto.copy_from для всего RSA.
+            import proto
+            from google.ads.googleads.v24.common.types.ad_asset import AdTextAsset
+
+            headline_list = [
+                AdTextAsset(text=h_text.strip()[:30])
+                for h_text in new_headlines
+            ]
+
+            # Устанавливаем через proto.copy_from на весь RSA объект
+            from google.ads.googleads.v24.common.types.ad import ResponsiveSearchAdInfo
+            proto.copy_from(
+                op.update.ad.responsive_search_ad,
+                ResponsiveSearchAdInfo(headlines=headline_list)
+            )
 
             op.update_mask.paths.append("ad.responsive_search_ad.headlines")
 
