@@ -1802,10 +1802,19 @@ class GoogleAdsClient:
         op = client.get_type("AdGroupAdOperation")
         op.update.resource_name = rn
 
-        # Очищаем и заполняем заголовки
+        # Заполняем заголовки — для proto-plus используем copy_from или прямое присваивание
+        # RepeatedComposite не поддерживает .add() напрямую, используем extend через типы
+        client = self._get_client()
+        headline_type = client.get_type("AdTextAsset")
+        headlines_list = []
         for h_text in new_headlines:
-            h = op.update.ad.responsive_search_ad.headlines.add()
+            h = headline_type()
             h.text = h_text.strip()[:30]  # Google Ads ограничение 30 символов
+            headlines_list.append(h)
+
+        # Используем proto.copy_from для присваивания repeated field
+        from google.ads.googleads.v18 import types as ga_types
+        op.update.ad.responsive_search_ad.headlines[:] = headlines_list
 
         op.update_mask.paths.append("ad.responsive_search_ad.headlines")
 
