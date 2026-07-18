@@ -1536,15 +1536,16 @@ class GoogleAdsClient:
         if not term:
             raise ValueError("Не указан 'term' (текст минус-слова) для удаления.")
 
-        # Ищем во всех аккаунтах включая дополнительные кампании
+        # Ищем во всех аккаунтах включая дополнительные
         search_customer_ids = [self.customer_id]
         if self.lsa_customer_id and self.lsa_customer_id not in search_customer_ids:
             search_customer_ids.append(self.lsa_customer_id)
-        # Кампания BCHD Appliance Repair Service (20424210216) — дополнительный аккаунт
-        # содержит старые минус-слова которые могут блокировать трафик
-        extra_ids = ["20424210216"]
-        for eid in extra_ids:
-            if eid not in search_customer_ids:
+        # Дополнительные аккаунты из переменной окружения GOOGLE_ADS_EXTRA_CUSTOMER_IDS
+        import os
+        extra_raw = os.environ.get("GOOGLE_ADS_EXTRA_CUSTOMER_IDS", "20424210216")
+        for eid in extra_raw.split(","):
+            eid = eid.strip()
+            if eid and eid not in search_customer_ids:
                 search_customer_ids.append(eid)
 
         found_rn = None
