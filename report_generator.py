@@ -177,6 +177,7 @@ class ReportGenerator:
             'update_final_url':        '🔗 Изменение лендинга',
             'seasonal_adjustments':    '📅 Сезонные корректировки',
             'dispute_lsa_lead':        '⚖️ Оспорить LSA лид',
+            'update_ad_headlines':     '✏️ Обновить заголовки объявления',
         }
         type_label = type_labels.get(action_type, action_type)
 
@@ -223,6 +224,18 @@ class ReportGenerator:
             lines.append(f"🔗 Новый URL: {action.get('new_url', '?')}")
             if action.get('current_url'):
                 lines.append(f"📌 Текущий URL: {action.get('current_url')}")
+
+        # Для обновления заголовков объявления
+        if action_type in ('update_ad_headlines', 'updateadheadlines') and action.get('headlines'):
+            lines.append(f"")
+            lines.append(f"✏️ *Новые заголовки ({len(action['headlines'])} шт):*")
+            for i, h in enumerate(action['headlines'], 1):
+                lines.append(f"{i}. `{h}`")
+            if action.get('current_headlines'):
+                lines.append(f"")
+                lines.append(f"📌 *Текущие заголовки:*")
+                for h in action['current_headlines'][:5]:
+                    lines.append(f"• `{h}`")
 
         # Для изменения бюджета — текущий и новый
         if action_type == 'budget_change':
