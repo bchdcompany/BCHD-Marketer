@@ -410,3 +410,108 @@ async def get_outstanding_debts(threshold_days: int = 14) -> dict:
         "total_outstanding": round(total_outstanding, 2),
         "threshold_days": threshold_days,
     }
+
+
+async def _post(endpoint: str, data: dict = None) -> dict:
+    """POST запрос к Workiz API."""
+    if not WORKIZ_API_TOKEN or not WORKIZ_API_SECRET:
+        return {"error": "WORKIZ_API_TOKEN/WORKIZ_API_SECRET не настроены"}
+    url = f"{BASE_URL}/{endpoint}"
+    headers = {
+        "Authorization": f"Bearer {WORKIZ_API_SECRET}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, headers=headers, json=data or {},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                result = await resp.json()
+                if resp.status not in (200, 201):
+                    log.error(f"Workiz POST {endpoint} error {resp.status}: {result}")
+                return result
+    except Exception as e:
+        log.error(f"Workiz POST {endpoint}: {e}")
+        return {"error": str(e)}
+
+
+async def update_job_source(job_uuid: str, source: str) -> dict:
+    """
+    Обновляет источник лида (JobSource/Ad Group) для конкретного джоба.
+    source должен совпадать с названием Ad Group в Workiz (например "LSA").
+    """
+    result = await _post(f"job/update/{job_uuid}/", {"JobSource": source})
+    if "error" in result:
+        return {"success": False, "error": result["error"]}
+    return {"success": True, "job_uuid": job_uuid, "new_source": source}
+
+
+async def tag_lsa_jobs(lsa_phones: list, date_from: str, date_to: str) -> dict:
+    """
+    Автоматически тегирует джобы как LSA по списку телефонов из LSA API.
+    
+    lsa_phones: список нормализованных телефонов (10 цифр без +1)
+    Возвращает сводку: сколько найдено и перетегировано.
+    """
+    all_jobs = await get_all_jobs_with_financials(date_from, date_to)
+    jobs = all_jobs.get("jobs", [])
+    
+    # Нормализуем телефоны LSA
+    lsa_set = set()
+    for phone in lsa_phones:
+        normalized = re.sub(r"\D", "", str(phone))
+        if len(normalized) == 11 and normalized.startswith("1"):
+            normalized = normalized[1:]
+        if normalized:
+            lsa_set.add(normalized)
+    
+    tagged = []
+    skipped = []
+    errors = []
+    
+    for job in jobs:
+        job_phone = job.get("client_phone", "")
+        if not job_phone or job_phone not in lsa_set:
+            continue
+        
+        # Нашли совпадение по телефону
+        current_source = job.get("source_raw", "")
+        job_uuid = job.get("uuid", "")
+        serial_id = job.get("serial_id", "?")
+        
+        if current_source == "LSA":
+            skipped.append({
+                "serial_id": serial_id,
+                "phone": job_phone,
+                "reason": "уже LSA",
+            })
+            continue
+        
+        if not job_uuid:
+            errors.append({"serial_id": serial_id, "error": "нет UUID"})
+            continue
+        
+        result = await update_job_source(job_uuid, "LSA")
+        if result.get("success"):
+            tagged.append({
+                "serial_id": serial_id,
+                "phone": job_phone,
+                "old_source": current_source or "пустой",
+                "new_source": "LSA",
+            })
+        else:
+            errors.append({
+                "serial_id": serial_id,
+                "phone": job_phone,
+                "error": result.get("error", "unknown"),
+            })
+    
+    return {
+        "tagged": tagged,
+        "skipped": skipped,
+        "errors": errors,
+        "total_tagged": len(tagged),
+        "total_lsa_phones": len(lsa_set),
+        "total_jobs_scanned": len(jobs),
+    }
