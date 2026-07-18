@@ -1345,110 +1345,6 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
     }
 
 
-
-async def cmd_tag_lsa(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /taglsa - автоматически тегирует джобы в Workiz как LSA
-    по сопоставлению телефонов с LSA лидами из Google.
-    """
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("Loading LSA leads...")
-    try:
-        leads_data = await ads_client.get_lsa_leads(days=18, account="lsa")
-        leads = leads_data.get("leads", [])
-        charged = [l for l in leads if l.get("charged")]
-        phones = []
-        for lead in charged:
-            phone = lead.get("consumer_phone") or lead.get("phone") or ""
-            if phone:
-                phones.append(phone)
-        if not phones:
-            await _safe_edit(msg, "No paid LSA leads with phones found.")
-            return
-        await _safe_edit(msg, "Found " + str(len(phones)) + " LSA phones. Matching with Workiz...")
-        period_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
-        period_from = (datetime.now(NY_TZ) - timedelta(days=18)).strftime("%Y-%m-%d")
-        result = await workiz_client.tag_lsa_jobs(phones, period_from, period_to)
-        tagged = result.get("tagged", [])
-        skipped = result.get("skipped", [])
-        errors = result.get("errors", [])
-        lines = [
-            "*LSA tagging complete*",
-            "Jobs scanned: " + str(result.get("total_jobs_scanned", 0)),
-            "LSA phones: " + str(result.get("total_lsa_phones", 0)),
-            "",
-        ]
-        if tagged:
-            lines.append("*Tagged (" + str(len(tagged)) + "):*")
-            for j in tagged:
-                lines.append("- #" + str(j["serial_id"]) + " | " + j["phone"] + " | " + j["old_source"] + " -> LSA")
-        if skipped:
-            lines.append("\nAlready LSA (" + str(len(skipped)) + "): " + ", ".join("#" + str(j["serial_id"]) for j in skipped))
-        if errors:
-            lines.append("\nErrors (" + str(len(errors)) + "):")
-            for j in errors:
-                lines.append("- #" + str(j.get("serial_id", "?")) + ": " + str(j.get("error", "?")))
-        if not tagged and not skipped and not errors:
-            lines.append("No phone matches found. LSA may use call tracking numbers.")
-        await _safe_edit(msg, "\n".join(lines), parse_mode="Markdown")
-    except Exception as e:
-        log.error("cmd_tag_lsa error: " + str(e))
-        await _safe_edit(msg, "Error: " + str(e))
-
-
-async def cmd_lsa_leads_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /lsaleads - список всех LSA лидов: имя, телефон, дата, тип услуги, статус.
-    """
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("Loading LSA leads...")
-    try:
-        leads_data = await ads_client.get_lsa_leads(days=18, account="lsa")
-    except Exception as e:
-        await _safe_edit(msg, "Error: " + str(e))
-        return
-    leads = leads_data.get("leads", [])
-    if not leads:
-        await _safe_edit(msg, "No LSA leads found.")
-        return
-    period = str(leads_data.get("date_from")) + " -- " + str(leads_data.get("date_to"))
-    charged = [l for l in leads if l.get("charged")]
-    free_leads = [l for l in leads if not l.get("charged")]
-    lines = ["*LSA Leads -- " + period + "*",
-             "Total: " + str(len(leads)) + " | Paid: " + str(len(charged)) + " | Free: " + str(len(free_leads)), ""]
-    if charged:
-        lines.append("*Paid (" + str(len(charged)) + "):*")
-        for lead in charged[:30]:
-            name = lead.get("consumer_name") or lead.get("name") or "No name"
-            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
-            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
-            service = lead.get("service_type") or lead.get("category") or "--"
-            lead_id = str(lead.get("id", "?"))
-            lines.append("- " + date + " | " + name + " | " + phone)
-            lines.append("  " + service + " | ID: " + lead_id)
-        lines.append("")
-    if free_leads:
-        lines.append("*Free (" + str(len(free_leads)) + "):*")
-        for lead in free_leads[:15]:
-            name = lead.get("consumer_name") or lead.get("name") or "No name"
-            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
-            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
-            service = lead.get("service_type") or lead.get("category") or "--"
-            lines.append("- " + date + " | " + name + " | " + phone + " | " + service)
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        for i in range(0, len(text), 3900):
-            part = text[i:i+3900]
-            if i == 0:
-                await _safe_edit(msg, part, parse_mode="Markdown")
-            else:
-                await update.message.reply_text(part, parse_mode="Markdown")
-    else:
-        await _safe_edit(msg, text, parse_mode="Markdown")
-
-
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -2658,11 +2554,104 @@ async def scheduled_morning_report(app):
         today = datetime.now(NY_TZ)
         month_from = today.replace(day=1).strftime("%Y-%m-%d")
         month_to = today.strftime("%Y-%m-%d")
-        data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
-        text = f"☀️ *Утренний отчёт — {today.strftime('%d.%m.%Y')}*\n\n"
-        text += _format_both_summary(data)
         thumbtack_days = (today - today.replace(day=1)).days + 1
-        text += await _get_thumbtack_summary_line(days=thumbtack_days)
+
+        # Загружаем данные параллельно
+        data = await ads_client.get_both_accounts_summary(date_from=month_from, date_to=month_to)
+        ads_data = data.get("google_ads", {})
+        lsa_data = data.get("lsa", {})
+        combined = data.get("combined", {})
+
+        # Impression Share — берём из уже загруженных данных кампаний
+        try:
+            imp_share = ads_data.get("impression_share", 0) or 0
+            rank_lost = ads_data.get("rank_lost_is", 0) or 0
+            budget_lost = ads_data.get("budget_lost_is", 0) or 0
+            # Если нет в summary — берём из campaigns
+            if not imp_share:
+                campaigns = ads_data.get("campaigns", [])
+                if campaigns:
+                    shares = [c.get("impression_share", 0) for c in campaigns if c.get("impression_share")]
+                    imp_share = round(sum(shares) / len(shares), 1) if shares else 0
+        except Exception:
+            imp_share = rank_lost = budget_lost = 0
+
+        # ROAS из Workiz
+        try:
+            ads_spend = ads_data.get("total_spend", 0)
+            lsa_spend = lsa_data.get("total_spend", 0)
+            tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * thumbtack_days, 2)
+            roas_data = await workiz_client.get_roas_report(
+                month_from, month_to,
+                {"Google Ads": ads_spend, "LSA": lsa_spend, "Thumbtack": tt_cost}
+            )
+            roas_summary = roas_data.get("summary", {})
+            total_revenue = roas_summary.get("total_revenue", 0)
+            overall_roas = roas_summary.get("overall_roas")
+        except Exception:
+            total_revenue = 0
+            overall_roas = None
+
+        # Формируем отчёт
+        text = f"☀️ *Утренний отчёт — {today.strftime('%d.%m.%Y')}*\n"
+        text += f"Период: {month_from} — {month_to}\n\n"
+
+        # Расходы и конверсии
+        total_spend = combined.get("total_spend", 0)
+        total_conv = combined.get("total_conversions", 0)
+        avg_cpa = combined.get("avg_cpa") or 0
+        text += f"💰 *Расходы:* ${total_spend:.2f}\n"
+        text += f"📞 *Конверсии:* {total_conv:.0f}"
+        if avg_cpa:
+            text += f" | CPA: ${avg_cpa:.2f}"
+        text += "\n"
+
+        # Выручка и ROAS
+        if total_revenue > 0:
+            text += f"💵 *Выручка (Workiz):* ${total_revenue:.2f}"
+            if overall_roas:
+                text += f" | ROAS: {overall_roas:.1f}x"
+            text += "\n"
+
+        # Impression Share
+        if imp_share > 0:
+            is_emoji = "🟢" if imp_share >= 50 else "🟡" if imp_share >= 30 else "🔴"
+            text += f"\n{is_emoji} *Impression Share:* {imp_share:.1f}%"
+            if rank_lost > 0:
+                text += f" (теряем {rank_lost:.1f}% из-за ранга)"
+            if budget_lost > 0:
+                text += f" (теряем {budget_lost:.1f}% из-за бюджета)"
+            text += "\n"
+
+        # Разбивка по каналам
+        text += f"\n*По каналам:*\n"
+        text += f"• Google Search: ${ads_data.get('total_spend', 0):.2f} / {ads_data.get('total_conversions', 0):.0f} конв.\n"
+        if lsa_data and not lsa_data.get("error"):
+            lsa_cpa = lsa_data.get("total_spend", 0) / lsa_data.get("total_conversions", 1) if lsa_data.get("total_conversions", 0) > 0 else 0
+            text += f"• LSA: ${lsa_data.get('total_spend', 0):.2f} / {lsa_data.get('total_conversions', 0):.0f} конв."
+            if lsa_cpa > 0:
+                text += f" | CPA: ${lsa_cpa:.0f}"
+            text += "\n"
+
+        # Thumbtack
+        tt_line = await _get_thumbtack_summary_line(days=thumbtack_days)
+        if tt_line:
+            text += "• " + tt_line.strip() + "\n"
+
+        # Аномалии
+        anomalies = []
+        if total_conv == 0 and today.day > 1:
+            anomalies.append("🚨 0 конверсий за месяц — проверь кампании")
+        if imp_share > 0 and imp_share < 25:
+            anomalies.append(f"🚨 IS {imp_share:.0f}% — критически низкий охват")
+        if avg_cpa > 100:
+            anomalies.append(f"⚠️ CPA ${avg_cpa:.0f} — выше целевого $50")
+
+        if anomalies:
+            text += "\n*Аномалии:*\n"
+            for a in anomalies:
+                text += f"{a}\n"
+
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
@@ -2937,8 +2926,6 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
-    app.add_handler(CommandHandler("taglsa", cmd_tag_lsa))
-    app.add_handler(CommandHandler("lsaleads", cmd_lsa_leads_list))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
