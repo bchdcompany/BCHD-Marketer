@@ -608,13 +608,13 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     if total_jobs > 0 and total_ad_spend > 0:
         text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
-    overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
-    overdue_t = [j for j in t.get("jobs", []) if j.get("amount_due", 0) > 0]
-    all_overdue = overdue + overdue_t
+    # Неоплаченные долги из всех каналов
+    all_jobs_flat = [j for ch in channels for j in ch.get("jobs", [])]
+    all_overdue = [j for j in all_jobs_flat if j.get("due", 0) > 0]
     if all_overdue:
         text += f"\n⚠️ *Неоплаченные джобы ({len(all_overdue)}):*\n"
         for j in all_overdue[:5]:
-            text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
+            text += f"• #{j.get('serial_id', '?')}: ${j.get('total', 0):.0f} (долг ${j.get('due', 0):.0f}, {j.get('status', '?')})\n"
 
     return text
 
