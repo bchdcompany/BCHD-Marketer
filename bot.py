@@ -1434,6 +1434,44 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
     }
 
 
+
+async def cmd_jobs_no_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/jobsnosource — джобы без источника лида за текущий месяц."""
+    if not _is_owner(update):
+        return
+    msg = await update.message.reply_text("Loading jobs without source...")
+    try:
+        today = datetime.now(NY_TZ)
+        date_from = today.replace(day=1).strftime("%Y-%m-%d")
+        date_to = today.strftime("%Y-%m-%d")
+        result = await workiz_client.get_all_jobs_with_financials(date_from, date_to)
+        all_jobs = result.get("jobs", [])
+        no_source = [j for j in all_jobs
+                     if not (j.get("source_raw") or "").strip()]
+        if not no_source:
+            await _safe_edit(msg, "All jobs have a source assigned.")
+            return
+        total_rev = sum(j.get("total", 0) for j in no_source)
+        lines = [
+            "*Jobs without source -- " + date_from + " to " + date_to + "*",
+            "Found: " + str(len(no_source)) + " of " + str(len(all_jobs)),
+            "Total revenue: $" + f"{total_rev:.2f}",
+            "",
+        ]
+        for j in no_source[:30]:
+            serial = str(j.get("serial_id", "?"))
+            status = str(j.get("status", "?"))
+            total = j.get("total", 0)
+            date = str(j.get("created_date", ""))[:10]
+            lines.append("- #" + serial + " $" + f"{total:.0f}" + " " + status + " " + date)
+        if len(no_source) > 30:
+            lines.append("...and " + str(len(no_source) - 30) + " more")
+        await _safe_edit(msg, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        log.error("cmd_jobs_no_source: " + str(e))
+        await _safe_edit(msg, "Error: " + str(e))
+
+
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -3038,6 +3076,7 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
+    app.add_handler(CommandHandler("jobsnosource", cmd_jobs_no_source))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
