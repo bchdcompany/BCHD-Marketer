@@ -1345,59 +1345,6 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
     }
 
 
-
-
-async def cmd_lsa_leads(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    /lsaleads - список всех LSA лидов: имя, телефон, дата, тип услуги, статус.
-    """
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("Loading LSA leads...")
-    try:
-        leads_data = await ads_client.get_lsa_leads(days=18, account="lsa")
-    except Exception as e:
-        await _safe_edit(msg, "Error: " + str(e))
-        return
-    leads = leads_data.get("leads", [])
-    if not leads:
-        await _safe_edit(msg, "No LSA leads found.")
-        return
-    period = str(leads_data.get("date_from")) + " -- " + str(leads_data.get("date_to"))
-    charged = [l for l in leads if l.get("charged")]
-    free_leads = [l for l in leads if not l.get("charged")]
-    lines = ["*LSA Leads -- " + period + "*", "Total: " + str(len(leads)) + " | Paid: " + str(len(charged)) + " | Free: " + str(len(free_leads)), ""]
-    if charged:
-        lines.append("*Paid (" + str(len(charged)) + "):*")
-        for lead in charged[:30]:
-            name = lead.get("consumer_name") or lead.get("name") or "No name"
-            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
-            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
-            service = lead.get("service_type") or lead.get("category") or "--"
-            lead_id = str(lead.get("id", "?"))
-            lines.append("- " + date + " | " + name + " | " + phone)
-            lines.append("  " + service + " | ID: " + lead_id)
-        lines.append("")
-    if free_leads:
-        lines.append("*Free (" + str(len(free_leads)) + "):*")
-        for lead in free_leads[:15]:
-            name = lead.get("consumer_name") or lead.get("name") or "No name"
-            phone = lead.get("consumer_phone") or lead.get("phone") or "--"
-            date = str(lead.get("creation_time") or lead.get("date") or "")[:10]
-            service = lead.get("service_type") or lead.get("category") or "--"
-            lines.append("- " + date + " | " + name + " | " + phone + " | " + service)
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        for i in range(0, len(text), 3900):
-            part = text[i:i+3900]
-            if i == 0:
-                await _safe_edit(msg, part, parse_mode="Markdown")
-            else:
-                await update.message.reply_text(part, parse_mode="Markdown")
-    else:
-        await _safe_edit(msg, text, parse_mode="Markdown")
-
-
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -2151,12 +2098,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"В отчётах изменение отразится через 3-24 часа._"
                 )
             elif verified is False:
-                text = (
-                    f"⚠️ *Расхождение после выполнения:* {action['description']}\n\n"
-                    f"API не вернул ошибку, но перепроверка показала несоответствие:\n`{verification}`\n\n"
-                    f"Рекомендую проверить вручную в Google Ads. Я также автоматически "
-                    f"перепроверю это ещё раз через сутки и сообщу результат."
-                )
+                action_type = action.get('type', '')
+                if action_type == 'dispute_lsa_lead':
+                    # LSA dispute не верифицируется через API — Google обрабатывает
+                    # асинхронно. Если execute_action не вернул ошибку — запрос отправлен.
+                    text = (
+                        f"✅ *Выполнено:* {action['description']}\n\n"
+                        f"{result.get('summary', str(result))}\n\n"
+                        f"_Запрос на оспаривание отправлен в Google LSA. "
+                        f"Google рассматривает споры в течение 1-3 рабочих дней. "
+                        f"Статус можно проверить в Google Ads → Local Services Ads → Leads._"
+                    )
+                else:
+                    text = (
+                        f"⚠️ *Расхождение после выполнения:* {action['description']}\n\n"
+                        f"API не вернул ошибку, но перепроверка показала несоответствие:\n`{verification}`\n\n"
+                        f"Рекомендую проверить вручную в Google Ads. Я также автоматически "
+                        f"перепроверю это ещё раз через сутки и сообщу результат."
+                    )
             else:
                 text = (
                     f"⚠️ *Не подтверждено:* {action['description']}\n\n"
@@ -2886,7 +2845,6 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
-    app.add_handler(CommandHandler("lsaleads", cmd_lsa_leads))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
