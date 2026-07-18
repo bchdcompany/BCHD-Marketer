@@ -34,7 +34,11 @@ from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
-from strategy import StrategyMemory
+try:
+    from strategy import StrategyMemory
+    _strategy_available = True
+except ImportError:
+    _strategy_available = False
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -48,7 +52,7 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
-strategy_memory = StrategyMemory()
+strategy_memory = StrategyMemory() if _strategy_available else None
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -73,8 +77,9 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
-        strategy_memory.set_pool(pool)
-        await strategy_memory.ensure_tables()
+        if strategy_memory:
+            strategy_memory.set_pool(pool)
+            await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -529,58 +534,77 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET
     thumbtack_cost = round(thumbtack_weekly_budget / 7 * days_in_period, 2)
 
-    google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
-    thumbtack_jobs = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
-
+    # ПЕРЕСТРОЙКА: используем новый get_roas_report
     ads_cost = ads_spend.get("spend", 0)
     lsa_cost = lsa_spend.get("spend", 0)
     total_ad_spend = ads_cost + lsa_cost + thumbtack_cost
 
+    ad_spend_map = {
+        "Google Ads": ads_cost,
+        "LSA": lsa_cost,
+        "Thumbtack": thumbtack_cost,
+    }
+
+    try:
+        roas_report = await workiz_client.get_roas_report(date_from, date_to, ad_spend_map)
+    except Exception as e:
+        log.error(f"get_roas_report error: {e}")
+        roas_report = {"channels": [], "summary": {}}
+
+    summary = roas_report.get("summary", {})
+    channels = roas_report.get("channels", [])
+    total_revenue = summary.get("total_revenue", 0)
+    total_collected = sum(c.get("collected", 0) for c in channels)
+    total_jobs = summary.get("total_jobs", 0)
+
     text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
     text += f"💰 *Расходы на рекламу:*\n"
-    text += f"• Google Ads (936): ${ads_cost:.2f}\n"
-    text += f"• LSA (667): ${lsa_cost:.2f}\n"
-    text += f"• Thumbtack (бюджет ${thumbtack_weekly_budget:.0f}/нед, расчётно): ${thumbtack_cost:.2f}\n"
+    text += f"• Google Ads: ${ads_cost:.2f}\n"
+    text += f"• LSA: ${lsa_cost:.2f}\n"
+    text += f"• Thumbtack (расчётно): ${thumbtack_cost:.2f}\n"
     text += f"• Итого: ${total_ad_spend:.2f}\n\n"
 
-    g = google_jobs
-    g_rev = g.get('total_revenue', 0)
-    g_jobs = g.get('total_jobs', 0)
-    google_spend = ads_cost + lsa_cost
+    # Показываем каждый канал
+    channel_emoji = {"Google Ads": "🔍", "LSA": "📋", "Thumbtack": "📌", "Yelp": "⭐", "Website": "🌐", "Referral": "🤝"}
+    for ch in channels:
+        ch_name = ch["channel"]
+        emoji = channel_emoji.get(ch_name, "📦")
+        rev = ch["total_revenue"]
+        jobs = ch["jobs_count"]
+        collected = ch["collected"]
+        due = ch["outstanding"]
+        spend = ch.get("ad_spend", 0)
+        roas = ch.get("roas")
+        cpa = ch.get("cpa_real")
+        avg = ch.get("avg_ticket", 0)
 
-    text += f"🔧 *Google (Ads + LSA):*\n"
-    text += f"• Джобов: {g_jobs} | Выручка: ${g_rev:.2f} | Собрано: ${g.get('total_collected', 0):.2f}\n"
-    if g.get('total_due', 0) > 0:
-        text += f"• Долг: ${g.get('total_due', 0):.2f}\n"
-    if google_spend > 0 and g_jobs > 0:
-        g_roas = g_rev / google_spend * 100
-        g_cpa = google_spend / g_jobs
-        text += f"• ROAS: {g_roas:.0f}% | CPA: ${g_cpa:.0f}\n"
-    text += "\n"
+        text += f"{emoji} *{ch_name}:*\n"
+        text += f"• Джобов: {jobs} | Выручка: ${rev:.2f} | Собрано: ${collected:.2f}\n"
+        if due > 0:
+            text += f"• Долг: ${due:.2f}\n"
+        if avg > 0:
+            text += f"• Средний чек: ${avg:.2f}\n"
+        if roas is not None:
+            text += f"• ROAS: {roas:.1f}x | CPA реальный: ${cpa:.0f}\n"
+        elif jobs > 0 and spend == 0:
+            text += f"• (органический канал)\n"
+        text += "\n"
 
-    t = thumbtack_jobs
-    t_rev = t.get('total_revenue', 0)
-    t_jobs = t.get('total_jobs', 0)
-    text += f"📌 *Thumbtack:*\n"
-    text += f"• Джобов: {t_jobs} | Выручка: ${t_rev:.2f} | Собрано: ${t.get('total_collected', 0):.2f}\n"
-    if t.get('total_due', 0) > 0:
-        text += f"• Долг: ${t.get('total_due', 0):.2f}\n"
-    if thumbtack_cost > 0 and t_jobs > 0:
-        t_roas = t_rev / thumbtack_cost * 100
-        t_cpa = thumbtack_cost / t_jobs
-        text += f"• ROAS: {t_roas:.0f}% | CPA: ${t_cpa:.0f}\n"
-    elif t_jobs == 0:
-        text += f"• Джобов из Thumbtack не найдено за период\n"
-    text += "\n"
-
-    total_revenue = g_rev + t_rev
-    total_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
-    total_jobs = g_jobs + t_jobs
-    text += f"📈 *Итого по всем каналам:*\n"
+    text += f"📈 *Итого:*\n"
     text += f"• Расходы: ${total_ad_spend:.2f} | Выручка: ${total_revenue:.2f} | Собрано: ${total_collected:.2f}\n"
-    if total_ad_spend > 0 and total_revenue > 0:
-        total_roas = total_revenue / total_ad_spend * 100
-        text += f"• Общий ROAS: {total_roas:.0f}%\n"
+    overall_roas = summary.get("overall_roas")
+    if overall_roas:
+        text += f"• Общий ROAS: {overall_roas:.1f}x\n"
+    avg_ticket = summary.get("avg_ticket", 0)
+    if avg_ticket > 0:
+        text += f"• Средний чек: ${avg_ticket:.2f}\n"
+
+    # Совместимость со старым кодом
+    g_jobs = next((c["jobs_count"] for c in channels if c["channel"] == "Google Ads"), 0)
+    g_rev = next((c["total_revenue"] for c in channels if c["channel"] == "Google Ads"), 0)
+    t_jobs = next((c["jobs_count"] for c in channels if c["channel"] == "Thumbtack"), 0)
+    t_rev = next((c["total_revenue"] for c in channels if c["channel"] == "Thumbtack"), 0)
+
     if total_jobs > 0 and total_ad_spend > 0:
         text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
@@ -1686,18 +1710,30 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["budgets"][acc] = await ads_client.get_budget_data(account=acc)
         if not context_data:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
-
-        # ПЕРЕСТРОЙКА: добавляем контекст памяти решений
-        try:
-            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
-        except Exception as e:
-            log.warning(f"strategy_context error (non-critical): {e}")
-            context_data["strategy_context"] = {}
-
     except Exception as e:
         log.error(f"Ошибка сбора данных для чата: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
+
+    # ПЕРЕСТРОЙКА: стратегическая память
+    if strategy_memory:
+        try:
+            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+        except Exception as e:
+            log.warning(f"strategy_context error: {e}")
+
+    # ПЕРЕСТРОЙКА: реальная выручка из Workiz
+    try:
+        ads_s = context_data.get("campaigns_summary", {})
+        ads_cost = float((ads_s.get("ads") or {}).get("spend", 0))
+        lsa_cost = float((ads_s.get("lsa") or {}).get("spend", 0))
+        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * 17, 2)
+        context_data["workiz_roas"] = await workiz_client.get_roas_report(
+            period_from, period_to,
+            {"Google Ads": ads_cost, "LSA": lsa_cost, "Thumbtack": tt_cost}
+        )
+    except Exception as e:
+        log.warning(f"workiz_roas error: {e}")
 
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
@@ -2043,10 +2079,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not action:
                 await _safe_edit(query, "⚠️ Действие не найдено или уже выполнено.")
                 return
-            await strategy_memory.log_decision(
-                action_type=action.get('type', 'unknown'),
-                target=(action.get('keyword') or action.get('description', ''))[:60],
-                decision='approved', details=action)
             stale_note = ""
             if action.get("stale_when_approved"):
                 stale_note = (
@@ -2089,21 +2121,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     expected = verification.get('expected_bid')
                     if actual is not None:
                         verify_details = f"\n📊 Текущая ставка в настройках: *${actual:.2f}* (ожидалось ${expected:.2f})"
-                        kw_text = action.get('keyword', '')
-                        old_bid = str(action.get('current_bid', '?'))
-                        await strategy_memory.log_keyword_change(
-                            keyword=kw_text, change_type='bid_change',
-                            old_value=old_bid, new_value=str(actual), verified=True)
                 elif action_type in ('pause_keywords', 'enable_keywords'):
                     cnt = verification.get('verified_count', 0)
                     total = verification.get('total', 0)
                     status = 'PAUSED' if action_type == 'pause_keywords' else 'ENABLED'
                     verify_details = f"\n📊 Статус в настройках: {cnt}/{total} ключей = {status}"
-                    for kw in action.get('keywords', []):
-                        old_s = 'ENABLED' if action_type == 'pause_keywords' else 'PAUSED'
-                        await strategy_memory.log_keyword_change(
-                            keyword=kw.get('keyword', ''), change_type='status_change',
-                            old_value=old_s, new_value=status, verified=(cnt == total))
                 elif action_type == 'add_negative_keywords':
                     missing = verification.get('missing_terms', [])
                     expected = verification.get('expected_terms', [])
@@ -2168,10 +2190,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if action:
                 status = action.get("status", "rejected")
                 if status == "rejected":
-                    await strategy_memory.log_decision(
-                        action_type=action.get('type', 'unknown'),
-                        target=(action.get('keyword') or action.get('description', ''))[:60],
-                        decision='rejected', details=action)
                     await _safe_edit(query, f"❌ Отклонено: {action.get('description', param)}")
                 else:
                     await _safe_edit(query, f"⚠️ Действие уже имеет статус '{status}'.")
