@@ -45,6 +45,16 @@ class PendingActions:
         if not self._pool:
             return
         async with self._pool.acquire() as conn:
+            # Проверяем существует ли таблица со старой схемой (колонка 'id' вместо 'action_id')
+            old_schema = await conn.fetchval(
+                """SELECT column_name FROM information_schema.columns
+                   WHERE table_name='pending_actions' AND column_name='id' LIMIT 1"""
+            )
+            if old_schema:
+                # Миграция: переименовываем колонку id → action_id
+                log.info("pending_actions: миграция схемы id → action_id")
+                await conn.execute("ALTER TABLE pending_actions RENAME COLUMN id TO action_id")
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS pending_actions (
                     action_id TEXT PRIMARY KEY,
@@ -54,7 +64,6 @@ class PendingActions:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
             """)
-            # Добавляем колонку comment если её нет (для старых инсталляций)
             await conn.execute("""
                 ALTER TABLE pending_actions
                 ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT NULL
