@@ -35,19 +35,29 @@ WORKIZ_API_SECRET = os.environ.get("WORKIZ_API_SECRET", "")
 BASE_URL = f"https://api.workiz.com/api/v1/{WORKIZ_API_TOKEN}"
 
 # Маппинг источников → рекламные каналы
+# Значения должны совпадать с Ad Groups в Workiz
 SOURCE_CHANNEL_MAP = {
-    "google": "Google Ads",
-    "google ads": "Google Ads",
-    "google adwords": "Google Ads",
+    "google": "Google",
+    "google ads": "Google",
+    "google adwords": "Google",
     "lsa": "LSA",
+    "local services ads": "LSA",
     "local services": "LSA",
     "local service ads": "LSA",
     "thumbtack": "Thumbtack",
     "yelp": "Yelp",
+    "facebook": "Facebook/Insta",
+    "facebook/insta": "Facebook/Insta",
+    "instagram": "Facebook/Insta",
+    "home advisor": "Home Advisor",
+    "homeadvisor": "Home Advisor",
+    "angi": "Home Advisor",
     "website": "Website",
     "web": "Website",
-    "referral": "Referral",
-    "repeat": "Repeat Client",
+    "referral from others": "Referral from others",
+    "referral": "Referral from others",
+    "customer return": "Customer return",
+    "repeat": "Customer return",
 }
 
 
