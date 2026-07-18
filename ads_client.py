@@ -1799,19 +1799,23 @@ class GoogleAdsClient:
 
             # Правильный способ для proto-plus repeated field:
             # используем append с объектами типа AdTextAsset
-            # google-ads v31 использует proto-plus обёртку над protobuf.
-            # ResponsiveSearchAdInfo.headlines — это RepeatedComposite[AdTextAsset].
-            # Правильный способ: используем proto.copy_from для всего RSA.
-            import proto
-            from google.ads.googleads.v24.common.types.ad_asset import AdTextAsset
+            # Правильный импорт для google-ads v24
+            import google.ads.googleads as _gads_pkg
+            import os as _os, importlib as _imp
+            _base = _os.path.dirname(_gads_pkg.__file__)
+            _versions = sorted([d for d in _os.listdir(_base) if d.startswith('v')])
+            _ver = _versions[-1]  # последняя доступная версия
 
+            _asset_mod = _imp.import_module(f'google.ads.googleads.{_ver}.common.types.ad_asset')
+            _rsa_mod = _imp.import_module(f'google.ads.googleads.{_ver}.common.types.ad_type_infos')
+            AdTextAsset = _asset_mod.AdTextAsset
+            ResponsiveSearchAdInfo = _rsa_mod.ResponsiveSearchAdInfo
+
+            import proto
             headline_list = [
                 AdTextAsset(text=h_text.strip()[:30])
                 for h_text in new_headlines
             ]
-
-            # Устанавливаем через proto.copy_from на весь RSA объект
-            from google.ads.googleads.v24.common.types.ad import ResponsiveSearchAdInfo
             proto.copy_from(
                 op.update.ad.responsive_search_ad,
                 ResponsiveSearchAdInfo(headlines=headline_list)
