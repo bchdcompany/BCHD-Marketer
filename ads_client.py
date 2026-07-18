@@ -1094,6 +1094,8 @@ class GoogleAdsClient:
             'dispute_lsa_lead': self._dispute_lsa_lead,
             'disputelsalead': self._dispute_lsa_lead,
             'update_final_url': self._update_keyword_final_url,
+            'update_ad_headlines': self._update_ad_headlines,
+            'updateadheadlines': self._update_ad_headlines,
         }
         handler = handlers.get(action_type)
         if not handler:
@@ -1239,6 +1241,24 @@ class GoogleAdsClient:
                     # критерия — это тоже подтверждение успешного удаления
                     if 'not found' in str(e).lower() or 'NOT_FOUND' in str(e):
                         return {'verified': True, 'note': 'Критерий не найден — удаление подтверждено'}
+                    return {'verified': None, 'note': f'Ошибка проверки: {e}'}
+
+            elif action_type in ('update_ad_headlines', 'updateadheadlines'):
+                rn = action.get('resource_name')
+                if not rn:
+                    return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
+                query = f"SELECT ad_group_ad.ad.responsive_search_ad.headlines FROM ad_group_ad WHERE ad_group_ad.resource_name = '{rn}' AND campaign.status != 'REMOVED'"
+                try:
+                    rows = await self._search(customer_id, query)
+                    if not rows:
+                        return {'verified': None, 'note': 'Объявление не найдено'}
+                    actual_headlines = [h.text for h in rows[0].ad_group_ad.ad.responsive_search_ad.headlines]
+                    expected = action.get('headlines', [])
+                    # Проверяем что хотя бы один новый заголовок присутствует
+                    new_ones = [h for h in expected if h not in actual_headlines]
+                    verified = len(new_ones) == 0  # все новые заголовки найдены
+                    return {'verified': verified, 'actual_count': len(actual_headlines), 'expected_new': expected}
+                except Exception as e:
                     return {'verified': None, 'note': f'Ошибка проверки: {e}'}
 
             elif action_type == 'dispute_lsa_lead':
@@ -1498,108 +1518,56 @@ class GoogleAdsClient:
     async def _remove_negative_keyword(self, action: dict, customer_id: str = None) -> dict:
         """
         Удаляет минус-слово. Ищет по тексту через API на уровне кампании и группы.
-        Если в action передан resource_name — используем его напрямую (надёжнее).
-        Поиск ведётся по ВСЕМ аккаунтам (основной + LSA + доп. кампании).
+        resource_name из action игнорируется — он часто неправильный.
         """
         if not customer_id:
             customer_id = self.customer_id
         term = action.get('term', '').strip().lower()
-
-        # БЫСТРЫЙ ПУТЬ: если передан resource_name — используем напрямую
-        direct_rn = action.get('resource_name', '').strip()
-        if direct_rn and '~' in direct_rn:
-            # resource_name вида customers/X/campaignCriteria/Y~Z — используем напрямую
-            # Извлекаем customer_id из resource_name
-            parts = direct_rn.split('/')
-            if len(parts) >= 2:
-                rn_customer_id = parts[1]
-            else:
-                rn_customer_id = customer_id
-            client = self._get_client()
-            try:
-                if 'adGroupCriteria' in direct_rn or 'adGroupCriterion' in direct_rn:
-                    svc = client.get_service("AdGroupCriterionService")
-                    op = client.get_type("AdGroupCriterionOperation")
-                    op.remove = direct_rn
-                    await asyncio.to_thread(svc.mutate_ad_group_criteria,
-                        customer_id=rn_customer_id, operations=[op])
-                else:
-                    svc = client.get_service("CampaignCriterionService")
-                    op = client.get_type("CampaignCriterionOperation")
-                    op.remove = direct_rn
-                    await asyncio.to_thread(svc.mutate_campaign_criteria,
-                        customer_id=rn_customer_id, operations=[op])
-                return {'summary': f"Минус-слово '{term or direct_rn}' удалено (по resource_name)"}
-            except Exception as e:
-                log.warning(f"_remove_negative_keyword direct rn failed: {e}, fallback to search")
-
         if not term:
             raise ValueError("Не указан 'term' (текст минус-слова) для удаления.")
 
-        # Ищем во всех аккаунтах включая дополнительные
-        search_customer_ids = [self.customer_id]
-        if self.lsa_customer_id and self.lsa_customer_id not in search_customer_ids:
-            search_customer_ids.append(self.lsa_customer_id)
-        # Дополнительные аккаунты из переменной окружения GOOGLE_ADS_EXTRA_CUSTOMER_IDS
-        import os
-        extra_raw = os.environ.get("GOOGLE_ADS_EXTRA_CUSTOMER_IDS", "20424210216")
-        for eid in extra_raw.split(","):
-            eid = eid.strip()
-            if eid and eid not in search_customer_ids:
-                search_customer_ids.append(eid)
-
+        # Шаг 1: ищем на уровне кампании
+        camp_rows = await self._search(customer_id,
+            "SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
+            "FROM campaign_criterion "
+            "WHERE campaign_criterion.type = 'KEYWORD' "
+            "AND campaign_criterion.negative = true "
+            "AND campaign.status != 'REMOVED'"
+        )
         found_rn = None
         found_level = None
-        found_customer_id = None
-
-        for cid in search_customer_ids:
-            # Шаг 1: ищем на уровне кампании
-            camp_rows = await self._search(cid,
-                "SELECT campaign_criterion.resource_name, campaign_criterion.keyword.text "
-                "FROM campaign_criterion "
-                "WHERE campaign_criterion.type = 'KEYWORD' "
-                "AND campaign_criterion.negative = true "
-                "AND campaign.status != 'REMOVED'"
-            )
-            for row in camp_rows:
-                txt = row.campaign_criterion.keyword.text.lower()
-                if txt == term:
-                    found_rn = row.campaign_criterion.resource_name
-                    found_level = "campaign"
-                    found_customer_id = cid
-                    break
-            if found_rn:
+        for row in camp_rows:
+            txt = row.campaign_criterion.keyword.text.lower()
+            if txt == term or term in txt:
+                found_rn = row.campaign_criterion.resource_name
+                found_level = "campaign"
                 break
 
-        # Шаг 2: ищем на уровне группы объявлений (по всем аккаунтам)
+        # Шаг 2: ищем на уровне группы объявлений
         if not found_rn:
-            for cid in search_customer_ids:
-                group_rows = await self._search(cid,
-                    "SELECT ad_group_criterion.resource_name, ad_group_criterion.keyword.text "
-                    "FROM ad_group_criterion "
-                    "WHERE ad_group_criterion.type = 'KEYWORD' "
-                    "AND ad_group_criterion.negative = true "
-                    "AND campaign.status != 'REMOVED' "
-                    "AND ad_group.status != 'REMOVED'"
-                )
-                for row in group_rows:
-                    txt = row.ad_group_criterion.keyword.text.lower()
-                    if txt == term:
-                        found_rn = row.ad_group_criterion.resource_name
-                        found_level = "ad_group"
-                        found_customer_id = cid
-                        break
-                if found_rn:
+            group_rows = await self._search(customer_id,
+                "SELECT ad_group_criterion.resource_name, ad_group_criterion.keyword.text "
+                "FROM ad_group_criterion "
+                "WHERE ad_group_criterion.type = 'KEYWORD' "
+                "AND ad_group_criterion.negative = true "
+                "AND campaign.status != 'REMOVED' "
+                "AND ad_group.status != 'REMOVED'"
+            )
+            for row in group_rows:
+                txt = row.ad_group_criterion.keyword.text.lower()
+                if txt == term or term in txt:
+                    found_rn = row.ad_group_criterion.resource_name
+                    found_level = "ad_group"
                     break
 
         if not found_rn:
+            existing = [r.campaign_criterion.keyword.text for r in camp_rows[:15]]
             raise ValueError(
-                f"Минус-слово '{term}' не найдено ни в одном аккаунте "
-                f"({', '.join(search_customer_ids)})"
+                f"Минус-слово '{term}' не найдено. "
+                f"Текущие минус-слова кампании: {existing}"
             )
 
-        use_cid = found_customer_id or customer_id
-        log.info(f"_remove_negative_keyword: '{term}' найдено ({found_level}) в {use_cid}: {found_rn}")
+        log.info(f"_remove_negative_keyword: '{term}' найдено ({found_level}): {found_rn}")
 
         # Выбираем сервис по уровню
         client = self._get_client()
@@ -1608,15 +1576,15 @@ class GoogleAdsClient:
             op = client.get_type("AdGroupCriterionOperation")
             op.remove = found_rn
             await asyncio.to_thread(svc.mutate_ad_group_criteria,
-                customer_id=use_cid, operations=[op])
+                customer_id=customer_id, operations=[op])
         else:
             svc = client.get_service("CampaignCriterionService")
             op = client.get_type("CampaignCriterionOperation")
             op.remove = found_rn
             await asyncio.to_thread(svc.mutate_campaign_criteria,
-                customer_id=use_cid, operations=[op])
+                customer_id=customer_id, operations=[op])
 
-        return {'summary': f"Минус-слово '{term}' удалено ({found_level}, аккаунт {use_cid})"}
+        return {'summary': f"Минус-слово '{term}' удалено ({found_level} уровень)"}
 
     async def _change_budget(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
@@ -1761,6 +1729,92 @@ class GoogleAdsClient:
         op.update_mask.paths.append("final_urls")
         await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
         return {'summary': f"Final URL ключа '{action.get('keyword', '')}' обновлён на {new_url}"}
+
+
+    async def get_ads_for_group(self, ad_group_id: int, customer_id: str = None) -> list:
+        """Возвращает все RSA объявления группы с заголовками и описаниями."""
+        if not customer_id:
+            customer_id = self.customer_id
+        query = f"""
+            SELECT
+                ad_group_ad.resource_name,
+                ad_group_ad.ad.id,
+                ad_group_ad.ad.responsive_search_ad.headlines,
+                ad_group_ad.ad.responsive_search_ad.descriptions,
+                ad_group_ad.status,
+                ad_group.name,
+                campaign.name
+            FROM ad_group_ad
+            WHERE ad_group.id = {ad_group_id}
+              AND ad_group_ad.status != 'REMOVED'
+              AND campaign.status != 'REMOVED'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            ads = []
+            for row in rows:
+                rsa = row.ad_group_ad.ad.responsive_search_ad
+                headlines = [{"text": h.text, "pinned_field": h.pinned_field.name if hasattr(h.pinned_field, 'name') else None} for h in rsa.headlines] if rsa.headlines else []
+                descriptions = [{"text": d.text} for d in rsa.descriptions] if rsa.descriptions else []
+                ads.append({
+                    "resource_name": row.ad_group_ad.resource_name,
+                    "ad_id": row.ad_group_ad.ad.id,
+                    "status": row.ad_group_ad.status.name,
+                    "ad_group": row.ad_group.name,
+                    "campaign": row.campaign.name,
+                    "headlines": headlines,
+                    "descriptions": descriptions,
+                })
+            return ads
+        except Exception as e:
+            log.error(f"get_ads_for_group({ad_group_id}) error: {e}")
+            return []
+
+    async def _update_ad_headlines(self, action: dict, customer_id: str = None) -> dict:
+        """
+        Обновляет заголовки RSA объявления.
+        action должен содержать:
+        - resource_name: resource_name объявления (ad_group_ad)
+        - headlines: список строк — ПОЛНЫЙ новый список заголовков (до 15)
+        - ad_group_id: для получения текущих заголовков если headlines не передан
+        
+        ВАЖНО: Google Ads RSA требует передавать ВСЕ заголовки целиком при обновлении.
+        Нельзя добавить один заголовок — нужно передать все существующие + новые.
+        """
+        if not customer_id:
+            customer_id = self.customer_id
+
+        rn = action.get("resource_name")
+        if not rn:
+            raise ValueError("resource_name объявления не указан")
+
+        new_headlines = action.get("headlines", [])
+        if not new_headlines:
+            raise ValueError("Список заголовков (headlines) не указан")
+
+        if len(new_headlines) > 15:
+            raise ValueError(f"Слишком много заголовков: {len(new_headlines)}. Максимум 15.")
+        if len(new_headlines) < 3:
+            raise ValueError(f"Слишком мало заголовков: {len(new_headlines)}. Минимум 3.")
+
+        client = self._get_client()
+        svc = client.get_service("AdGroupAdService")
+        op = client.get_type("AdGroupAdOperation")
+        op.update.resource_name = rn
+
+        # Очищаем и заполняем заголовки
+        for h_text in new_headlines:
+            h = op.update.ad.responsive_search_ad.headlines.add()
+            h.text = h_text.strip()[:30]  # Google Ads ограничение 30 символов
+
+        op.update_mask.paths.append("ad.responsive_search_ad.headlines")
+
+        try:
+            await asyncio.to_thread(svc.mutate_ad_group_ads, customer_id=customer_id, operations=[op])
+            return {"summary": f"Заголовки объявления обновлены ({len(new_headlines)} шт): {', '.join(new_headlines[:3])}..."}
+        except Exception as e:
+            raise ValueError(f"Ошибка обновления заголовков: {e}")
+
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id:
