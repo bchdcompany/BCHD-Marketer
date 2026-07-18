@@ -34,11 +34,6 @@ from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
-try:
-    from strategy import StrategyMemory
-    _strategy_available = True
-except ImportError:
-    _strategy_available = False
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -52,7 +47,6 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
-strategy_memory = StrategyMemory() if _strategy_available else None
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -77,9 +71,6 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
-        if strategy_memory:
-            strategy_memory.set_pool(pool)
-            await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -534,87 +525,68 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     thumbtack_weekly_budget = config.THUMBTACK_WEEKLY_BUDGET
     thumbtack_cost = round(thumbtack_weekly_budget / 7 * days_in_period, 2)
 
-    # ПЕРЕСТРОЙКА: используем новый get_roas_report
+    google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
+    thumbtack_jobs = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
+
     ads_cost = ads_spend.get("spend", 0)
     lsa_cost = lsa_spend.get("spend", 0)
     total_ad_spend = ads_cost + lsa_cost + thumbtack_cost
 
-    ad_spend_map = {
-        "Google Ads": ads_cost,
-        "LSA": lsa_cost,
-        "Thumbtack": thumbtack_cost,
-    }
-
-    try:
-        roas_report = await workiz_client.get_roas_report(date_from, date_to, ad_spend_map)
-    except Exception as e:
-        log.error(f"get_roas_report error: {e}")
-        roas_report = {"channels": [], "summary": {}}
-
-    summary = roas_report.get("summary", {})
-    channels = roas_report.get("channels", [])
-    total_revenue = summary.get("total_revenue", 0)
-    total_collected = sum(c.get("collected", 0) for c in channels)
-    total_jobs = summary.get("total_jobs", 0)
-
     text = f"📊 *Реальный ROAS — {date_from} — {date_to}*\n\n"
     text += f"💰 *Расходы на рекламу:*\n"
-    text += f"• Google Ads: ${ads_cost:.2f}\n"
-    text += f"• LSA: ${lsa_cost:.2f}\n"
-    text += f"• Thumbtack (расчётно): ${thumbtack_cost:.2f}\n"
+    text += f"• Google Ads (936): ${ads_cost:.2f}\n"
+    text += f"• LSA (667): ${lsa_cost:.2f}\n"
+    text += f"• Thumbtack (бюджет ${thumbtack_weekly_budget:.0f}/нед, расчётно): ${thumbtack_cost:.2f}\n"
     text += f"• Итого: ${total_ad_spend:.2f}\n\n"
 
-    # Показываем каждый канал
-    channel_emoji = {"Google Ads": "🔍", "LSA": "📋", "Thumbtack": "📌", "Yelp": "⭐", "Website": "🌐", "Referral": "🤝"}
-    for ch in channels:
-        ch_name = ch["channel"]
-        emoji = channel_emoji.get(ch_name, "📦")
-        rev = ch["total_revenue"]
-        jobs = ch["jobs_count"]
-        collected = ch["collected"]
-        due = ch["outstanding"]
-        spend = ch.get("ad_spend", 0)
-        roas = ch.get("roas")
-        cpa = ch.get("cpa_real")
-        avg = ch.get("avg_ticket", 0)
+    g = google_jobs
+    g_rev = g.get('total_revenue', 0)
+    g_jobs = g.get('total_jobs', 0)
+    google_spend = ads_cost + lsa_cost
 
-        text += f"{emoji} *{ch_name}:*\n"
-        text += f"• Джобов: {jobs} | Выручка: ${rev:.2f} | Собрано: ${collected:.2f}\n"
-        if due > 0:
-            text += f"• Долг: ${due:.2f}\n"
-        if avg > 0:
-            text += f"• Средний чек: ${avg:.2f}\n"
-        if roas is not None:
-            text += f"• ROAS: {roas:.1f}x | CPA реальный: ${cpa:.0f}\n"
-        elif jobs > 0 and spend == 0:
-            text += f"• (органический канал)\n"
-        text += "\n"
+    text += f"🔧 *Google (Ads + LSA):*\n"
+    text += f"• Джобов: {g_jobs} | Выручка: ${g_rev:.2f} | Собрано: ${g.get('total_collected', 0):.2f}\n"
+    if g.get('total_due', 0) > 0:
+        text += f"• Долг: ${g.get('total_due', 0):.2f}\n"
+    if google_spend > 0 and g_jobs > 0:
+        g_roas = g_rev / google_spend * 100
+        g_cpa = google_spend / g_jobs
+        text += f"• ROAS: {g_roas:.0f}% | CPA: ${g_cpa:.0f}\n"
+    text += "\n"
 
-    text += f"📈 *Итого:*\n"
+    t = thumbtack_jobs
+    t_rev = t.get('total_revenue', 0)
+    t_jobs = t.get('total_jobs', 0)
+    text += f"📌 *Thumbtack:*\n"
+    text += f"• Джобов: {t_jobs} | Выручка: ${t_rev:.2f} | Собрано: ${t.get('total_collected', 0):.2f}\n"
+    if t.get('total_due', 0) > 0:
+        text += f"• Долг: ${t.get('total_due', 0):.2f}\n"
+    if thumbtack_cost > 0 and t_jobs > 0:
+        t_roas = t_rev / thumbtack_cost * 100
+        t_cpa = thumbtack_cost / t_jobs
+        text += f"• ROAS: {t_roas:.0f}% | CPA: ${t_cpa:.0f}\n"
+    elif t_jobs == 0:
+        text += f"• Джобов из Thumbtack не найдено за период\n"
+    text += "\n"
+
+    total_revenue = g_rev + t_rev
+    total_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
+    total_jobs = g_jobs + t_jobs
+    text += f"📈 *Итого по всем каналам:*\n"
     text += f"• Расходы: ${total_ad_spend:.2f} | Выручка: ${total_revenue:.2f} | Собрано: ${total_collected:.2f}\n"
-    overall_roas = summary.get("overall_roas")
-    if overall_roas:
-        text += f"• Общий ROAS: {overall_roas:.1f}x\n"
-    avg_ticket = summary.get("avg_ticket", 0)
-    if avg_ticket > 0:
-        text += f"• Средний чек: ${avg_ticket:.2f}\n"
-
-    # Совместимость со старым кодом
-    g_jobs = next((c["jobs_count"] for c in channels if c["channel"] == "Google Ads"), 0)
-    g_rev = next((c["total_revenue"] for c in channels if c["channel"] == "Google Ads"), 0)
-    t_jobs = next((c["jobs_count"] for c in channels if c["channel"] == "Thumbtack"), 0)
-    t_rev = next((c["total_revenue"] for c in channels if c["channel"] == "Thumbtack"), 0)
-
+    if total_ad_spend > 0 and total_revenue > 0:
+        total_roas = total_revenue / total_ad_spend * 100
+        text += f"• Общий ROAS: {total_roas:.0f}%\n"
     if total_jobs > 0 and total_ad_spend > 0:
         text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
-    # Неоплаченные долги из всех каналов
-    all_jobs_flat = [j for ch in channels for j in ch.get("jobs", [])]
-    all_overdue = [j for j in all_jobs_flat if j.get("due", 0) > 0]
+    overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
+    overdue_t = [j for j in t.get("jobs", []) if j.get("amount_due", 0) > 0]
+    all_overdue = overdue + overdue_t
     if all_overdue:
         text += f"\n⚠️ *Неоплаченные джобы ({len(all_overdue)}):*\n"
         for j in all_overdue[:5]:
-            text += f"• #{j.get('serial_id', '?')}: ${j.get('total', 0):.0f} (долг ${j.get('due', 0):.0f}, {j.get('status', '?')})\n"
+            text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
 
@@ -1373,6 +1345,77 @@ async def _run_lsa_audit(bot, progress_msg=None, days: int = 7, limit: int = 20,
     }
 
 
+
+async def cmd_lsa_leads(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /lsaleads [дней] — показывает список всех LSA лидов с именем, телефоном,
+    датой и статусом. Используется для сопоставления с Workiz и обновления
+    источника лида.
+    Пример: /lsaleads 17  (за 17 дней)
+    """
+    if not await _check_owner(update):
+        return
+    args = ctx.args
+    days = 17
+    if args:
+        try:
+            days = int(args[0])
+        except ValueError:
+            pass
+
+    msg = await update.message.reply_text(f"📋 Загружаю LSA лиды за {days} дней...")
+
+    try:
+        leads_data = await ads_client.get_lsa_leads(days=days, account="lsa")
+    except Exception as e:
+        await _safe_edit(msg, f"❌ Ошибка загрузки LSA лидов: {e}")
+        return
+
+    leads = leads_data.get('leads', [])
+    if not leads:
+        await _safe_edit(msg, f"📋 LSA лидов за {days} дней не найдено.")
+        return
+
+    period = f"{leads_data.get('date_from')} — {leads_data.get('date_to')}"
+    charged = [l for l in leads if l.get('charged')]
+    free = [l for l in leads if not l.get('charged')]
+
+    text = f"📋 *LSA лиды — {period}*\n"
+    text += f"Всего: {len(leads)} | Оплачено: {len(charged)} | Бесплатных: {len(free)}\n\n"
+
+    # Оплаченные лиды
+    if charged:
+        text += f"💰 *Оплаченные ({len(charged)}):*\n"
+        for lead in charged[:25]:
+            name = lead.get('consumer_name') or lead.get('name') or 'Без имени'
+            phone = lead.get('consumer_phone') or lead.get('phone') or '—'
+            date = (lead.get('creation_time') or lead.get('date') or '')[:10]
+            service = lead.get('service_type') or lead.get('category') or '—'
+            lead_id = lead.get('id', '?')
+            text += f"• {date} | {name} | {phone}\n"
+            text += f"  └ {service} | ID: {lead_id}\n"
+        text += "\n"
+
+    # Бесплатные лиды
+    if free:
+        text += f"🆓 *Бесплатные ({len(free)}):*\n"
+        for lead in free[:10]:
+            name = lead.get('consumer_name') or lead.get('name') or 'Без имени'
+            phone = lead.get('consumer_phone') or lead.get('phone') or '—'
+            date = (lead.get('creation_time') or lead.get('date') or '')[:10]
+            service = lead.get('service_type') or lead.get('category') or '—'
+            text += f"• {date} | {name} | {phone} | {service}\n"
+
+    # Отправляем по частям если длинный
+    if len(text) > 4000:
+        parts = [text[i:i+3900] for i in range(0, len(text), 3900)]
+        await _safe_edit(msg, parts[0], parse_mode="Markdown")
+        for part in parts[1:]:
+            await update.message.reply_text(part, parse_mode="Markdown")
+    else:
+        await _safe_edit(msg, text, parse_mode="Markdown")
+
+
 async def cmd_audit_calls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -1714,26 +1757,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error(f"Ошибка сбора данных для чата: {e}")
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
-
-    # ПЕРЕСТРОЙКА: стратегическая память
-    if strategy_memory:
-        try:
-            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
-        except Exception as e:
-            log.warning(f"strategy_context error: {e}")
-
-    # ПЕРЕСТРОЙКА: реальная выручка из Workiz
-    try:
-        ads_s = context_data.get("campaigns_summary", {})
-        ads_cost = float((ads_s.get("ads") or {}).get("spend", 0))
-        lsa_cost = float((ads_s.get("lsa") or {}).get("spend", 0))
-        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET / 7 * 17, 2)
-        context_data["workiz_roas"] = await workiz_client.get_roas_report(
-            period_from, period_to,
-            {"Google Ads": ads_cost, "LSA": lsa_cost, "Thumbtack": tt_cost}
-        )
-    except Exception as e:
-        log.warning(f"workiz_roas error: {e}")
 
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
@@ -2881,6 +2904,7 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
+    app.add_handler(CommandHandler("lsaleads", cmd_lsa_leads))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
