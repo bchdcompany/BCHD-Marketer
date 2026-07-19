@@ -34,12 +34,6 @@ from ads_client import GoogleAdsClient
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
-try:
-    from strategy import StrategyMemory
-    _strategy_available = True
-except ImportError:
-    _strategy_available = False
-    log = __import__('logging').getLogger(__name__)
 from report_generator import ReportGenerator
 import workiz_client
 
@@ -53,7 +47,6 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
-strategy_memory = StrategyMemory() if _strategy_available else None
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -78,9 +71,6 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
-        if strategy_memory:
-            strategy_memory.set_pool(pool)
-            await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -343,7 +333,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
         f"/history [N] — журнал выполненных действий (последние N, по умолчанию 20)\n"
-        f"/strategy — стратегический план на эту неделю\n"
         f"/clearmemory — очистить память переписки (начать с чистого листа)\n"
         f"/reviewnegatives — ИИ-анализ списка минус-слов на риск блокировки релевантного трафика",
         parse_mode="Markdown",
@@ -913,6 +902,123 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Ошибка /roas: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+
+async def scheduled_anomaly_check(app):
+    """
+    Проактивные инсайты — запускается каждые 4 часа.
+    Пишет только если нашёл реальную аномалию, иначе молчит.
+    Триггеры:
+    - 0 конверсий за последние 2 дня (при ненулевом расходе)
+    - CPA вырос >40% за неделю vs предыдущая неделя
+    - IS упал ниже 20%
+    - Расход превысил дневной бюджет на 30%+
+    - Новый конкурент в аукционе (IS > 50%)
+    """
+    if not config.google_ads_configured:
+        return
+    try:
+        today = datetime.now(NY_TZ)
+        alerts = []
+
+        # --- Данные за последние 2 дня ---
+        date_2d_from = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+        date_today = today.strftime("%Y-%m-%d")
+        try:
+            perf_2d = await ads_client.get_spend_for_period(date_2d_from, date_today, account="ads")
+            spend_2d = perf_2d.get("spend", 0)
+            conv_2d = perf_2d.get("conversions", 0)
+            if spend_2d > 5 and conv_2d == 0:
+                alerts.append(
+                    f"🚨 *0 конверсий за 2 дня* при расходе ${spend_2d:.2f}\n"
+                    f"Возможные причины: ставки слишком низкие, объявления не показываются, "
+                    f"лендинг недоступен. Проверь кампанию."
+                )
+        except Exception as e:
+            log.warning(f"anomaly_check 2d conv error: {e}")
+
+        # --- Данные за текущую и прошлую неделю ---
+        week_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        prev_week_from = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+        prev_week_to = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        try:
+            curr_week = await ads_client.get_spend_for_period(week_from, date_today, account="ads")
+            prev_week = await ads_client.get_spend_for_period(prev_week_from, prev_week_to, account="ads")
+
+            curr_spend = curr_week.get("spend", 0)
+            curr_conv = curr_week.get("conversions", 0)
+            prev_spend = prev_week.get("spend", 0)
+            prev_conv = prev_week.get("conversions", 0)
+
+            # CPA рост >40%
+            curr_cpa = curr_spend / curr_conv if curr_conv > 0 else None
+            prev_cpa = prev_spend / prev_conv if prev_conv > 0 else None
+            if curr_cpa and prev_cpa and curr_cpa > prev_cpa * 1.4:
+                pct = (curr_cpa / prev_cpa - 1) * 100
+                alerts.append(
+                    f"⚠️ *CPA вырос на {pct:.0f}%* (неделя/неделя)\n"
+                    f"Сейчас: ${curr_cpa:.0f} | Прошлая неделя: ${prev_cpa:.0f}\n"
+                    f"Расход: ${curr_spend:.0f}, конверсий: {curr_conv:.0f}"
+                )
+        except Exception as e:
+            log.warning(f"anomaly_check cpa error: {e}")
+
+        # --- Impression Share и бюджет ---
+        try:
+            audit = await ads_client.get_full_audit_data(
+                account="ads",
+                date_from=(today - timedelta(days=3)).strftime("%Y-%m-%d"),
+                date_to=date_today
+            )
+            for camp in audit.get("campaigns", []):
+                if camp.get("status") != "ENABLED":
+                    continue
+                is_val = camp.get("impression_share", 0)
+                if is_val and 0 < is_val < 20:
+                    alerts.append(
+                        f"📉 *IS упал до {is_val:.1f}%* в кампании '{camp['name']}'\n"
+                        f"Причина: низкие ставки или бюджет. IS < 20% — критически мало показов."
+                    )
+                # Расход > бюджет+30%
+                daily_budget = camp.get("budget_daily", 0)
+                daily_spend = camp.get("cost", 0) / 3 if camp.get("cost") else 0  # за 3 дня
+                if daily_budget > 0 and daily_spend > daily_budget * 1.3:
+                    overspend_pct = (daily_spend / daily_budget - 1) * 100
+                    alerts.append(
+                        f"💸 *Перерасход +{overspend_pct:.0f}%* в кампании '{camp['name']}'\n"
+                        f"Дневной бюджет: ${daily_budget:.0f} | Средний расход/день: ${daily_spend:.0f}"
+                    )
+        except Exception as e:
+            log.warning(f"anomaly_check IS error: {e}")
+
+        # --- Новый конкурент в аукционе ---
+        try:
+            auction = await ads_client.get_auction_insights(account="ads")
+            for comp in auction.get("competitors", []):
+                is_comp = comp.get("impression_share", 0)
+                overlap = comp.get("overlap_rate", 0)
+                if is_comp > 50 and overlap > 60:
+                    alerts.append(
+                        f"🏆 *Сильный конкурент:* `{comp['domain']}`\n"
+                        f"IS: {is_comp:.0f}% | Пересечение: {overlap:.0f}%\n"
+                        f"Конкурент показывается чаще нас — рассмотри повышение ставок."
+                    )
+                    break  # только один самый сильный
+        except Exception as e:
+            log.warning(f"anomaly_check auction error: {e}")
+
+        if not alerts:
+            log.info("anomaly_check: аномалий не найдено")
+            return
+
+        text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
+        text += "\n\n".join(alerts)
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+        log.info(f"anomaly_check: отправлено {len(alerts)} алертов")
+
+    except Exception as e:
+        log.error(f"Ошибка anomaly_check: {e}")
 
 
 async def scheduled_purge_pending(app):
@@ -1698,13 +1804,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"❌ Ошибка получения данных: {e}")
         return
 
-    # Добавляем стратегический контекст — агент видит план недели и историю решений
-    if strategy_memory:
-        try:
-            context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
-        except Exception as e:
-            log.warning(f"strategy_context error (non-critical): {e}")
-
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
     try:
@@ -2082,28 +2181,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.info(f"VERIFY_ACTION RESULT: action_id={param}, type={action.get('type')}, verification={verification}")
             verified = verification.get("verified")
             await pending.record_execution_result(param, verified)
-            # Логируем в strategy_memory
-            if strategy_memory:
-                try:
-                    target = action.get("term") or action.get("keyword") or action.get("campaign_name") or action.get("description", "")[:50]
-                    await strategy_memory.log_decision(
-                        action_type=action.get("type", "unknown"),
-                        target=target,
-                        decision="approved",
-                        details={"verified": verified, "result": result.get("summary", "")[:200]},
-                    )
-                    # Если изменение ставки — записываем в keyword_history
-                    if action.get("type") == "update_bid" and action.get("keyword"):
-                        await strategy_memory.log_keyword_change(
-                            keyword=action["keyword"],
-                            change_type="bid_change",
-                            old_value=str(action.get("current_bid", "")),
-                            new_value=str(action.get("new_bid", "")),
-                            resource_name=action.get("resource_name", ""),
-                            verified=bool(verified),
-                        )
-                except Exception as se:
-                    log.warning(f"strategy_memory log error: {se}")
             if verified is True:
                 # Формируем детали проверки в зависимости от типа действия
                 action_type = action.get('type', '')
@@ -2183,16 +2260,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 status = action.get("status", "rejected")
                 if status == "rejected":
                     await _safe_edit(query, f"❌ Отклонено: {action.get('description', param)}")
-                    if strategy_memory:
-                        try:
-                            target = action.get("term") or action.get("keyword") or action.get("description", "")[:50]
-                            await strategy_memory.log_decision(
-                                action_type=action.get("type", "unknown"),
-                                target=target,
-                                decision="rejected",
-                            )
-                        except Exception:
-                            pass
                 else:
                     await _safe_edit(query, f"⚠️ Действие уже имеет статус '{status}'.")
             else:
@@ -2596,161 +2663,6 @@ def _build_keyword_actions(analysis: dict, account: str) -> list:
 
 # ── Расписание ───────────────────────────────────────────
 
-
-async def _build_weekly_strategy(app_or_bot=None) -> str:
-    """
-    Строит еженедельный стратегический план на основе:
-    - данных Google Ads за прошлую неделю
-    - реального ROAS из Workiz
-    - истории решений из strategy_memory
-    """
-    today = datetime.now(NY_TZ)
-    week_to = today.strftime("%Y-%m-%d")
-    week_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-    month_from = today.replace(day=1).strftime("%Y-%m-%d")
-
-    # Данные Google Ads
-    try:
-        ads_data = await ads_client.get_both_accounts_summary(date_from=week_from, date_to=week_to)
-        combined = ads_data.get("combined", {})
-        google = ads_data.get("google_ads", {})
-        lsa = ads_data.get("lsa", {})
-    except Exception as e:
-        combined = google = lsa = {}
-
-    # ROAS из Workiz
-    try:
-        ads_cost = google.get("total_spend", 0)
-        lsa_cost = lsa.get("total_spend", 0)
-        tt_cost = round(config.THUMBTACK_WEEKLY_BUDGET, 2)
-        roas_data = await workiz_client.get_roas_report(
-            week_from, week_to,
-            {"Google": ads_cost + lsa_cost, "Thumbtack": tt_cost}
-        )
-        roas_channels = roas_data.get("channels", [])
-        roas_summary = roas_data.get("summary", {})
-    except Exception:
-        roas_channels = []
-        roas_summary = {}
-
-    # История решений
-    strategy_ctx = {}
-    if strategy_memory:
-        try:
-            strategy_ctx = await strategy_memory.build_context_for_agent()
-        except Exception:
-            pass
-
-    # Строим контекст для AI
-    context = {
-        "period": {"week_from": week_from, "week_to": week_to},
-        "google_ads_week": {
-            "spend": combined.get("total_spend", 0),
-            "conversions": combined.get("total_conversions", 0),
-            "avg_cpa": combined.get("avg_cpa", 0),
-            "search_spend": google.get("total_spend", 0),
-            "search_conv": google.get("total_conversions", 0),
-            "lsa_spend": lsa.get("total_spend", 0),
-            "lsa_conv": lsa.get("total_conversions", 0),
-        },
-        "workiz_roas": {
-            "channels": roas_channels,
-            "summary": roas_summary,
-        },
-        "thumbtack_budget": config.THUMBTACK_WEEKLY_BUDGET,
-        "strategy_context": strategy_ctx,
-    }
-
-    # Запрос к AI
-    try:
-        prompt = (
-            "На основе данных за прошлую неделю составь КОНКРЕТНЫЙ стратегический план "
-            "на следующие 7 дней для BCHD Appliance Repair. "
-            "Формат: 3-5 конкретных приоритета с обоснованием. "
-            "Учитывай историю принятых решений. "
-            "Не повторяй уже выполненные действия. "
-            "Будь конкретным: называй ключи, суммы, каналы. "
-            "Отвечай на русском языке."
-        )
-        result = await ai_analyst.chat_action(prompt, context, "strategy_plan")
-        plan_text = result.get("reply", "")
-    except Exception as e:
-        plan_text = f"Ошибка генерации плана: {e}"
-
-    # Сохраняем план в strategy_memory
-    if strategy_memory and plan_text:
-        try:
-            await strategy_memory.save_weekly_plan(plan_text, week_from, week_to)
-        except Exception:
-            pass
-
-    # Форматируем отчёт
-    text = f"🎯 *Стратегия на неделю — {today.strftime('%d.%m.%Y')}*\n"
-    text += f"На основе данных {week_from} — {week_to}\n\n"
-
-    # Кратко факты прошлой недели
-    spend = combined.get("total_spend", 0)
-    conv = combined.get("total_conversions", 0)
-    total_rev = roas_summary.get("total_revenue", 0)
-    text += f"*Прошлая неделя:*\n"
-    text += f"• Расход: ${spend:.2f} | Конверсии: {conv:.0f}"
-    if total_rev > 0:
-        text += f" | Выручка: ${total_rev:.2f}"
-    text += "\n\n"
-
-    text += f"*План на эту неделю:*\n{plan_text}"
-
-    return text
-
-
-async def _send_long_message(bot_or_app, chat_id: int, text: str):
-    """Отправляет длинный текст разбивая на части по 3800 символов."""
-    bot = getattr(bot_or_app, 'bot', bot_or_app)
-    if len(text) <= 3800:
-        await _safe_send(bot, chat_id, text, parse_mode="Markdown")
-        return
-    parts = []
-    while text:
-        if len(text) <= 3800:
-            parts.append(text)
-            break
-        # Ищем последний перенос строки в пределах 3800 символов
-        cut = text[:3800].rfind("\n")
-        if cut == -1:
-            cut = 3800
-        parts.append(text[:cut])
-        text = text[cut:].lstrip("\n")
-    for part in parts:
-        await _safe_send(bot, chat_id, part, parse_mode="Markdown")
-
-
-async def cmd_strategy(update, ctx):
-    """/strategy — стратегический план на текущую неделю."""
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("🎯 Формирую стратегический план...")
-    try:
-        text = await _build_weekly_strategy()
-        await msg.delete()
-        await _send_long_message(update.get_bot(), update.effective_chat.id, text)
-        await _save_cmd_result(ctx, update.effective_chat.id, "/strategy", text[:3000])
-    except Exception as e:
-        log.error(f"Ошибка /strategy: {e}")
-        await _safe_edit(msg, f"❌ Ошибка: {e}")
-
-
-async def scheduled_weekly_strategy(app):
-    """Еженедельный стратегический план — каждый понедельник в 08:45."""
-    if not config.google_ads_configured:
-        return
-    log.info("Еженедельный стратегический план")
-    try:
-        text = await _build_weekly_strategy(app)
-        await _send_long_message(app.bot, config.OWNER_CHAT_ID, text)
-    except Exception as e:
-        log.error(f"Ошибка еженедельной стратегии: {e}")
-
-
 async def scheduled_morning_report(app):
     if not config.google_ads_configured:
         return
@@ -3038,7 +2950,6 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("reviewnegatives", cmd_review_negatives))
     app.add_handler(CommandHandler("checklead", cmd_checklead))
-    app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("auditcalls", cmd_audit_calls))
     app.add_handler(CommandHandler("roas", cmd_roas))
     app.add_handler(CommandHandler("month", cmd_month))
@@ -3071,9 +2982,9 @@ def main():
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
-    scheduler.add_job(scheduled_weekly_strategy,  "cron", day_of_week="mon", hour=8,  minute=45, args=[app])
     scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
+    scheduler.add_job(scheduled_anomaly_check,    "interval", hours=4, args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.start()
 
