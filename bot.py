@@ -636,22 +636,37 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await _safe_edit(msg, text, parse_mode="Markdown")
 
+        # Получаем данные кампании для campaign_id
+        budgets_data = await ads_client.get_budget_data(account="ads")
+        campaigns_data = await ads_client.get_both_accounts_summary(
+            date_from=(today - timedelta(days=7)).strftime("%Y-%m-%d"),
+            date_to=date_to,
+        )
         context_data = {
             "_period": {"date_from": date_from, "date_to": date_to},
             "dayparting": hour_data,
-            "budgets": {"ads": await ads_client.get_budget_data(account="ads")},
+            "budgets": {"ads": budgets_data},
+            "campaigns_summary": campaigns_data,
         }
         question = (
-            "Проанализируй данные о времени джобов (dayparting). "
-            "Определи часы когда реклама тратит деньги впустую — нет звонков/лидов. "
-            "Google Ads позволяет настроить Ad Schedule — расписание показа по часам и дням. "
-            "Предложи конкретные часы отключения с обоснованием из данных. "
-            "Объясни как настроить в Google Ads UI: кампания → Settings → Ad schedule."
+            "В context_data есть данные dayparting — активность джобов по часам за 90 дней. "
+            "На основе этих данных определи оптимальное расписание показа рекламы. "
+            "Создай карточку set_ad_schedule используя campaign_id из budgets.ads.campaigns[0].campaign_id. "
+            "Расписание: пн-вс, только в часы когда реально приходят лиды. "
+            "Убери часы с 0 или 1 джобом за 90 дней."
         )
-        result = await ai_analyst.chat_action(question, context_data, "none")
+        result = await ai_analyst.chat_action(question, context_data, "set_ad_schedule")
         reply = result.get("reply", "")
         if reply:
             await _send_long_message(ctx.bot, config.OWNER_CHAT_ID, reply)
+        for action in result.get("proposed_actions", []):
+            try:
+                action.setdefault("account", "ads")
+                action.setdefault("requires_approval", True)
+                action_id = await pending.add(action)
+                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+            except Exception as e:
+                log.error(f"dayparting card error: {e}")
         await _save_cmd_result(ctx, update.effective_chat.id, "/dayparting", text)
 
     except Exception as e:
