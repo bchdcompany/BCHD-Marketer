@@ -595,6 +595,7 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
 
 async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/dayparting — анализ времени звонков и рекомендации по расписанию рекламы."""
+    global strategy_memory
     if not _is_owner(update):
         return
     msg = await update.message.reply_text("⏰ Анализирую время джобов за 90 дней...")
@@ -640,12 +641,6 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "dayparting": hour_data,
             "budgets": {"ads": await ads_client.get_budget_data(account="ads")},
         }
-        if _strategy_available and strategy_memory:
-            try:
-                context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
-            except Exception:
-                pass
-
         question = (
             "Проанализируй данные о времени джобов (dayparting). "
             "Определи часы когда реклама тратит деньги впустую — нет звонков/лидов. "
