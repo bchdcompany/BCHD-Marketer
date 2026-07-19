@@ -640,7 +640,7 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "dayparting": hour_data,
             "budgets": {"ads": await ads_client.get_budget_data(account="ads")},
         }
-        if strategy_memory:
+        if _strategy_available and strategy_memory:
             try:
                 context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
             except Exception:
