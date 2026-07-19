@@ -1815,6 +1815,14 @@ class GoogleAdsClient:
         path2 = ad.responsive_search_ad.path2
 
         def _do_replace():
+            import google.ads.googleads as _gads_pkg
+            import os as _os, importlib as _imp
+            _base = _os.path.dirname(_gads_pkg.__file__)
+            _ver = sorted([d for d in _os.listdir(_base) if d.startswith('v')])[-1]
+            AdTextAsset = _imp.import_module(
+                f'google.ads.googleads.{_ver}.common.types.ad_asset'
+            ).AdTextAsset
+
             client = self._get_client()
             svc = client.get_service("AdGroupAdService")
             ops = []
@@ -1824,21 +1832,23 @@ class GoogleAdsClient:
             pause_op.update.status = client.enums.AdGroupAdStatusEnum.PAUSED
             pause_op.update_mask.paths.append("status")
             ops.append(pause_op)
-            # Создаём новое объявление
+            # Создаём новое объявление с новыми заголовками
             create_op = client.get_type("AdGroupAdOperation")
             new_ad = create_op.create
             new_ad.ad_group = ad_group_rn
             new_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
             if final_urls:
                 new_ad.ad.final_urls.extend(final_urls)
+            # Заголовки — через append с AdTextAsset
             for h_text in new_headlines:
-                h = new_ad.ad.responsive_search_ad.headlines.add()
-                h.text = h_text.strip()[:30]
+                new_ad.ad.responsive_search_ad.headlines.append(
+                    AdTextAsset(text=h_text.strip()[:30])
+                )
+            # Описания — копируем из старого
             for old_desc in old_descriptions:
-                d = new_ad.ad.responsive_search_ad.descriptions.add()
-                d.text = old_desc.text
-                if old_desc.pinned_field:
-                    d.pinned_field = old_desc.pinned_field
+                new_ad.ad.responsive_search_ad.descriptions.append(
+                    AdTextAsset(text=old_desc.text)
+                )
             if path1:
                 new_ad.ad.responsive_search_ad.path1 = path1
             if path2:
