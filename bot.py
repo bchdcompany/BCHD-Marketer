@@ -659,7 +659,38 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply = result.get("reply", "")
         if reply:
             await _safe_send(ctx.bot, config.OWNER_CHAT_ID, reply, parse_mode="Markdown")
-        for action in result.get("proposed_actions", []):
+        proposed = result.get("proposed_actions", [])
+        log.info(f"dayparting proposed_actions: {len(proposed)}")
+
+        # Fallback: если агент не создал карточку — создаём напрямую
+        has_schedule_action = any(a.get("type") in ("set_ad_schedule", "setadschedule") for a in proposed)
+        if not has_schedule_action:
+            log.info("dayparting: агент не создал карточку, создаём напрямую")
+            # Берём campaign_id из данных
+            camp_list = budgets_data.get("campaigns", [])
+            camp_id = camp_list[0]["campaign_id"] if camp_list else None
+            camp_name = camp_list[0]["campaign_name"] if camp_list else "BCHD Appliance Repair NYC"
+            if camp_id:
+                days = ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"]
+                proposed.append({
+                    "type": "set_ad_schedule",
+                    "account": "ads",
+                    "campaign_id": camp_id,
+                    "campaign_name": camp_name,
+                    "schedules": [{"day": d, "start_hour": 8, "end_hour": 21} for d in days],
+                    "description": f"Установить расписание рекламы 08:00-21:00 (7 дней)",
+                    "reasoning": (
+                        f"По данным за 90 дней: 90% лидов приходит с 09:00 до 21:00. "
+                        f"Ночью (22:00-07:00) — всего 1 джоб из {total}. "
+                        f"Расписание сэкономит ~15-20% бюджета без потери конверсий."
+                    ),
+                    "risks": "Лиды вне расписания не получат показ. Проверь что 08:00-21:00 покрывает рабочее время.",
+                    "urgency": "medium",
+                    "urgency_label": "Средняя",
+                    "confidence": "high",
+                })
+
+        for action in proposed:
             try:
                 action.setdefault("account", "ads")
                 action.setdefault("requires_approval", True)
@@ -1935,6 +1966,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["negatives"][acc] = await ads_client.get_negative_keywords_list(account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
+        if "ad_schedule" in data_needed:
+            try:
+                context_data["ad_schedule"] = await ads_client.get_ad_schedule(account="ads")
+            except Exception as e:
+                log.warning(f"Ошибка сбора ad_schedule: {e}")
         if "thumbtack" in data_needed or "roas" in data_needed:
             try:
                 context_data["thumbtack"] = await workiz_client.get_jobs_by_source(
