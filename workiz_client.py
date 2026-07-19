@@ -194,18 +194,44 @@ async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
 
 async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
     """Анализ джобов по часу создания — для dayparting."""
-    result = await get_jobs_by_date_range(date_from, date_to, records=200)
-    all_jobs = result.get("jobs", [])
+    # Пагинация — собираем все джобы за период
+    all_jobs = []
+    offset = 0
+    while True:
+        params = {"start_date": date_from, "records": 100, "offset": offset}
+        result = await _get("job/all/", params)
+        if "error" in result:
+            break
+        jobs_page = result.get("data", [])
+        if isinstance(jobs_page, dict):
+            jobs_page = jobs_page.get("data", [])
+        if not jobs_page:
+            break
+        for job in jobs_page:
+            created = (job.get("CreatedDate") or "")[:10]
+            if date_from <= created <= date_to:
+                all_jobs.append(job)
+        if len(jobs_page) < 100:
+            break
+        offset += 100
+        if offset > 1000:  # защита
+            break
 
     by_hour = {h: {"hour": h, "jobs": 0, "revenue": 0.0, "label": f"{h:02d}:00", "pct": 0.0} for h in range(24)}
 
     for job in all_jobs:
         dt_str = (job.get("CreatedDate") or job.get("JobDateTime") or "")
-        if not dt_str or len(dt_str) < 13:
+        if not dt_str or len(dt_str) < 10:
             continue
         try:
-            dt_str_clean = dt_str.replace("T", " ")[:19]
-            dt = datetime.strptime(dt_str_clean, "%Y-%m-%d %H:%M:%S")
+            dt_str_clean = dt_str.replace("T", " ")
+            if len(dt_str_clean) >= 19:
+                dt = datetime.strptime(dt_str_clean[:19], "%Y-%m-%d %H:%M:%S")
+            elif len(dt_str_clean) >= 16:
+                dt = datetime.strptime(dt_str_clean[:16], "%Y-%m-%d %H:%M")
+            else:
+                # Только дата без времени — пропускаем для hourly анализа
+                continue
             hour = dt.hour
             revenue = float(job.get("JobTotalPrice", 0) or 0)
             by_hour[hour]["jobs"] += 1
