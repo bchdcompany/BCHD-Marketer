@@ -658,7 +658,7 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         result = await ai_analyst.chat_action(question, context_data, "set_ad_schedule")
         reply = result.get("reply", "")
         if reply:
-            await _send_long_message(ctx.bot, config.OWNER_CHAT_ID, reply)
+            await _safe_send(ctx.bot, config.OWNER_CHAT_ID, reply, parse_mode="Markdown")
         for action in result.get("proposed_actions", []):
             try:
                 action.setdefault("account", "ads")
