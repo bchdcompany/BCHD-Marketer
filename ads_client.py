@@ -1773,17 +1773,15 @@ class GoogleAdsClient:
     async def _update_ad_headlines(self, action: dict, customer_id: str = None) -> dict:
         """
         Обновляет заголовки RSA объявления.
-        Использует прямой запрос через REST-подобный mutate с правильным
-        форматом proto для repeated fields.
+        Google Ads API не позволяет UPDATE headlines (IMMUTABLE_FIELD).
+        Решение: паузируем старое объявление, создаём новое с новыми заголовками.
         """
         if not customer_id:
             customer_id = self.customer_id
-
         rn = action.get("resource_name")
+        new_headlines = action.get("headlines", [])
         if not rn:
             raise ValueError("resource_name объявления не указан")
-
-        new_headlines = action.get("headlines", [])
         if not new_headlines:
             raise ValueError("Список заголовков (headlines) не указан")
         if len(new_headlines) > 15:
@@ -1791,43 +1789,74 @@ class GoogleAdsClient:
         if len(new_headlines) < 3:
             raise ValueError(f"Слишком мало заголовков: {len(new_headlines)}. Минимум 3.")
 
-        def _do_update():
+        # Получаем текущее объявление
+        ad_query = f"""
+            SELECT
+                ad_group_ad.ad.id,
+                ad_group_ad.ad.final_urls,
+                ad_group_ad.ad.responsive_search_ad.headlines,
+                ad_group_ad.ad.responsive_search_ad.descriptions,
+                ad_group_ad.ad.responsive_search_ad.path1,
+                ad_group_ad.ad.responsive_search_ad.path2,
+                ad_group.resource_name
+            FROM ad_group_ad
+            WHERE ad_group_ad.resource_name = '{rn}'
+              AND campaign.status != 'REMOVED'
+        """
+        rows = await self._search(customer_id, ad_query)
+        if not rows:
+            raise ValueError(f"Объявление не найдено: {rn}")
+        row = rows[0]
+        ad = row.ad_group_ad.ad
+        ad_group_rn = row.ad_group.resource_name
+        final_urls = list(ad.final_urls)
+        old_descriptions = list(ad.responsive_search_ad.descriptions)
+        path1 = ad.responsive_search_ad.path1
+        path2 = ad.responsive_search_ad.path2
+
+        def _do_replace():
             client = self._get_client()
             svc = client.get_service("AdGroupAdService")
-            op = client.get_type("AdGroupAdOperation")
-            op.update.resource_name = rn
-
-            # Правильный способ для proto-plus repeated field:
-            # используем append с объектами типа AdTextAsset
-            # Правильный импорт для google-ads v24
-            import google.ads.googleads as _gads_pkg
-            import os as _os, importlib as _imp
-            _base = _os.path.dirname(_gads_pkg.__file__)
-            _versions = sorted([d for d in _os.listdir(_base) if d.startswith('v')])
-            _ver = _versions[-1]  # последняя доступная версия
-
-            _asset_mod = _imp.import_module(f'google.ads.googleads.{_ver}.common.types.ad_asset')
-            _rsa_mod = _imp.import_module(f'google.ads.googleads.{_ver}.common.types.ad_type_infos')
-            AdTextAsset = _asset_mod.AdTextAsset
-            ResponsiveSearchAdInfo = _rsa_mod.ResponsiveSearchAdInfo
-
-            headline_list = [
-                AdTextAsset(text=h_text.strip()[:30])
-                for h_text in new_headlines
-            ]
-            rsa_new = ResponsiveSearchAdInfo(headlines=headline_list)
-            op.update.ad.responsive_search_ad._pb.CopyFrom(rsa_new._pb)
-
-            op.update_mask.paths.append("ad.responsive_search_ad.headlines")
-
-            return svc.mutate_ad_group_ads(customer_id=customer_id, operations=[op])
+            ops = []
+            # Паузируем старое объявление
+            pause_op = client.get_type("AdGroupAdOperation")
+            pause_op.update.resource_name = rn
+            pause_op.update.status = client.enums.AdGroupAdStatusEnum.PAUSED
+            pause_op.update_mask.paths.append("status")
+            ops.append(pause_op)
+            # Создаём новое объявление
+            create_op = client.get_type("AdGroupAdOperation")
+            new_ad = create_op.create
+            new_ad.ad_group = ad_group_rn
+            new_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+            if final_urls:
+                new_ad.ad.final_urls.extend(final_urls)
+            for h_text in new_headlines:
+                h = new_ad.ad.responsive_search_ad.headlines.add()
+                h.text = h_text.strip()[:30]
+            for old_desc in old_descriptions:
+                d = new_ad.ad.responsive_search_ad.descriptions.add()
+                d.text = old_desc.text
+                if old_desc.pinned_field:
+                    d.pinned_field = old_desc.pinned_field
+            if path1:
+                new_ad.ad.responsive_search_ad.path1 = path1
+            if path2:
+                new_ad.ad.responsive_search_ad.path2 = path2
+            ops.append(create_op)
+            return svc.mutate_ad_group_ads(customer_id=customer_id, operations=ops)
 
         try:
-            await asyncio.to_thread(_do_update)
-            return {"summary": f"Заголовки объявления обновлены ({len(new_headlines)} шт): {', '.join(new_headlines[:3])}..."}
+            await asyncio.to_thread(_do_replace)
+            return {
+                "summary": (
+                    f"Объявление обновлено: старое поставлено на паузу, "
+                    f"создано новое с {len(new_headlines)} заголовками. "
+                    f"Первые: {', '.join(new_headlines[:3])}"
+                )
+            }
         except Exception as e:
             raise ValueError(f"Ошибка обновления заголовков: {e}")
-
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id:
