@@ -16,6 +16,7 @@ import os
 import re
 import logging
 import aiohttp
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -192,25 +193,23 @@ async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
 
 
 async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
-    """
-    Анализ джобов по часу создания — для dayparting.
-    Показывает в какое время суток реально приходят лиды.
-    """
-    result = await get_all_jobs_with_financials(date_from, date_to)
+    """Анализ джобов по часу создания — для dayparting."""
+    result = await get_jobs_by_date_range(date_from, date_to, records=200)
     all_jobs = result.get("jobs", [])
 
     by_hour = {h: {"hour": h, "jobs": 0, "revenue": 0.0, "label": f"{h:02d}:00", "pct": 0.0} for h in range(24)}
 
     for job in all_jobs:
-        dt_str = job.get("created_date", "") or ""
+        dt_str = (job.get("CreatedDate") or job.get("JobDateTime") or "")
         if not dt_str or len(dt_str) < 13:
             continue
         try:
             dt_str_clean = dt_str.replace("T", " ")[:19]
             dt = datetime.strptime(dt_str_clean, "%Y-%m-%d %H:%M:%S")
             hour = dt.hour
+            revenue = float(job.get("JobTotalPrice", 0) or 0)
             by_hour[hour]["jobs"] += 1
-            by_hour[hour]["revenue"] += job.get("total", 0)
+            by_hour[hour]["revenue"] += revenue
         except Exception:
             continue
 
@@ -228,9 +227,9 @@ async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
                 low_hours.append(h["hour"])
 
     groups = {
-        "night_0_7":    sum(by_hour[h]["jobs"] for h in range(0, 8)),
-        "morning_8_11": sum(by_hour[h]["jobs"] for h in range(8, 12)),
-        "day_12_17":    sum(by_hour[h]["jobs"] for h in range(12, 18)),
+        "night_0_7":     sum(by_hour[h]["jobs"] for h in range(0, 8)),
+        "morning_8_11":  sum(by_hour[h]["jobs"] for h in range(8, 12)),
+        "day_12_17":     sum(by_hour[h]["jobs"] for h in range(12, 18)),
         "evening_18_23": sum(by_hour[h]["jobs"] for h in range(18, 24)),
     }
 
