@@ -196,21 +196,21 @@ async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
     Анализ джобов по часу создания — для dayparting.
     Показывает в какое время суток реально приходят лиды.
     """
-    result = await _get_all_jobs(date_from, date_to)
+    result = await get_all_jobs_with_financials(date_from, date_to)
+    all_jobs = result.get("jobs", [])
 
     by_hour = {h: {"hour": h, "jobs": 0, "revenue": 0.0, "label": f"{h:02d}:00", "pct": 0.0} for h in range(24)}
 
-    for job in result:
-        dt_str = (job.get("CreatedDate") or job.get("JobDateTime") or job.get("ScheduledDate") or "")
+    for job in all_jobs:
+        dt_str = job.get("created_date", "") or ""
         if not dt_str or len(dt_str) < 13:
             continue
         try:
             dt_str_clean = dt_str.replace("T", " ")[:19]
             dt = datetime.strptime(dt_str_clean, "%Y-%m-%d %H:%M:%S")
             hour = dt.hour
-            fin = _job_financials(job)
             by_hour[hour]["jobs"] += 1
-            by_hour[hour]["revenue"] += fin["total"]
+            by_hour[hour]["revenue"] += job.get("total", 0)
         except Exception:
             continue
 
