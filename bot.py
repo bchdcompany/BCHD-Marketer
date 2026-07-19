@@ -329,6 +329,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/schedule — расписание задач\n"
         f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
         f"/checkcampaign <текст> — прямая проверка реального статуса кампании (без ИИ)\n"
+        f"/dayparting — анализ времени звонков и рекомендации по расписанию рекламы\n"
         f"/enablecampaign <текст/ID> — гарантированная карточка на включение кампании (без ИИ)\n"
         f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
@@ -589,6 +590,78 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
             text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
+
+
+
+async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/dayparting — анализ времени звонков и рекомендации по расписанию рекламы."""
+    if not _is_owner(update):
+        return
+    msg = await update.message.reply_text("⏰ Анализирую время джобов за 90 дней...")
+    try:
+        today = datetime.now(NY_TZ)
+        date_to = today.strftime("%Y-%m-%d")
+        date_from = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+
+        hour_data = await workiz_client.get_jobs_by_hour(date_from, date_to)
+        total = hour_data.get("total_jobs", 0)
+
+        if total == 0:
+            await _safe_edit(msg, "⚠️ Нет данных о времени джобов за 90 дней.")
+            return
+
+        groups = hour_data.get("groups", {})
+        by_hour = hour_data.get("by_hour", [])
+
+        lines_text = []
+        lines_text.append(f"⏰ *Dayparting анализ — {date_from} — {date_to}*")
+        lines_text.append(f"Всего джобов: {total}\n")
+        lines_text.append("*Активность по времени суток (NY):*")
+        lines_text.append(f"🌙 Ночь (00-07): {groups.get('night_0_7', 0)} джобов")
+        lines_text.append(f"🌅 Утро (08-11): {groups.get('morning_8_11', 0)} джобов")
+        lines_text.append(f"☀️ День (12-17): {groups.get('day_12_17', 0)} джобов")
+        lines_text.append(f"🌆 Вечер (18-23): {groups.get('evening_18_23', 0)} джобов\n")
+        lines_text.append("*Топ активных часов:*")
+        top_hours = sorted(by_hour, key=lambda x: x["jobs"], reverse=True)[:8]
+        for h in top_hours:
+            if h["jobs"] > 0:
+                bar = "█" * min(int(h["pct"] / 2), 10)
+                lines_text.append(f"`{h['label']}` {bar} {h['jobs']} ({h['pct']}%)")
+        off_hours = hour_data.get("recommended_off_hours", [])
+        if off_hours:
+            off_str = ", ".join(f"{h:02d}:00" for h in sorted(off_hours))
+            lines_text.append(f"\n💤 *Рекомендуется отключить рекламу:* {off_str}")
+        text = "\n".join(lines_text)
+
+        await _safe_edit(msg, text, parse_mode="Markdown")
+
+        context_data = {
+            "_period": {"date_from": date_from, "date_to": date_to},
+            "dayparting": hour_data,
+            "budgets": {"ads": await ads_client.get_budget_data(account="ads")},
+        }
+        if strategy_memory:
+            try:
+                context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+            except Exception:
+                pass
+
+        question = (
+            "Проанализируй данные о времени джобов (dayparting). "
+            "Определи часы когда реклама тратит деньги впустую — нет звонков/лидов. "
+            "Google Ads позволяет настроить Ad Schedule — расписание показа по часам и дням. "
+            "Предложи конкретные часы отключения с обоснованием из данных. "
+            "Объясни как настроить в Google Ads UI: кампания → Settings → Ad schedule."
+        )
+        result = await ai_analyst.chat_action(question, context_data, "none")
+        reply = result.get("reply", "")
+        if reply:
+            await _send_long_message(ctx.bot, config.OWNER_CHAT_ID, reply)
+        await _save_cmd_result(ctx, update.effective_chat.id, "/dayparting", text)
+
+    except Exception as e:
+        log.error(f"Ошибка /dayparting: {e}")
+        await _safe_edit(msg, f"❌ Ошибка: {e}")
 
 
 async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3030,6 +3103,7 @@ def main():
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
     app.add_handler(CommandHandler("checkcampaign", cmd_check_campaign))
+    app.add_handler(CommandHandler("dayparting", cmd_dayparting))
     app.add_handler(CommandHandler("enablecampaign", cmd_enable_campaign))
     app.add_handler(CommandHandler("pausecampaign", cmd_pause_campaign))
     app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
