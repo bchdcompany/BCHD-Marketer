@@ -1245,19 +1245,35 @@ class GoogleAdsClient:
 
             elif action_type in ('update_ad_headlines', 'updateadheadlines'):
                 rn = action.get('resource_name')
-                if not rn:
-                    return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
-                query = f"SELECT ad_group_ad.ad.responsive_search_ad.headlines FROM ad_group_ad WHERE ad_group_ad.resource_name = '{rn}' AND campaign.status != 'REMOVED'"
+                ad_group_rn = action.get('ad_group_resource_name')
+                expected = action.get('headlines', [])
+                if not expected:
+                    return {'verified': None, 'note': 'Нет ожидаемых заголовков'}
+                # Ищем АКТИВНОЕ объявление в той же группе (не старое на паузе)
+                # Метод создаёт новое объявление — старое паузируется
                 try:
+                    if ad_group_rn:
+                        query = (
+                            f"SELECT ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.status "
+                            f"FROM ad_group_ad WHERE ad_group.resource_name = '{ad_group_rn}' "
+                            f"AND ad_group_ad.status = 'ENABLED' AND campaign.status != 'REMOVED'"
+                        )
+                    else:
+                        # Fallback: ищем по ad_group из resource_name старого объявления
+                        query = (
+                            f"SELECT ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.status "
+                            f"FROM ad_group_ad WHERE ad_group_ad.resource_name = '{rn}'"
+                        )
                     rows = await self._search(customer_id, query)
                     if not rows:
                         return {'verified': None, 'note': 'Объявление не найдено'}
-                    actual_headlines = [h.text for h in rows[0].ad_group_ad.ad.responsive_search_ad.headlines]
-                    expected = action.get('headlines', [])
-                    # Проверяем что хотя бы один новый заголовок присутствует
-                    new_ones = [h for h in expected if h not in actual_headlines]
-                    verified = len(new_ones) == 0  # все новые заголовки найдены
-                    return {'verified': verified, 'actual_count': len(actual_headlines), 'expected_new': expected}
+                    # Берём объявление с максимальным числом заголовков (новое)
+                    best = max(rows, key=lambda r: len(r.ad_group_ad.ad.responsive_search_ad.headlines))
+                    actual = [h.text for h in best.ad_group_ad.ad.responsive_search_ad.headlines]
+                    # Проверяем что новые заголовки присутствуют
+                    missing = [h for h in expected if h not in actual]
+                    verified = len(missing) == 0
+                    return {'verified': verified, 'actual_count': len(actual), 'missing': missing}
                 except Exception as e:
                     return {'verified': None, 'note': f'Ошибка проверки: {e}'}
 
