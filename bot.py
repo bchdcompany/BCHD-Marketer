@@ -1012,10 +1012,70 @@ async def scheduled_anomaly_check(app):
             log.info("anomaly_check: аномалий не найдено")
             return
 
-        text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
-        text += "\n\n".join(alerts)
-        await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
-        log.info(f"anomaly_check: отправлено {len(alerts)} алертов")
+        # Нашли аномалии — агент сам анализирует и предлагает действия
+        log.info(f"anomaly_check: найдено {len(alerts)} аномалий, запускаю анализ")
+
+        # Собираем данные для анализа
+        try:
+            period_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+            period_to = today.strftime("%Y-%m-%d")
+            context_data = {"_period": {"date_from": period_from, "date_to": period_to}}
+            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
+                date_from=period_from, date_to=period_to
+            )
+            context_data["keywords"] = {
+                "ads": await ads_client.get_keywords_analysis(account="ads", date_from=period_from, date_to=period_to)
+            }
+            context_data["budgets"] = {"ads": await ads_client.get_budget_data(account="ads")}
+            if strategy_memory:
+                try:
+                    context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error(f"anomaly_check: ошибка сбора данных для анализа: {e}")
+            # Fallback — просто отправляем алерты без анализа
+            text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
+            text += "\n\n".join(alerts)
+            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+            return
+
+        # Формируем запрос к агенту с описанием аномалий
+        anomaly_desc = "\n".join(f"- {a}" for a in alerts)
+        question = (
+            f"Обнаружены аномалии в рекламных кампаниях:\n{anomaly_desc}\n\n"
+            f"Проанализируй данные, найди конкретную причину каждой аномалии "
+            f"и предложи конкретные действия для исправления. "
+            f"Создай карточки на действия которые можно выполнить прямо сейчас."
+        )
+
+        try:
+            result = await ai_analyst.chat_action(question, context_data, "action")
+            reply = result.get("reply", "")
+
+            # Отправляем анализ
+            header = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
+            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+
+            # Создаём карточки для предложенных действий
+            for action in result.get("proposed_actions", []):
+                try:
+                    action.setdefault("account", "ads")
+                    action.setdefault("data_summary", action.get("reasoning", ""))
+                    action.setdefault("expected_impact", "")
+                    action.setdefault("requires_approval", True)
+                    action_id = await pending.add(action)
+                    await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+                except Exception as e:
+                    log.error(f"anomaly_check: ошибка создания карточки: {e}")
+
+            log.info(f"anomaly_check: анализ отправлен, {len(result.get('proposed_actions', []))} карточек")
+        except Exception as e:
+            log.error(f"anomaly_check: ошибка AI анализа: {e}")
+            # Fallback
+            text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
+            text += "\n\n".join(alerts)
+            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
 
     except Exception as e:
         log.error(f"Ошибка anomaly_check: {e}")
