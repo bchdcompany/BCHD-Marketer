@@ -178,6 +178,7 @@ class ReportGenerator:
             'seasonal_adjustments':    '📅 Сезонные корректировки',
             'dispute_lsa_lead':        '⚖️ Оспорить LSA лид',
             'update_ad_headlines':     '✏️ Обновить заголовки объявления',
+            'set_ad_schedule':         '⏰ Установить расписание показа рекламы',
         }
         type_label = type_labels.get(action_type, action_type)
 
