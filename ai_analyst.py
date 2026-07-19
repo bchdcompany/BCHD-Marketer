@@ -328,6 +328,9 @@ CPA Thumbtack = budget_period / total_jobs
   оценки релевантности — БЕЗ участия владельца, тебе не нужно просить его
   открыть сайт и посмотреть самому
 - Обновлять заголовки RSA объявлений (до 15 заголовков) — действие update_ad_headlines.
+- Устанавливать расписание показа рекламы (Ad Schedule) — действие set_ad_schedule.
+  Когда в context_data есть "dayparting" — агент сам определяет оптимальные часы
+  и создаёт карточку с расписанием для всех дней недели.
   Агент сначала получает текущие заголовки из get_ad_performance, затем формирует
   новый полный список (все существующие + новые) и предлагает карточку.
 - Менять Final URL конкретного ключевого слова, если владелец предоставил
@@ -1061,6 +1064,7 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     стратегию назначения ставок (Maximize Conversions и т.п.), Google может
     игнорировать ручную ставку — стоит проверить bidding_strategy_type",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+- set_ad_schedule (установка расписания показа объявлений по часам)
 - update_ad_headlines (обновление заголовков RSA объявления для улучшения QS/CTR)
 - update_final_url (изменение посадочной страницы КОНКРЕТНОГО ключевого
   слова — используй эту схему, когда владелец предоставил ссылку на
@@ -1077,6 +1081,25 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "risks": "Final URL меняется только для этого конкретного ключа
     (override), другие ключи в той же группе объявлений не затрагиваются",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
+- set_ad_schedule (установить расписание показа объявлений по часам.
+  Используй когда в context_data есть dayparting данные или владелец просит
+  настроить расписание рекламы. Создаёт расписание для КАЖДОГО дня недели.
+  ВАЖНО: end_hour=21 означает показ до 21:00 (не включительно)):
+  {{"type": "set_ad_schedule", "account": "ads",
+    "campaign_id": "ID кампании из данных",
+    "campaign_name": "название кампании",
+    "schedules": [
+      {{"day": "MONDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "TUESDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "WEDNESDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "THURSDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "FRIDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "SATURDAY", "start_hour": 8, "end_hour": 21}},
+      {{"day": "SUNDAY", "start_hour": 8, "end_hour": 21}}
+    ],
+    "description": "...", "reasoning": "...",
+    "risks": "Реклама не будет показываться за пределами расписания. Убедись что часы соответствуют реальному рабочему времени",
+    "urgency": "medium", "urgency_label": "Средняя", "confidence": "high"}}
 - update_ad_headlines (обновить заголовки RSA объявления — используй когда
   нужно добавить релевантные заголовки для улучшения QS или CTR. ВАЖНО: RSA
   требует передавать ВСЕ заголовки целиком (существующие + новые). Сначала
