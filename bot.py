@@ -1792,6 +1792,21 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["negatives"][acc] = await ads_client.get_negative_keywords_list(account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
+        if "thumbtack" in data_needed or "roas" in data_needed:
+            try:
+                context_data["thumbtack"] = await workiz_client.get_jobs_by_source(
+                    "Thumbtack", period_from, period_to
+                )
+                context_data["thumbtack"]["budget_weekly"] = config.THUMBTACK_WEEKLY_BUDGET
+                days_in_period = (
+                    datetime.strptime(period_to, "%Y-%m-%d") -
+                    datetime.strptime(period_from, "%Y-%m-%d")
+                ).days + 1
+                context_data["thumbtack"]["budget_period"] = round(
+                    config.THUMBTACK_WEEKLY_BUDGET / 7 * days_in_period, 2
+                )
+            except Exception as e:
+                log.warning(f"Ошибка сбора Thumbtack: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
