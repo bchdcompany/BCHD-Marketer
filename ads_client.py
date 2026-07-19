@@ -1898,6 +1898,58 @@ class GoogleAdsClient:
             raise ValueError(f"Ошибка обновления заголовков: {e}")
 
 
+
+    async def get_ad_schedule(self, account: str = "ads") -> dict:
+        """Возвращает текущее расписание показа объявлений (Ad Schedule)."""
+        customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
+        if not customer_id:
+            return {"error": f"Customer ID для {account} не настроен", "schedules": []}
+        query = """
+            SELECT
+                campaign_criterion.resource_name,
+                campaign_criterion.ad_schedule.day_of_week,
+                campaign_criterion.ad_schedule.start_hour,
+                campaign_criterion.ad_schedule.start_minute,
+                campaign_criterion.ad_schedule.end_hour,
+                campaign_criterion.ad_schedule.end_minute,
+                campaign.id,
+                campaign.name
+            FROM campaign_criterion
+            WHERE campaign_criterion.type = 'AD_SCHEDULE'
+              AND campaign.status != 'REMOVED'
+        """
+        try:
+            rows = await self._search(customer_id, query)
+            schedules = []
+            for row in rows:
+                s = row.campaign_criterion.ad_schedule
+                schedules.append({
+                    "campaign_id": row.campaign.id,
+                    "campaign_name": row.campaign.name,
+                    "day": s.day_of_week.name,
+                    "start_hour": s.start_hour,
+                    "end_hour": s.end_hour,
+                    "resource_name": row.campaign_criterion.resource_name,
+                })
+            # Группируем по кампании
+            by_campaign = {}
+            for s in schedules:
+                cname = s["campaign_name"]
+                if cname not in by_campaign:
+                    by_campaign[cname] = {"campaign_name": cname, "campaign_id": s["campaign_id"], "days": []}
+                by_campaign[cname]["days"].append({"day": s["day"], "start_hour": s["start_hour"], "end_hour": s["end_hour"]})
+            return {
+                "schedules": schedules,
+                "by_campaign": list(by_campaign.values()),
+                "total": len(schedules),
+                "account": account,
+                "note": "Пустой список = реклама показывается круглосуточно (без ограничений)"
+            }
+        except Exception as e:
+            log.error(f"get_ad_schedule error: {e}")
+            return {"error": str(e), "schedules": [], "account": account}
+
+
     async def set_ad_schedule(self, action: dict, customer_id: str = None) -> dict:
         """
         Устанавливает расписание показа объявлений (Ad Schedule).
