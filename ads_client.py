@@ -1811,15 +1811,12 @@ class GoogleAdsClient:
             AdTextAsset = _asset_mod.AdTextAsset
             ResponsiveSearchAdInfo = _rsa_mod.ResponsiveSearchAdInfo
 
-            import proto
             headline_list = [
                 AdTextAsset(text=h_text.strip()[:30])
                 for h_text in new_headlines
             ]
-            proto.copy_from(
-                op.update.ad.responsive_search_ad,
-                ResponsiveSearchAdInfo(headlines=headline_list)
-            )
+            rsa_new = ResponsiveSearchAdInfo(headlines=headline_list)
+            op.update.ad.responsive_search_ad._pb.CopyFrom(rsa_new._pb)
 
             op.update_mask.paths.append("ad.responsive_search_ad.headlines")
 
