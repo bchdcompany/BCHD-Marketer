@@ -1096,6 +1096,8 @@ class GoogleAdsClient:
             'update_final_url': self._update_keyword_final_url,
             'update_ad_headlines': self._update_ad_headlines,
             'updateadheadlines': self._update_ad_headlines,
+            'set_ad_schedule': self.set_ad_schedule,
+            'setadschedule': self.set_ad_schedule,
         }
         handler = handlers.get(action_type)
         if not handler:
@@ -1242,6 +1244,17 @@ class GoogleAdsClient:
                     if 'not found' in str(e).lower() or 'NOT_FOUND' in str(e):
                         return {'verified': True, 'note': 'Критерий не найден — удаление подтверждено'}
                     return {'verified': None, 'note': f'Ошибка проверки: {e}'}
+
+            elif action_type in ('set_ad_schedule', 'setadschedule'):
+                campaign_id = action.get('campaign_id')
+                if not campaign_id:
+                    return {'verified': None, 'note': 'Нет campaign_id'}
+                query = f"SELECT campaign_criterion.ad_schedule.day_of_week FROM campaign_criterion WHERE campaign.id = {campaign_id} AND campaign_criterion.type = 'AD_SCHEDULE' AND campaign.status != 'REMOVED'"
+                try:
+                    rows = await self._search(customer_id, query)
+                    return {'verified': len(rows) > 0, 'schedule_count': len(rows)}
+                except Exception as e:
+                    return {'verified': None, 'note': str(e)}
 
             elif action_type in ('update_ad_headlines', 'updateadheadlines'):
                 rn = action.get('resource_name')
@@ -1883,6 +1896,81 @@ class GoogleAdsClient:
             }
         except Exception as e:
             raise ValueError(f"Ошибка обновления заголовков: {e}")
+
+
+    async def set_ad_schedule(self, action: dict, customer_id: str = None) -> dict:
+        """
+        Устанавливает расписание показа объявлений (Ad Schedule).
+        Удаляет все существующие расписания и создаёт новые.
+        action должен содержать:
+        - campaign_id: ID кампании
+        - schedules: список {"day": "MONDAY", "start_hour": 8, "end_hour": 21}
+        """
+        if not customer_id:
+            customer_id = self.customer_id
+
+        campaign_id = action.get("campaign_id")
+        schedules = action.get("schedules", [])
+        if not campaign_id:
+            raise ValueError("campaign_id не указан")
+        if not schedules:
+            raise ValueError("schedules не указаны")
+
+        def _do_schedule():
+            client = self._get_client()
+            svc = client.get_service("CampaignCriterionService")
+            campaign_rn = f"customers/{customer_id}/campaigns/{campaign_id}"
+
+            # Сначала получаем существующие расписания чтобы удалить
+            ga_svc = client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT campaign_criterion.resource_name
+                FROM campaign_criterion
+                WHERE campaign.id = {campaign_id}
+                  AND campaign_criterion.type = 'AD_SCHEDULE'
+                  AND campaign.status != 'REMOVED'
+            """
+            existing = list(ga_svc.search(customer_id=customer_id, query=query))
+
+            ops = []
+
+            # Удаляем старые расписания
+            for row in existing:
+                op = client.get_type("CampaignCriterionOperation")
+                op.remove = row.campaign_criterion.resource_name
+                ops.append(op)
+
+            # Добавляем новые
+            day_map = {
+                "MONDAY": client.enums.DayOfWeekEnum.MONDAY,
+                "TUESDAY": client.enums.DayOfWeekEnum.TUESDAY,
+                "WEDNESDAY": client.enums.DayOfWeekEnum.WEDNESDAY,
+                "THURSDAY": client.enums.DayOfWeekEnum.THURSDAY,
+                "FRIDAY": client.enums.DayOfWeekEnum.FRIDAY,
+                "SATURDAY": client.enums.DayOfWeekEnum.SATURDAY,
+                "SUNDAY": client.enums.DayOfWeekEnum.SUNDAY,
+            }
+            minute_enum = client.enums.MinuteOfHourEnum.ZERO
+
+            for sched in schedules:
+                op = client.get_type("CampaignCriterionOperation")
+                op.create.campaign = campaign_rn
+                op.create.ad_schedule.day_of_week = day_map[sched["day"]]
+                op.create.ad_schedule.start_hour = sched["start_hour"]
+                op.create.ad_schedule.start_minute = minute_enum
+                op.create.ad_schedule.end_hour = sched["end_hour"]
+                op.create.ad_schedule.end_minute = minute_enum
+                ops.append(op)
+
+            if ops:
+                svc.mutate_campaign_criteria(customer_id=customer_id, operations=ops)
+
+            return len([s for s in schedules])
+
+        count = await asyncio.to_thread(_do_schedule)
+        days = list({s["day"] for s in schedules})
+        return {"summary": f"Ad Schedule установлен: {len(days)} дней, {schedules[0]['start_hour']}:00-{schedules[0]['end_hour']}:00"}
+
 
     async def _dispute_lsa_lead(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id:
