@@ -1019,17 +1019,17 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 
+# Кэш для дедупликации алертов — не спамить одним и тем же
+_anomaly_alert_cache: dict = {}
+_ANOMALY_COOLDOWN_HOURS = 12  # один и тот же алерт не чаще раза в 12 часов
+
+
 async def scheduled_anomaly_check(app):
     """
     Проактивные инсайты — запускается каждые 4 часа.
-    Пишет только если нашёл реальную аномалию, иначе молчит.
-    Триггеры:
-    - 0 конверсий за последние 2 дня (при ненулевом расходе)
-    - CPA вырос >40% за неделю vs предыдущая неделя
-    - IS упал ниже 20%
-    - Расход превысил дневной бюджет на 30%+
-    - Новый конкурент в аукционе (IS > 50%)
+    Пишет только если нашёл НОВУЮ аномалию (дедупликация через кэш).
     """
+    global _anomaly_alert_cache
     if not config.google_ads_configured:
         return
     try:
@@ -1126,7 +1126,22 @@ async def scheduled_anomaly_check(app):
             log.info("anomaly_check: аномалий не найдено")
             return
 
-        # Нашли аномалии — агент сам анализирует и предлагает действия
+        # Фильтруем алерты которые уже отправляли недавно
+        now_ts = today.timestamp()
+        new_alerts = []
+        for alert in alerts:
+            alert_key = alert[:50]  # первые 50 символов как ключ
+            last_sent = _anomaly_alert_cache.get(alert_key, 0)
+            if now_ts - last_sent > _ANOMALY_COOLDOWN_HOURS * 3600:
+                new_alerts.append(alert)
+                _anomaly_alert_cache[alert_key] = now_ts
+
+        if not new_alerts:
+            log.info("anomaly_check: все аномалии уже были отправлены недавно, пропускаем")
+            return
+        alerts = new_alerts
+
+        # Нашли НОВЫЕ аномалии — агент сам анализирует и предлагает действия
         log.info(f"anomaly_check: найдено {len(alerts)} аномалий, запускаю анализ")
 
         # Собираем данные для анализа
