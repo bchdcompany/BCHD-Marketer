@@ -31,6 +31,16 @@ from telegram.ext import (
 )
 
 from ads_client import GoogleAdsClient
+try:
+    from strategy import StrategyMemory
+    _strategy_available = True
+except ImportError:
+    _strategy_available = False
+try:
+    from gbp_client import GBPClient, init_gbp_client
+    _gbp_available = True
+except ImportError:
+    _gbp_available = False
 from ai_analyst import AIAnalyst
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
@@ -71,6 +81,9 @@ async def init_db():
         # Передаём пул в pending — карточки теперь в Postgres
         pending.set_pool(pool)
         await pending._ensure_table()
+        if strategy_memory:
+            strategy_memory.set_pool(pool)
+            await strategy_memory.ensure_tables()
         async with pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_history (
@@ -329,7 +342,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"/schedule — расписание задач\n"
         f"/checkkeyword <текст> — прямая проверка реальной ставки ключа (без ИИ)\n"
         f"/checkcampaign <текст> — прямая проверка реального статуса кампании (без ИИ)\n"
-        f"/dayparting — анализ времени звонков и рекомендации по расписанию рекламы\n"
         f"/enablecampaign <текст/ID> — гарантированная карточка на включение кампании (без ИИ)\n"
         f"/pausecampaign <текст/ID> — гарантированная карточка на паузу кампании (без ИИ)\n"
         f"/checknegatives — прямая проверка списка минус-слов (без ИИ)\n"
@@ -590,119 +602,6 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
             text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
 
     return text
-
-
-
-async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/dayparting — анализ времени звонков и рекомендации по расписанию рекламы."""
-    global strategy_memory
-    if not _is_owner(update):
-        return
-    msg = await update.message.reply_text("⏰ Анализирую время джобов за 90 дней...")
-    try:
-        today = datetime.now(NY_TZ)
-        date_to = today.strftime("%Y-%m-%d")
-        date_from = (today - timedelta(days=90)).strftime("%Y-%m-%d")
-
-        hour_data = await workiz_client.get_jobs_by_hour(date_from, date_to)
-        total = hour_data.get("total_jobs", 0)
-
-        if total == 0:
-            await _safe_edit(msg, "⚠️ Нет данных о времени джобов за 90 дней.")
-            return
-
-        groups = hour_data.get("groups", {})
-        by_hour = hour_data.get("by_hour", [])
-
-        lines_text = []
-        lines_text.append(f"⏰ *Dayparting анализ — {date_from} — {date_to}*")
-        lines_text.append(f"Всего джобов: {total}\n")
-        lines_text.append("*Активность по времени суток (NY):*")
-        lines_text.append(f"🌙 Ночь (00-07): {groups.get('night_0_7', 0)} джобов")
-        lines_text.append(f"🌅 Утро (08-11): {groups.get('morning_8_11', 0)} джобов")
-        lines_text.append(f"☀️ День (12-17): {groups.get('day_12_17', 0)} джобов")
-        lines_text.append(f"🌆 Вечер (18-23): {groups.get('evening_18_23', 0)} джобов\n")
-        lines_text.append("*Топ активных часов:*")
-        top_hours = sorted(by_hour, key=lambda x: x["jobs"], reverse=True)[:8]
-        for h in top_hours:
-            if h["jobs"] > 0:
-                bar = "█" * min(int(h["pct"] / 2), 10)
-                lines_text.append(f"`{h['label']}` {bar} {h['jobs']} ({h['pct']}%)")
-        off_hours = hour_data.get("recommended_off_hours", [])
-        if off_hours:
-            off_str = ", ".join(f"{h:02d}:00" for h in sorted(off_hours))
-            lines_text.append(f"\n💤 *Рекомендуется отключить рекламу:* {off_str}")
-        text = "\n".join(lines_text)
-
-        await _safe_edit(msg, text, parse_mode="Markdown")
-
-        # Получаем данные кампании для campaign_id
-        budgets_data = await ads_client.get_budget_data(account="ads")
-        campaigns_data = await ads_client.get_both_accounts_summary(
-            date_from=(today - timedelta(days=7)).strftime("%Y-%m-%d"),
-            date_to=date_to,
-        )
-        context_data = {
-            "_period": {"date_from": date_from, "date_to": date_to},
-            "dayparting": hour_data,
-            "budgets": {"ads": budgets_data},
-            "campaigns_summary": campaigns_data,
-        }
-        question = (
-            "В context_data есть данные dayparting — активность джобов по часам за 90 дней. "
-            "На основе этих данных определи оптимальное расписание показа рекламы. "
-            "Создай карточку set_ad_schedule используя campaign_id из budgets.ads.campaigns[0].campaign_id. "
-            "Расписание: пн-вс, только в часы когда реально приходят лиды. "
-            "Убери часы с 0 или 1 джобом за 90 дней."
-        )
-        result = await ai_analyst.chat_action(question, context_data, "set_ad_schedule")
-        reply = result.get("reply", "")
-        if reply:
-            await _safe_send(ctx.bot, config.OWNER_CHAT_ID, reply, parse_mode="Markdown")
-        proposed = result.get("proposed_actions", [])
-        log.info(f"dayparting proposed_actions: {len(proposed)}")
-
-        # Fallback: если агент не создал карточку — создаём напрямую
-        has_schedule_action = any(a.get("type") in ("set_ad_schedule", "setadschedule") for a in proposed)
-        if not has_schedule_action:
-            log.info("dayparting: агент не создал карточку, создаём напрямую")
-            # Берём campaign_id из данных
-            camp_list = budgets_data.get("campaigns", [])
-            camp_id = camp_list[0]["campaign_id"] if camp_list else None
-            camp_name = camp_list[0]["campaign_name"] if camp_list else "BCHD Appliance Repair NYC"
-            if camp_id:
-                days = ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"]
-                proposed.append({
-                    "type": "set_ad_schedule",
-                    "account": "ads",
-                    "campaign_id": camp_id,
-                    "campaign_name": camp_name,
-                    "schedules": [{"day": d, "start_hour": 8, "end_hour": 21} for d in days],
-                    "description": f"Установить расписание рекламы 08:00-21:00 (7 дней)",
-                    "reasoning": (
-                        f"По данным за 90 дней: 90% лидов приходит с 09:00 до 21:00. "
-                        f"Ночью (22:00-07:00) — всего 1 джоб из {total}. "
-                        f"Расписание сэкономит ~15-20% бюджета без потери конверсий."
-                    ),
-                    "risks": "Лиды вне расписания не получат показ. Проверь что 08:00-21:00 покрывает рабочее время.",
-                    "urgency": "medium",
-                    "urgency_label": "Средняя",
-                    "confidence": "high",
-                })
-
-        for action in proposed:
-            try:
-                action.setdefault("account", "ads")
-                action.setdefault("requires_approval", True)
-                action_id = await pending.add(action)
-                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
-            except Exception as e:
-                log.error(f"dayparting card error: {e}")
-        await _save_cmd_result(ctx, update.effective_chat.id, "/dayparting", text)
-
-    except Exception as e:
-        log.error(f"Ошибка /dayparting: {e}")
-        await _safe_edit(msg, f"❌ Ошибка: {e}")
 
 
 async def cmd_check_campaign(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1016,208 +915,6 @@ async def cmd_roas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Ошибка /roas: {e}")
         await msg.edit_text(f"❌ Ошибка: {e}")
-
-
-
-# Кэш для дедупликации алертов — не спамить одним и тем же
-_anomaly_alert_cache: dict = {}
-_ANOMALY_COOLDOWN_HOURS = 12  # один и тот же алерт не чаще раза в 12 часов
-
-
-async def scheduled_anomaly_check(app):
-    """
-    Проактивные инсайты — запускается каждые 4 часа.
-    Пишет только если нашёл НОВУЮ аномалию (дедупликация через кэш).
-    """
-    global _anomaly_alert_cache
-    if not config.google_ads_configured:
-        return
-    try:
-        today = datetime.now(NY_TZ)
-        alerts = []
-
-        # --- Данные за последние 2 дня ---
-        date_2d_from = (today - timedelta(days=2)).strftime("%Y-%m-%d")
-        date_today = today.strftime("%Y-%m-%d")
-        try:
-            perf_2d = await ads_client.get_spend_for_period(date_2d_from, date_today, account="ads")
-            spend_2d = perf_2d.get("spend", 0)
-            conv_2d = perf_2d.get("conversions", 0)
-            if spend_2d > 5 and conv_2d == 0:
-                alerts.append(
-                    f"🚨 *0 конверсий за 2 дня* при расходе ${spend_2d:.2f}\n"
-                    f"Возможные причины: ставки слишком низкие, объявления не показываются, "
-                    f"лендинг недоступен. Проверь кампанию."
-                )
-        except Exception as e:
-            log.warning(f"anomaly_check 2d conv error: {e}")
-
-        # --- Данные за текущую и прошлую неделю ---
-        week_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-        prev_week_from = (today - timedelta(days=14)).strftime("%Y-%m-%d")
-        prev_week_to = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-        try:
-            curr_week = await ads_client.get_spend_for_period(week_from, date_today, account="ads")
-            prev_week = await ads_client.get_spend_for_period(prev_week_from, prev_week_to, account="ads")
-
-            curr_spend = curr_week.get("spend", 0)
-            curr_conv = curr_week.get("conversions", 0)
-            prev_spend = prev_week.get("spend", 0)
-            prev_conv = prev_week.get("conversions", 0)
-
-            # CPA рост >40%
-            curr_cpa = curr_spend / curr_conv if curr_conv > 0 else None
-            prev_cpa = prev_spend / prev_conv if prev_conv > 0 else None
-            if curr_cpa and prev_cpa and curr_cpa > prev_cpa * 1.4:
-                pct = (curr_cpa / prev_cpa - 1) * 100
-                alerts.append(
-                    f"⚠️ *CPA вырос на {pct:.0f}%* (неделя/неделя)\n"
-                    f"Сейчас: ${curr_cpa:.0f} | Прошлая неделя: ${prev_cpa:.0f}\n"
-                    f"Расход: ${curr_spend:.0f}, конверсий: {curr_conv:.0f}"
-                )
-        except Exception as e:
-            log.warning(f"anomaly_check cpa error: {e}")
-
-        # --- Impression Share и бюджет ---
-        try:
-            audit = await ads_client.get_full_audit_data(
-                account="ads",
-                date_from=(today - timedelta(days=3)).strftime("%Y-%m-%d"),
-                date_to=date_today
-            )
-            for camp in audit.get("campaigns", []):
-                if camp.get("status") != "ENABLED":
-                    continue
-                is_val = camp.get("impression_share", 0)
-                if is_val and 0 < is_val < 20:
-                    alerts.append(
-                        f"📉 *IS упал до {is_val:.1f}%* в кампании '{camp['name']}'\n"
-                        f"Причина: низкие ставки или бюджет. IS < 20% — критически мало показов."
-                    )
-                # Расход > бюджет+30% — считаем СРЕДНИЙ расход за период (3 дня)
-                # НЕ используем spend_today из budgets API — это поле накапливается
-                # и не отражает реальный дневной расход. Используем cost из audit.
-                daily_budget = camp.get("budget_daily", 0)
-                camp_cost = camp.get("cost", 0)
-                # cost в audit — за 3 дня (date_from = сегодня-3)
-                daily_spend = camp_cost / 3 if camp_cost else 0
-                # Алерт только если перерасход > 100% (т.е. > 2x бюджета — аномалия)
-                # До 2x — нормальное поведение Google overspending days
-                if daily_budget > 0 and daily_spend > daily_budget * 2.0:
-                    overspend_pct = (daily_spend / daily_budget - 1) * 100
-                    alerts.append(
-                        f"💸 *Перерасход +{overspend_pct:.0f}%* в кампании '{camp['name']}'\n"
-                        f"Дневной бюджет: ${daily_budget:.0f} | Средний расход/день: ${daily_spend:.0f}\n"
-                        f"Это превышает допустимые 2x Google — требует проверки."
-                    )
-        except Exception as e:
-            log.warning(f"anomaly_check IS error: {e}")
-
-        # --- Новый конкурент в аукционе ---
-        try:
-            auction = await ads_client.get_auction_insights(account="ads")
-            for comp in auction.get("competitors", []):
-                is_comp = comp.get("impression_share", 0)
-                overlap = comp.get("overlap_rate", 0)
-                if is_comp > 50 and overlap > 60:
-                    alerts.append(
-                        f"🏆 *Сильный конкурент:* `{comp['domain']}`\n"
-                        f"IS: {is_comp:.0f}% | Пересечение: {overlap:.0f}%\n"
-                        f"Конкурент показывается чаще нас — рассмотри повышение ставок."
-                    )
-                    break  # только один самый сильный
-        except Exception as e:
-            log.warning(f"anomaly_check auction error: {e}")
-
-        if not alerts:
-            log.info("anomaly_check: аномалий не найдено")
-            return
-
-        # Фильтруем алерты которые уже отправляли недавно
-        # Используем стабильный ключ (тип аномалии), а не текст с меняющимися цифрами
-        now_ts = today.timestamp()
-        new_alerts = []
-        for alert in alerts:
-            # Определяем тип аномалии по первым словам (до цифр)
-            import re as _re
-            alert_type = _re.sub(r'[0-9$+%.]+', '', alert[:60]).strip()[:40]
-            last_sent = _anomaly_alert_cache.get(alert_type, 0)
-            if now_ts - last_sent > _ANOMALY_COOLDOWN_HOURS * 3600:
-                new_alerts.append(alert)
-                _anomaly_alert_cache[alert_type] = now_ts
-
-        if not new_alerts:
-            log.info("anomaly_check: все аномалии уже были отправлены недавно, пропускаем")
-            return
-        alerts = new_alerts
-
-        # Нашли НОВЫЕ аномалии — агент сам анализирует и предлагает действия
-        log.info(f"anomaly_check: найдено {len(alerts)} аномалий, запускаю анализ")
-
-        # Собираем данные для анализа
-        try:
-            period_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-            period_to = today.strftime("%Y-%m-%d")
-            context_data = {"_period": {"date_from": period_from, "date_to": period_to}}
-            context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
-                date_from=period_from, date_to=period_to
-            )
-            context_data["keywords"] = {
-                "ads": await ads_client.get_keywords_analysis(account="ads", date_from=period_from, date_to=period_to)
-            }
-            context_data["budgets"] = {"ads": await ads_client.get_budget_data(account="ads")}
-            if strategy_memory:
-                try:
-                    context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
-                except Exception:
-                    pass
-        except Exception as e:
-            log.error(f"anomaly_check: ошибка сбора данных для анализа: {e}")
-            # Fallback — просто отправляем алерты без анализа
-            text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
-            text += "\n\n".join(alerts)
-            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
-            return
-
-        # Формируем запрос к агенту с описанием аномалий
-        anomaly_desc = "\n".join(f"- {a}" for a in alerts)
-        question = (
-            f"Обнаружены аномалии в рекламных кампаниях:\n{anomaly_desc}\n\n"
-            f"Проанализируй данные, найди конкретную причину каждой аномалии "
-            f"и предложи конкретные действия для исправления. "
-            f"Создай карточки на действия которые можно выполнить прямо сейчас."
-        )
-
-        try:
-            result = await ai_analyst.chat_action(question, context_data, "action")
-            reply = result.get("reply", "")
-
-            # Отправляем анализ
-            header = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
-            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
-
-            # Создаём карточки для предложенных действий
-            for action in result.get("proposed_actions", []):
-                try:
-                    action.setdefault("account", "ads")
-                    action.setdefault("data_summary", action.get("reasoning", ""))
-                    action.setdefault("expected_impact", "")
-                    action.setdefault("requires_approval", True)
-                    action_id = await pending.add(action)
-                    await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
-                except Exception as e:
-                    log.error(f"anomaly_check: ошибка создания карточки: {e}")
-
-            log.info(f"anomaly_check: анализ отправлен, {len(result.get('proposed_actions', []))} карточек")
-        except Exception as e:
-            log.error(f"anomaly_check: ошибка AI анализа: {e}")
-            # Fallback
-            text = f"🔍 *Проактивный инсайт — {today.strftime('%d.%m %H:%M')}*\n\n"
-            text += "\n\n".join(alerts)
-            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
-
-    except Exception as e:
-        log.error(f"Ошибка anomaly_check: {e}")
 
 
 async def scheduled_purge_pending(app):
@@ -1991,26 +1688,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["negatives"][acc] = await ads_client.get_negative_keywords_list(account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
-        if "ad_schedule" in data_needed:
-            try:
-                context_data["ad_schedule"] = await ads_client.get_ad_schedule(account="ads")
-            except Exception as e:
-                log.warning(f"Ошибка сбора ad_schedule: {e}")
-        if "thumbtack" in data_needed or "roas" in data_needed:
-            try:
-                context_data["thumbtack"] = await workiz_client.get_jobs_by_source(
-                    "Thumbtack", period_from, period_to
-                )
-                context_data["thumbtack"]["budget_weekly"] = config.THUMBTACK_WEEKLY_BUDGET
-                days_in_period = (
-                    datetime.strptime(period_to, "%Y-%m-%d") -
-                    datetime.strptime(period_from, "%Y-%m-%d")
-                ).days + 1
-                context_data["thumbtack"]["budget_period"] = round(
-                    config.THUMBTACK_WEEKLY_BUDGET / 7 * days_in_period, 2
-                )
-            except Exception as e:
-                log.warning(f"Ошибка сбора Thumbtack: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
@@ -3148,6 +2825,79 @@ async def cmd_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def _send_long_message(bot_or_app, chat_id: int, text: str):
+    bot = getattr(bot_or_app, 'bot', bot_or_app)
+    if len(text) <= 3800:
+        await _safe_send(bot, chat_id, text, parse_mode="Markdown")
+        return
+    parts = []
+    while text:
+        if len(text) <= 3800:
+            parts.append(text)
+            break
+        cut = text[:3800].rfind("\n")
+        if cut == -1:
+            cut = 3800
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    for part in parts:
+        await _safe_send(bot, chat_id, part, parse_mode="Markdown")
+
+
+async def scheduled_gbp_reviews(app):
+    if not _gbp_available or not gbp_client_inst:
+        return
+    log.info("Проверка отзывов GBP")
+    try:
+        result = await gbp_client_inst.get_unanswered_reviews(days=3)
+        reviews = result.get("unanswered", [])
+        if not reviews:
+            return
+        for review in reviews[:5]:
+            rating = review.get("rating", "")
+            star_map = {"ONE": "1*", "TWO": "2*", "THREE": "3*", "FOUR": "4*", "FIVE": "5*"}
+            stars = star_map.get(rating, rating)
+            author = review.get("author", "Аноним")
+            comment = review.get("comment", "")[:400]
+            text = (
+                "*Новый отзыв Google без ответа*\n\n"
+                + stars + " — *" + author + "*\n"
+                + comment + "\n\n"
+                + "Напиши боту: Ответь на отзыв от " + author
+            )
+            await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Ошибка проверки отзывов GBP: {e}")
+
+
+async def cmd_reviews(update, ctx):
+    if not _is_owner(update):
+        return
+    if not _gbp_available or not gbp_client_inst:
+        await update.message.reply_text("GBP API не настроен.")
+        return
+    msg = await update.message.reply_text("Загружаю отзывы...")
+    try:
+        result = await gbp_client_inst.get_unanswered_reviews(days=30)
+        reviews = result.get("unanswered", [])
+        if not reviews:
+            await _safe_edit(msg, "Все отзывы за 30 дней имеют ответ.")
+            return
+        count = len(reviews)
+        text = "*Отзывы без ответа (" + str(count) + "):*\n\n"
+        for r in reviews[:5]:
+            rating = r.get("rating", "")
+            star_map = {"ONE": "1*", "TWO": "2*", "THREE": "3*", "FOUR": "4*", "FIVE": "5*"}
+            stars = star_map.get(rating, rating)
+            author = r.get("author", "Аноним")
+            comment = r.get("comment", "")[:200]
+            text += stars + " *" + author + "*\n" + comment + "\n\n"
+        await _safe_edit(msg, text, parse_mode="Markdown")
+    except Exception as e:
+        await _safe_edit(msg, "Ошибка: " + str(e))
+
+
 async def _on_startup(app):
     await init_db()
 
@@ -3174,7 +2924,6 @@ def main():
     app.add_handler(CommandHandler("month", cmd_month))
     app.add_handler(CommandHandler("checkkeyword", cmd_check_keyword))
     app.add_handler(CommandHandler("checkcampaign", cmd_check_campaign))
-    app.add_handler(CommandHandler("dayparting", cmd_dayparting))
     app.add_handler(CommandHandler("enablecampaign", cmd_enable_campaign))
     app.add_handler(CommandHandler("pausecampaign", cmd_pause_campaign))
     app.add_handler(CommandHandler("checknegatives", cmd_check_negatives))
@@ -3188,6 +2937,7 @@ def main():
     # "/washer" как название страницы сайта — Telegram автоматически
     # превращает такой текст в кликабельную команду, и без этого fallback
     # владелец при нажатии получал полную тишину без всякой реакции бота).
+    app.add_handler(CommandHandler("reviews", cmd_reviews))
     app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
     app.add_error_handler(global_error_handler)
@@ -3204,8 +2954,9 @@ def main():
     scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
     scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
-    scheduler.add_job(scheduled_anomaly_check,    "interval", hours=4, args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
+    if _gbp_available and gbp_client_inst:
+        scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
