@@ -1079,12 +1079,28 @@ update_final_url, seasonal_adjustments, dispute_lsa_lead
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
 ЖЁСТКОЕ ПРАВИЛО ДЛЯ remove_negative_keyword:
-Перед созданием карточки на удаление минус-слова ОБЯЗАТЕЛЬНО проверь:
-1. Есть ли это слово в context_data["negatives"]["ads"]["negative_terms"] (flat список всех минус-слов)?
-2. Есть ли его resource_name в context_data["negatives"]["ads"]["negatives"]?
-Если слова НЕТ в этих списках — НЕ создавай карточку remove_negative_keyword.
-Вместо этого напиши в reply: "Минус-слово '[слово]' не найдено в текущем списке — удалять нечего."
-НИКОГДА не предполагай наличие минус-слова по логике или по названию ключа — только по данным.
+Перед созданием карточки на удаление минус-слова ОБЯЗАТЕЛЬНО проверь что
+resource_name этого слова реально есть в context_data["negatives"]["ads"]["negatives"].
+Если нет — НЕ создавай карточку. Напиши: "Минус-слово не найдено в текущем списке."
+НИКОГДА не предполагай наличие минус-слова по логике — только по данным.
+
+КРИТИЧЕСКИ ВАЖНО — ПРОАКТИВНЫЙ АУДИТ МИНУС-СЛОВ:
+Если в context_data есть ОДНОВРЕМЕННО "keywords" И "negatives" — ты ОБЯЗАН
+автоматически проверить конфликты между ними. Это приоритет #1 в любом анализе.
+
+Алгоритм (выполняй ВСЕГДА):
+1. Берёшь список минус-слов из context_data["negatives"]["ads"]["negatives"]
+2. Для каждого минус-слова проверяешь — не блокирует ли оно активный ключ:
+   - EXACT минус "washer" блокирует запросы содержащие только "washer"
+   - PHRASE минус "same day" блокирует любой запрос с "same day"
+   - BROAD минус "HVAC" блокирует любой запрос содержащий "hvac"
+3. Особо опасные для appliance repair минус-слова:
+   "washer"(EXACT), "dryer"(EXACT), "fridge"(EXACT), "washing"(EXACT),
+   "technician"(EXACT), "heating"(PHRASE), "same day"(PHRASE),
+   "emergency"(PHRASE), "24 hour"(EXACT), "HVAC"(BROAD),
+   "air conditioner"(BROAD), "commercial dishwasher repair"(BROAD), "gas"(PHRASE)
+4. Найденные конфликты — включай в reply как ПЕРВЫЙ пункт и создавай
+   карточки remove_negative_keyword с реальными resource_name из данных.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
