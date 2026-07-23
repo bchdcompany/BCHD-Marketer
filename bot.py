@@ -1690,6 +1690,15 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 context_data["negatives"][acc] = await ads_client.get_negative_keywords_list(account=acc)
         if "lsa_leads" in data_needed:
             context_data["lsa_leads"] = await ads_client.get_lsa_leads(account="lsa")
+        if "gbp_reviews" in data_needed:
+            try:
+                _gbp_inst = globals().get("gbp_client_inst")
+                if _gbp_inst:
+                    context_data["gbp_reviews"] = await _gbp_inst.get_reviews(days=30)
+                else:
+                    context_data["gbp_reviews"] = {"error": "GBP не настроен", "reviews": [], "unanswered": []}
+            except Exception as e:
+                log.warning(f"Ошибка сбора gbp_reviews: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
@@ -2056,6 +2065,29 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 log.warning(f"Одобрена устаревшая карточка {param}: {action.get('description')}")
             await _safe_edit(query, f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
+            # Специальная обработка GBP действий
+            if action.get("type") == "reply_to_review":
+                try:
+                    _gbp_inst = globals().get("gbp_client_inst")
+                    if not _gbp_inst:
+                        await _safe_edit(query, "❌ GBP API не настроен")
+                        return
+                    result = await _gbp_inst.reply_to_review(
+                        action["review_name"], action["reply_text"]
+                    )
+                    if result.get("success"):
+                        await _safe_edit(query,
+                            f"✅ *Ответ опубликован:* {action.get('description', '')}\n\n"
+                            f"_{action.get('reply_text', '')}_",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await _safe_edit(query, f"❌ Ошибка публикации: {result.get('error')}")
+                    return
+                except Exception as e:
+                    await _safe_edit(query, f"❌ Ошибка GBP: {e}")
+                    return
+
             try:
                 result = await ads_client.execute_action(action)
             except Exception as e:
