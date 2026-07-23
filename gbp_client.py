@@ -164,11 +164,23 @@ class GBPClient:
 
     async def reply_to_review(self, review_name: str, reply_text: str) -> dict:
         """Публикует ответ на отзыв."""
+        # review_name формат: accounts/X/locations/Y/reviews/Z
+        # Endpoint: PUT https://mybusiness.googleapis.com/v4/{review_name}/reply
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
-        result = await self._post(url, {"comment": reply_text})
-        if "error" in result:
-            return {"success": False, "error": result["error"]}
-        return {"success": True, "review_name": review_name}
+        token = await self._get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.put(url, headers=headers, json={"comment": reply_text})
+                if resp.status_code in (200, 201):
+                    return {"success": True, "review_name": review_name}
+                return {"success": False, "error": f"{resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def delete_reply(self, review_name: str) -> dict:
         """Удаляет ответ на отзыв."""
