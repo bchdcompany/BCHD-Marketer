@@ -57,6 +57,8 @@ ads_client = GoogleAdsClient(config)
 ai_analyst = AIAnalyst(config)
 report_gen = ReportGenerator()
 pending = PendingActions()
+strategy_memory = StrategyMemory() if _strategy_available else None
+gbp_client_inst = init_gbp_client(config) if _gbp_available else None
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
