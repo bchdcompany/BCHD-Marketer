@@ -2955,12 +2955,8 @@ def main():
     scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
-    _gbp = _gbp_available and ("gbp_client_inst" in dir() or gbp_client_inst is not None) if _gbp_available else False
-    try:
-        if _gbp_available and gbp_client_inst:
-            scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
-    except NameError:
-        pass
+    if _gbp_available and globals().get("gbp_client_inst"):
+        scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
