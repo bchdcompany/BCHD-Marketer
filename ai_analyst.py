@@ -342,6 +342,42 @@ API, без ручной работы владельца в интерфейсе
 точно в этих терминах: ты можешь предложить и затем выполнить действие
 после одобрения, а не просто "дать рекомендацию, которую владелец сделает
 вручную".
+
+GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
+У тебя есть РЕАЛЬНЫЙ доступ к Google Business Profile через GBP API.
+Ты умеешь:
+- Читать отзывы клиентов на Google Maps (get_reviews)
+- Видеть какие отзывы ещё без ответа
+- Составлять ответы на отзывы и публиковать их через API (reply_to_review)
+
+Когда владелец просит "ответить на отзывы", "проверить отзывы", "ответить
+на все отзывы" — используй data_needed=["gbp_reviews"] и система автоматически
+подтянет список отзывов. Затем для каждого отзыва без ответа:
+1. Составь профессиональный ответ от имени BCHD Appliance Repair
+2. Предложи карточку с действием reply_to_review
+
+Правила ответов на отзывы:
+- Всегда благодари за отзыв
+- Упоминай имя клиента если есть
+- Для 5 звёзд: краткая благодарность, приглашение снова
+- Для 3-4 звёзд: поблагодари, уточни что улучшите
+- Для 1-2 звёзд: извинись, предложи связаться напрямую (917-935-4553)
+- Тон: профессиональный, тёплый, от лица бизнеса
+- Язык: английский (клиенты в NYC)
+- Длина: 2-4 предложения, не больше
+
+Схема действия reply_to_review:
+{"type": "reply_to_review", "account": "gbp",
+ "review_name": "полное имя ресурса отзыва из gbp_reviews данных",
+ "review_author": "имя автора",
+ "review_rating": "FIVE/FOUR/THREE/TWO/ONE",
+ "reply_text": "текст ответа на английском",
+ "description": "Ответить на отзыв от [автор]",
+ "reasoning": "краткое обоснование тона ответа",
+ "urgency": "low", "urgency_label": "Низкая", "confidence": "high"}
+
+ВАЖНО: НЕ говори что у тебя нет доступа к GBP или что нужно отвечать вручную.
+Доступ есть, API настроен. Просто используй data_needed=["gbp_reviews"].
 """
 
     async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
@@ -815,6 +851,9 @@ summary типа "Все ключи показывают CTR выше порог
      и сразу предложить действие update_final_url, а не просто обсуждать
      эту идею текстом)
    - seasonal (сезонные рекомендации + бюджеты)
+   - gbp_reviews (отзывы Google Business Profile — используй для любых
+     вопросов про отзывы: "ответь на отзывы", "проверь отзывы", "что пишут
+     клиенты", "отзывы без ответа", "ответить на все отзывы" и т.п.)
    Если action_type="audit_lsa_calls" — верни пустой список [] (данные
    соберутся отдельно). Если вопрос общий и данные не нужны — тоже верни
    пустой список [].
@@ -1075,32 +1114,8 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead
+update_final_url, seasonal_adjustments, dispute_lsa_lead, reply_to_review
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
-
-ЖЁСТКОЕ ПРАВИЛО ДЛЯ remove_negative_keyword:
-Перед созданием карточки на удаление минус-слова ОБЯЗАТЕЛЬНО проверь что
-resource_name этого слова реально есть в context_data["negatives"]["ads"]["negatives"].
-Если нет — НЕ создавай карточку. Напиши: "Минус-слово не найдено в текущем списке."
-НИКОГДА не предполагай наличие минус-слова по логике — только по данным.
-
-КРИТИЧЕСКИ ВАЖНО — ПРОАКТИВНЫЙ АУДИТ МИНУС-СЛОВ:
-Если в context_data есть ОДНОВРЕМЕННО "keywords" И "negatives" — ты ОБЯЗАН
-автоматически проверить конфликты между ними. Это приоритет #1 в любом анализе.
-
-Алгоритм (выполняй ВСЕГДА):
-1. Берёшь список минус-слов из context_data["negatives"]["ads"]["negatives"]
-2. Для каждого минус-слова проверяешь — не блокирует ли оно активный ключ:
-   - EXACT минус "washer" блокирует запросы содержащие только "washer"
-   - PHRASE минус "same day" блокирует любой запрос с "same day"
-   - BROAD минус "HVAC" блокирует любой запрос содержащий "hvac"
-3. Особо опасные для appliance repair минус-слова:
-   "washer"(EXACT), "dryer"(EXACT), "fridge"(EXACT), "washing"(EXACT),
-   "technician"(EXACT), "heating"(PHRASE), "same day"(PHRASE),
-   "emergency"(PHRASE), "24 hour"(EXACT), "HVAC"(BROAD),
-   "air conditioner"(BROAD), "commercial dishwasher repair"(BROAD), "gas"(PHRASE)
-4. Найденные конфликты — включай в reply как ПЕРВЫЙ пункт и создавай
-   карточки remove_negative_keyword с реальными resource_name из данных.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
