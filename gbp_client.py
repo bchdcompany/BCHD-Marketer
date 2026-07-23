@@ -37,7 +37,7 @@ class GBPClient:
         self._token_expires: float = 0
 
     async def _get_access_token(self) -> str:
-        """Получает свежий OAuth access token."""
+        """Получает свежий OAuth access token для GBP."""
         import time
         if self._access_token and time.time() < self._token_expires - 60:
             return self._access_token
@@ -45,9 +45,11 @@ class GBPClient:
         def _refresh():
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request as GoogleAuthRequest
+            # Используем GBP_REFRESH_TOKEN (отдельный от Google Ads)
+            gbp_refresh_token = getattr(self.config, 'GBP_REFRESH_TOKEN', '') or                                  __import__('os').environ.get('GBP_REFRESH_TOKEN', '')
             creds = Credentials(
                 token=None,
-                refresh_token=self.config.GOOGLE_ADS_REFRESH_TOKEN,
+                refresh_token=gbp_refresh_token,
                 client_id=self.config.GOOGLE_ADS_CLIENT_ID,
                 client_secret=self.config.GOOGLE_ADS_CLIENT_SECRET,
                 token_uri="https://oauth2.googleapis.com/token",
