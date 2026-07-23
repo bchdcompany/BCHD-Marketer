@@ -50,6 +50,12 @@ class Config:
     # Деплой не нужен — переменная подхватывается при следующем перезапуске.
     THUMBTACK_WEEKLY_BUDGET: float = float(os.environ.get("THUMBTACK_WEEKLY_BUDGET", "200"))
 
+    # Google Business Profile API
+    # Использует те же OAuth credentials что и Google Ads
+    # (client_id, client_secret, refresh_token)
+    GBP_ACCOUNT_NAME: str = os.environ.get("GBP_ACCOUNT_NAME", "")
+    # Формат: accounts/123456789 (найти в GBP API или Google My Business)
+
     @property
     def google_ads_configured(self) -> bool:
         """Проверяет, настроен ли Google Ads API"""
@@ -64,6 +70,16 @@ class Config:
     def lsa_configured(self) -> bool:
         """Проверяет, настроен ли LSA аккаунт"""
         return bool(self.GOOGLE_ADS_LSA_CUSTOMER_ID and self.google_ads_configured)
+
+    @property
+    def gbp_configured(self) -> bool:
+        """Проверяет, настроен ли Google Business Profile API"""
+        return bool(
+            self.GBP_ACCOUNT_NAME
+            and self.GOOGLE_ADS_CLIENT_ID
+            and self.GOOGLE_ADS_CLIENT_SECRET
+            and self.GOOGLE_ADS_REFRESH_TOKEN
+        )
 
 
 config = Config()
