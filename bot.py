@@ -1094,14 +1094,21 @@ async def scheduled_anomaly_check(app):
                         f"📉 *IS упал до {is_val:.1f}%* в кампании '{camp['name']}'\n"
                         f"Причина: низкие ставки или бюджет. IS < 20% — критически мало показов."
                     )
-                # Расход > бюджет+30%
+                # Расход > бюджет+30% — считаем СРЕДНИЙ расход за период (3 дня)
+                # НЕ используем spend_today из budgets API — это поле накапливается
+                # и не отражает реальный дневной расход. Используем cost из audit.
                 daily_budget = camp.get("budget_daily", 0)
-                daily_spend = camp.get("cost", 0) / 3 if camp.get("cost") else 0  # за 3 дня
-                if daily_budget > 0 and daily_spend > daily_budget * 1.3:
+                camp_cost = camp.get("cost", 0)
+                # cost в audit — за 3 дня (date_from = сегодня-3)
+                daily_spend = camp_cost / 3 if camp_cost else 0
+                # Алерт только если перерасход > 100% (т.е. > 2x бюджета — аномалия)
+                # До 2x — нормальное поведение Google overspending days
+                if daily_budget > 0 and daily_spend > daily_budget * 2.0:
                     overspend_pct = (daily_spend / daily_budget - 1) * 100
                     alerts.append(
                         f"💸 *Перерасход +{overspend_pct:.0f}%* в кампании '{camp['name']}'\n"
-                        f"Дневной бюджет: ${daily_budget:.0f} | Средний расход/день: ${daily_spend:.0f}"
+                        f"Дневной бюджет: ${daily_budget:.0f} | Средний расход/день: ${daily_spend:.0f}\n"
+                        f"Это превышает допустимые 2x Google — требует проверки."
                     )
         except Exception as e:
             log.warning(f"anomaly_check IS error: {e}")
@@ -1127,14 +1134,17 @@ async def scheduled_anomaly_check(app):
             return
 
         # Фильтруем алерты которые уже отправляли недавно
+        # Используем стабильный ключ (тип аномалии), а не текст с меняющимися цифрами
         now_ts = today.timestamp()
         new_alerts = []
         for alert in alerts:
-            alert_key = alert[:50]  # первые 50 символов как ключ
-            last_sent = _anomaly_alert_cache.get(alert_key, 0)
+            # Определяем тип аномалии по первым словам (до цифр)
+            import re as _re
+            alert_type = _re.sub(r'[0-9$+%.]+', '', alert[:60]).strip()[:40]
+            last_sent = _anomaly_alert_cache.get(alert_type, 0)
             if now_ts - last_sent > _ANOMALY_COOLDOWN_HOURS * 3600:
                 new_alerts.append(alert)
-                _anomaly_alert_cache[alert_key] = now_ts
+                _anomaly_alert_cache[alert_type] = now_ts
 
         if not new_alerts:
             log.info("anomaly_check: все аномалии уже были отправлены недавно, пропускаем")
