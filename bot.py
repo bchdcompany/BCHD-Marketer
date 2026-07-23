@@ -2846,11 +2846,12 @@ async def _send_long_message(bot_or_app, chat_id: int, text: str):
 
 
 async def scheduled_gbp_reviews(app):
-    if not _gbp_available or not gbp_client_inst:
+    _inst = globals().get("gbp_client_inst")
+    if not _gbp_available or not _inst:
         return
     log.info("Проверка отзывов GBP")
     try:
-        result = await gbp_client_inst.get_unanswered_reviews(days=3)
+        result = await _inst.get_unanswered_reviews(days=3)
         reviews = result.get("unanswered", [])
         if not reviews:
             return
@@ -2874,12 +2875,13 @@ async def scheduled_gbp_reviews(app):
 async def cmd_reviews(update, ctx):
     if not _is_owner(update):
         return
-    if not _gbp_available or not gbp_client_inst:
+    _inst = globals().get("gbp_client_inst")
+    if not _gbp_available or not _inst:
         await update.message.reply_text("GBP API не настроен.")
         return
     msg = await update.message.reply_text("Загружаю отзывы...")
     try:
-        result = await gbp_client_inst.get_unanswered_reviews(days=30)
+        result = await _inst.get_unanswered_reviews(days=30)
         reviews = result.get("unanswered", [])
         if not reviews:
             await _safe_edit(msg, "Все отзывы за 30 дней имеют ответ.")
