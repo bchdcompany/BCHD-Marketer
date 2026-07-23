@@ -26,7 +26,7 @@ import pytz
 log = logging.getLogger(__name__)
 NY_TZ = pytz.timezone("America/New_York")
 
-GBP_BASE = "https://mybusiness.googleapis.com/v4"
+GBP_BASE = "https://mybusinessinformation.googleapis.com/v1"
 ACCOUNTS_BASE = "https://mybusinessaccountmanagement.googleapis.com/v1"
 
 
@@ -100,7 +100,10 @@ class GBPClient:
         account = self.config.GBP_ACCOUNT_NAME
         if not account:
             return {"error": "GBP_ACCOUNT_NAME не настроен"}
-        return await self._get(f"{GBP_BASE}/{account}/locations")
+        return await self._get(
+            f"https://mybusinessinformation.googleapis.com/v1/{account}/locations",
+            {"readMask": "name,title,storefrontAddress,websiteUri,phoneNumbers"}
+        )
 
     async def get_reviews(self, location_name: str = None, days: int = 7) -> dict:
         """
@@ -121,10 +124,10 @@ class GBPClient:
                 return {"error": "Локации не найдены", "reviews": []}
             location_name = locations[0].get("name", "")
 
-        result = await self._get(f"{GBP_BASE}/{location_name}/reviews", {
-            "pageSize": 50,
-            "orderBy": "updateTime desc",
-        })
+        result = await self._get(
+            f"https://mybusiness.googleapis.com/v4/{location_name}/reviews",
+            {"pageSize": 50, "orderBy": "updateTime desc"}
+        )
 
         if "error" in result:
             return result
@@ -170,7 +173,7 @@ class GBPClient:
         Публикует ответ на отзыв.
         review_name: полное имя ресурса вида accounts/X/locations/Y/reviews/Z
         """
-        url = f"{GBP_BASE}/{review_name}/reply"
+        url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
         result = await self._post(url, {"comment": reply_text})
         if "error" in result:
             return {"success": False, "error": result["error"]}
