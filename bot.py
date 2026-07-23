@@ -1643,11 +1643,14 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
     # ВСЕГДА добавляем keywords в data_needed — реальные настройки из API.
-    if "keywords" not in data_needed and data_needed != ["none"]:
-        data_needed.append("keywords")
-    # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
-    if "negatives" not in data_needed and data_needed != ["none"]:
-        data_needed.append("negatives")
+    # Исключение: если запрос только про GBP отзывы — не нужны keywords/negatives
+    _gbp_only = data_needed == ["gbp_reviews"]
+    if not _gbp_only:
+        if "keywords" not in data_needed and data_needed != ["none"]:
+            data_needed.append("keywords")
+        # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
+        if "negatives" not in data_needed and data_needed != ["none"]:
+            data_needed.append("negatives")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
@@ -1872,11 +1875,14 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
     # ВСЕГДА добавляем keywords в data_needed — реальные настройки из API.
-    if "keywords" not in data_needed and data_needed != ["none"]:
-        data_needed.append("keywords")
-    # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
-    if "negatives" not in data_needed and data_needed != ["none"]:
-        data_needed.append("negatives")
+    # Исключение: если запрос только про GBP отзывы — не нужны keywords/negatives
+    _gbp_only = data_needed == ["gbp_reviews"]
+    if not _gbp_only:
+        if "keywords" not in data_needed and data_needed != ["none"]:
+            data_needed.append("keywords")
+        # ВСЕГДА добавляем негативы — без них бот не может создать карточки удаления.
+        if "negatives" not in data_needed and data_needed != ["none"]:
+            data_needed.append("negatives")
     try:
         if "campaigns" in data_needed:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(date_from=period_from, date_to=period_to)
