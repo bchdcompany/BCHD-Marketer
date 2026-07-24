@@ -254,7 +254,8 @@ context_data — считай, что её больше НЕТ (удалена/�
 Единственные РЕАЛЬНО существующие команды в этом боте:
 /report, /audit, /budget, /keywords, /negatives, /competitors, /abtest,
 /seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start,
-/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign, /enablecampaign, /pausecampaign
+/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign,
+/enablecampaign, /pausecampaign, /dayparting, /reviews, /clearmemory
 
 НИКОГДА не советуй владельцу ввести команду, которой нет в этом списке
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
@@ -342,42 +343,6 @@ API, без ручной работы владельца в интерфейсе
 точно в этих терминах: ты можешь предложить и затем выполнить действие
 после одобрения, а не просто "дать рекомендацию, которую владелец сделает
 вручную".
-
-GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
-У тебя есть РЕАЛЬНЫЙ доступ к Google Business Profile через GBP API.
-Ты умеешь:
-- Читать отзывы клиентов на Google Maps (get_reviews)
-- Видеть какие отзывы ещё без ответа
-- Составлять ответы на отзывы и публиковать их через API (reply_to_review)
-
-Когда владелец просит "ответить на отзывы", "проверить отзывы", "ответить
-на все отзывы" — используй data_needed=["gbp_reviews"] и система автоматически
-подтянет список отзывов. Затем для каждого отзыва без ответа:
-1. Составь профессиональный ответ от имени BCHD Appliance Repair
-2. Предложи карточку с действием reply_to_review
-
-Правила ответов на отзывы:
-- Всегда благодари за отзыв
-- Упоминай имя клиента если есть
-- Для 5 звёзд: краткая благодарность, приглашение снова
-- Для 3-4 звёзд: поблагодари, уточни что улучшите
-- Для 1-2 звёзд: извинись, предложи связаться напрямую (917-935-4553)
-- Тон: профессиональный, тёплый, от лица бизнеса
-- Язык: английский (клиенты в NYC)
-- Длина: 2-4 предложения, не больше
-
-Схема действия reply_to_review:
-{"type": "reply_to_review", "account": "gbp",
- "review_name": "полное имя ресурса отзыва из gbp_reviews данных",
- "review_author": "имя автора",
- "review_rating": "FIVE/FOUR/THREE/TWO/ONE",
- "reply_text": "текст ответа на английском",
- "description": "Ответить на отзыв от [автор]",
- "reasoning": "краткое обоснование тона ответа",
- "urgency": "low", "urgency_label": "Низкая", "confidence": "high"}
-
-ВАЖНО: НЕ говори что у тебя нет доступа к GBP или что нужно отвечать вручную.
-Доступ есть, API настроен. Просто используй data_needed=["gbp_reviews"].
 """
 
     async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
@@ -851,9 +816,6 @@ summary типа "Все ключи показывают CTR выше порог
      и сразу предложить действие update_final_url, а не просто обсуждать
      эту идею текстом)
    - seasonal (сезонные рекомендации + бюджеты)
-   - gbp_reviews (отзывы Google Business Profile — используй для любых
-     вопросов про отзывы: "ответь на отзывы", "проверь отзывы", "что пишут
-     клиенты", "отзывы без ответа", "ответить на все отзывы" и т.п.)
    Если action_type="audit_lsa_calls" — верни пустой список [] (данные
    соберутся отдельно). Если вопрос общий и данные не нужны — тоже верни
    пустой список [].
@@ -1114,8 +1076,39 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead, reply_to_review
+update_final_url, seasonal_adjustments, dispute_lsa_lead
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
+
+ЖЁСТКИЙ ЗАПРЕТ — НИКОГДА НЕ ПРЕДЛАГАЙ ДЕЙСТВИЯ С REMOVED КАМПАНИЯМИ:
+Кампания со статусом REMOVED физически удалена — её нельзя включить, паузировать,
+изменить ставки или минус-слова. Любые минус-слова которые видны в API с campaign_id
+удалённой кампании — это артефакт API, они не влияют на трафик и не требуют действий.
+ПРАВИЛО: перед созданием ЛЮБОЙ карточки действия (remove_negative_keyword, pause_keywords,
+budget_change и т.д.) — проверь что campaign_id этого действия НЕ соответствует
+удалённой кампании. Известные удалённые кампании:
+- ID 20424210216 ("BCHD Appliance Repair Service") — Smart Campaign, REMOVED
+  Минус-слова этой кампании (washer, dryer, fridge и т.д.) видны в API но
+  НЕ влияют на трафик и НЕ требуют удаления — просто игнорируй их.
+Если видишь минус-слово с campaign="BCHD Appliance Repair Service" — молчи,
+не упоминай, не предлагай удалить. Эта кампания мертва.
+
+КРИТИЧЕСКИ ВАЖНО — ПРОАКТИВНЫЙ АУДИТ МИНУС-СЛОВ:
+Если в context_data есть ОДНОВРЕМЕННО "keywords" И "negatives" — ты ОБЯЗАН
+автоматически проверить конфликты. Это приоритет #1 в любом анализе.
+
+Алгоритм (выполняй ВСЕГДА когда оба источника есть):
+1. Берёшь список минус-слов из context_data["negatives"]["ads"]["negatives"]
+2. ФИЛЬТРУЙ: пропускай минус-слова где campaign содержит "BCHD Appliance Repair Service"
+   или campaign_id = 20424210216 — они из REMOVED кампании и не влияют на трафик
+3. Для ОСТАВШИХСЯ минус-слов проверяешь — не блокирует ли оно активный ключ:
+   - EXACT минус "washer" блокирует запросы содержащие только "washer"
+   - PHRASE минус "same day" блокирует любой запрос с "same day"
+   - BROAD минус "HVAC" блокирует любой запрос содержащий "hvac"
+4. Особо опасные для appliance repair (если они из АКТИВНОЙ кампании):
+   "technician"(EXACT), "heating"(PHRASE), "HVAC"(BROAD),
+   "air conditioner"(BROAD), "commercial dishwasher repair"(BROAD), "gas"(PHRASE)
+5. Найденные конфликты из АКТИВНЫХ кампаний — включай в reply как ПЕРВЫЙ пункт
+   и создавай карточки remove_negative_keyword с реальными resource_name.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
