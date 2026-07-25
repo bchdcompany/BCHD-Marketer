@@ -1932,6 +1932,15 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     context_data["gbp_reviews"] = {"error": "GBP не настроен", "reviews": [], "unanswered": []}
             except Exception as e:
                 log.warning(f"Ошибка сбора gbp_reviews: {e}")
+        if "gbp_profile" in data_needed:
+            try:
+                _gbp_inst = globals().get("gbp_client_inst")
+                if _gbp_inst:
+                    context_data["gbp_profile"] = await _gbp_inst.get_profile()
+                else:
+                    context_data["gbp_profile"] = {"error": "GBP не настроен"}
+            except Exception as e:
+                log.warning(f"Ошибка сбора gbp_profile: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
