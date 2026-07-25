@@ -49,11 +49,18 @@ class GBPClient:
                 getattr(self.config, 'GBP_REFRESH_TOKEN', '') or
                 os.environ.get('GBP_REFRESH_TOKEN', '')
             )
+            # В BCHD-Marketer OAuth credentials хранятся как GMAIL_CLIENT_ID/SECRET
+            client_id = (getattr(self.config, 'GOOGLE_ADS_CLIENT_ID', '') or
+                        getattr(self.config, 'GMAIL_CLIENT_ID', '') or
+                        os.environ.get('GMAIL_CLIENT_ID', ''))
+            client_secret = (getattr(self.config, 'GOOGLE_ADS_CLIENT_SECRET', '') or
+                            getattr(self.config, 'GMAIL_CLIENT_SECRET', '') or
+                            os.environ.get('GMAIL_CLIENT_SECRET', ''))
             creds = Credentials(
                 token=None,
                 refresh_token=gbp_refresh_token,
-                client_id=self.config.GOOGLE_ADS_CLIENT_ID,
-                client_secret=self.config.GOOGLE_ADS_CLIENT_SECRET,
+                client_id=client_id,
+                client_secret=client_secret,
                 token_uri="https://oauth2.googleapis.com/token",
                 scopes=["https://www.googleapis.com/auth/business.manage"],
             )
@@ -184,16 +191,27 @@ class GBPClient:
 
     async def get_profile(self) -> dict:
         """Полные данные профиля GBP для аналитики заполненности."""
-        MYBUSINESS_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
-        location_url = f"{MYBUSINESS_BASE}/{LOCATION_NAME}"
+        # mybusinessbusinessinformation API v1 — основные данные
+        # Endpoint: /v1/locations/{locationId}
+        MBIZ_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+        # location_name формат: accounts/X/locations/Y
+        # для v1 API нужен просто locations/Y
+        loc_id = LOCATION_NAME.split("/locations/")[-1]
+        location_url = f"{MBIZ_BASE}/locations/{loc_id}"
         read_mask = (
             "name,title,phoneNumbers,categories,storefrontAddress,"
-            "websiteUri,regularHours,profile,serviceArea,metadata"
+            "websiteUri,regularHours,profile,serviceArea,metadata,latlng"
         )
         location_data = await self._get(location_url, {"readMask": read_mask})
+        log.info(f"GBP profile response keys: {list(location_data.keys())}")
+
+        # Фото через v4 API (рабочий endpoint)
         media_url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/media"
         media_data = await self._get(media_url, {"pageSize": 100})
-        services_url = f"{MYBUSINESS_BASE}/{LOCATION_NAME}/services"
+
+        # Услуги через v1 API
+        # services endpoint
+        services_url = f"{MBIZ_BASE}/locations/{loc_id}/serviceList"
         services_data = await self._get(services_url, {})
 
         missing = []
@@ -237,7 +255,11 @@ class GBPClient:
         check(len(media_items) >= 5, f"5+ фото (сейчас {len(media_items)})", 2)
         check(len(media_items) >= 10, f"10+ фото (сейчас {len(media_items)})", 1)
 
-        service_items = services_data.get("serviceItems", []) if "error" not in services_data else []
+        # Услуги берём из serviceTypes основной категории
+        service_types = (location_data.get("categories", {})
+                        .get("primaryCategory", {})
+                        .get("serviceTypes", []))
+        service_items = service_types
         check(len(service_items) >= 3, f"3+ услуги (сейчас {len(service_items)})", 3)
 
         completion_pct = round(score / total * 100) if total > 0 else 0
@@ -257,11 +279,7 @@ class GBPClient:
             "photos_total": len(media_items),
             "photos_by_category": photos_by_cat,
             "services_count": len(service_items),
-            "services": [
-                (s.get("structuredServiceItem", {}).get("serviceTypeId") or
-                 s.get("freeFormServiceItem", {}).get("label", {}).get("displayName", ""))
-                for s in service_items[:20]
-            ],
+            "services": [s.get("displayName", s.get("serviceTypeId", "")) for s in service_items[:20]],
             "completion_pct": completion_pct,
             "missing": missing,
             "score": score,
@@ -270,8 +288,7 @@ class GBPClient:
                 k: v.get("error") for k, v in {
                     "location": location_data,
                     "media": media_data,
-                    "services": services_data,
-                }.items() if "error" in v
+                }.items() if isinstance(v, dict) and "error" in v
             }
         }
 
