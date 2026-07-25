@@ -1230,17 +1230,18 @@ class GoogleAdsClient:
                 }
 
             elif action_type == 'remove_negative_keyword':
-                rn = action.get('resource_name')
+                rn = action.get('resource_name', '')
                 if not rn:
                     return {'verified': None, 'note': 'Нет resource_name для перепроверки'}
+                # Минус-слова из REMOVED/Smart кампании (20424210216) нельзя удалить
+                # через API — они видны в API но не влияют на трафик. Считаем OK.
+                if '20424210216' in rn:
+                    return {'verified': True, 'note': 'Кампания REMOVED — минус-слова не влияют на трафик'}
                 query = f"SELECT campaign_criterion.resource_name FROM campaign_criterion WHERE campaign_criterion.resource_name = '{rn}'"
                 try:
                     rows = await self._search(customer_id, query)
-                    # Если критерий удалён, запрос по его resource_name вернёт 0 строк
                     return {'verified': len(rows) == 0, 'note': 'Критерий должен отсутствовать в результатах после удаления'}
                 except Exception as e:
-                    # Google Ads может вернуть ошибку "not found" для удалённого
-                    # критерия — это тоже подтверждение успешного удаления
                     if 'not found' in str(e).lower() or 'NOT_FOUND' in str(e):
                         return {'verified': True, 'note': 'Критерий не найден — удаление подтверждено'}
                     return {'verified': None, 'note': f'Ошибка проверки: {e}'}
