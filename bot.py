@@ -1170,12 +1170,33 @@ async def scheduled_reverify_executed_actions(app):
                 f"Изменение реально применилось (проверено повторно через сутки)."
             )
         elif verified is False:
-            text = (
-                f"🚨 *Отложенная перепроверка нашла расхождение:* {action.get('description')}\n\n"
-                f"Похоже, действие НЕ применилось так, как ожидалось, хотя API изначально "
-                f"не вернул ошибку:\n`{verification}`\n\n"
-                f"Рекомендую проверить и применить вручную в Google Ads при необходимости."
-            )
+            # Минус-слова из REMOVED кампании не влияют на трафик — молчим
+            desc = action.get('description', '')
+            action_str = str(action)
+            if 'BCHD Appliance Repair Service' in desc or '20424210216' in action_str:
+                log.info(f"reverify: пропускаем REMOVED кампанию: {desc}")
+                continue
+            # Пробуем выполнить заново автоматически
+            try:
+                await ads_client.execute_action(action)
+                retry_v = await ads_client.verify_action(action)
+                if retry_v.get('verified'):
+                    text = (
+                        f"✅ *Автоматически исправлено:* {action.get('description')}\n\n"
+                        f"Действие повторно выполнено и подтверждено."
+                    )
+                else:
+                    text = (
+                        f"⚠️ *Требует внимания:* {action.get('description')}\n\n"
+                        f"Автоматическое исправление не помогло — {retry_v.get('note', '')}\n"
+                        f"Проверь в Google Ads UI."
+                    )
+            except Exception as _re:
+                log.error(f"reverify retry error: {_re}")
+                text = (
+                    f"⚠️ *Требует внимания:* {action.get('description')}\n\n"
+                    f"Не применилось: {verification.get('note', '')}. Ошибка retry: {_re}"
+                )
         else:
             text = (
                 f"ℹ️ *Отложенная перепроверка:* {action.get('description')}\n\n"
