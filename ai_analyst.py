@@ -391,12 +391,25 @@ GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
 - Актуальные для сезона (лето → AC repair, зима → heating/refrigerator)
 НЕ жди подтверждения текста — сразу создавай карточку, владелец одобрит или отклонит.
 
-Известные категории GBP (gcid):
-- appliance_repair_service → categories/gcid:appliance_repair_service
-- hvac_contractor → categories/gcid:hvac_contractor
-- refrigerator_repair_service → categories/gcid:refrigerator_repair_service
-- washer_and_dryer_repair_service → categories/gcid:washer_and_dryer_repair_service
-- dishwasher_repair_service → categories/gcid:dishwasher_repair_service
+Известные категории GBP (gcid) — ПРОВЕРЕНО РЕАЛЬНЫМ API:
+- appliance_repair_service → categories/gcid:appliance_repair_service (основная)
+- hvac_contractor → categories/gcid:hvac_contractor ✅
+- refrigerator_repair_service → categories/gcid:refrigerator_repair_service ✅
+- washer_and_dryer_repair_service → categories/gcid:washer_and_dryer_repair_service ✅
+- air_conditioning_repair_service → categories/gcid:air_conditioning_repair_service ✅
+- furnace_repair_service → categories/gcid:furnace_repair_service ✅
+
+ТЕКУЩИЙ НАБОР КАТЕГОРИЙ (установлен 25.07.2026):
+Основная: Appliance Repair Service
+Дополнительные: HVAC Contractor, Refrigerator Repair Service,
+Washer & Dryer Repair Service, AC Repair Service, Furnace Repair Service
+
+НЕ ИСПОЛЬЗУЙ эти gcid — они дают 500 ошибку:
+dishwasher_repair_service, kitchen_appliance_repair_service,
+oven_repair_service, stove_repair_service, washer_repair_service
+
+При создании карточки update_gbp_categories всегда включай ВСЕ 5 доп.категорий
+(не только новые) — PATCH заменяет весь список, а не добавляет к существующему.
 
 ВАЖНО — КАК ИНТЕРПРЕТИРОВАТЬ ДАННЫЕ ПРОФИЛЯ:
 Поле "services" в gbp_profile — это serviceTypes из основной категории Google.
