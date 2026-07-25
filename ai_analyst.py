@@ -371,20 +371,32 @@ GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
 ВАЖНО: НЕ говори что у тебя нет доступа к GBP или что отвечать нужно вручную.
 Доступ есть, API настроен. Просто используй data_needed=["gbp_reviews"].
 
-АНАЛИТИКА ПРОФИЛЯ GBP:
-Когда владелец спрашивает про профиль, заполненность, категории, фото, услуги —
-используй data_needed=["gbp_profile"]. В context_data придут данные:
-- completion_pct: процент заполненности (0-100)
-- missing: список чего не хватает
-- primary_category, additional_categories: текущие категории
-- description, description_length: описание и его длина
-- photos_total, photos_by_category: количество фото
-- services_count, services: список услуг
-- has_hours: есть ли часы работы
+АНАЛИТИКА И УПРАВЛЕНИЕ ПРОФИЛЕМ GBP:
+Когда владелец спрашивает про профиль — используй data_needed=["gbp_profile"].
+На основе данных СРАЗУ создавай карточки на конкретные улучшения:
+- Если описание короче 400 символов или пустое → карточка update_gbp_description
+  с готовым текстом на английском
+- Если не хватает категорий (Refrigerator Repair Service, Washer & Dryer Repair
+  Service, Dishwasher Repair Service) → карточка update_gbp_categories
+- НЕ говори "сделай вручную" для описания и категорий — ты умеешь это сам через API
 
-На основе этих данных дай КОНКРЕТНЫЕ рекомендации что именно добавить/улучшить.
-НЕ выдавай общий чеклист — только то что реально отсутствует по данным API.
-Для каждой missing позиции объясни как это влияет на ранжирование в Google Maps.
+ПОСТЫ В GBP:
+Когда владелец просит написать пост, опубликовать новость, анонс акции —
+используй data_needed=["gbp_posts"] чтобы увидеть последние посты, и создавай
+карточку create_gbp_post с готовым текстом поста на английском.
+Посты должны быть:
+- О конкретной услуге BCHD (холодильники, стиральные машины, HVAC и т.д.)
+- С призывом к действию: "Call (917) 935-4553" или "Book online at bchdcompany.com"
+- 150-300 слов, профессиональный тон
+- Актуальные для сезона (лето → AC repair, зима → heating/refrigerator)
+НЕ жди подтверждения текста — сразу создавай карточку, владелец одобрит или отклонит.
+
+Известные категории GBP (gcid):
+- appliance_repair_service → categories/gcid:appliance_repair_service
+- hvac_contractor → categories/gcid:hvac_contractor
+- refrigerator_repair_service → categories/gcid:refrigerator_repair_service
+- washer_and_dryer_repair_service → categories/gcid:washer_and_dryer_repair_service
+- dishwasher_repair_service → categories/gcid:dishwasher_repair_service
 """
 
     async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
@@ -861,6 +873,8 @@ summary типа "Все ключи показывают CTR выше порог
    - gbp_reviews (отзывы GBP — "ответь на отзывы", "проверь отзывы" и т.п.)
    - gbp_profile (профиль GBP — "аналитика профиля", "что заполнить в профиле",
      "категории", "фото профиля", "улучши GBP", "бизнес профиль" и т.п.)
+   - gbp_posts (последние посты GBP — "когда последний пост", "что публиковали",
+     "напиши пост", "опубликуй новость" и т.п.)
    Если action_type="audit_lsa_calls" — верни пустой список [] (данные
    соберутся отдельно). Если вопрос общий и данные не нужны — тоже верни
    пустой список [].
