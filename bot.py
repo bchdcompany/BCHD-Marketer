@@ -2890,6 +2890,72 @@ def _build_keyword_actions(analysis: dict, account: str) -> list:
 # ── Расписание ───────────────────────────────────────────
 
 
+async def scheduled_gbp_weekly_post(app):
+    """
+    Каждую среду в 10:00 — генерирует сезонный пост для GBP и присылает
+    карточку на одобрение. Владелец одобряет → пост публикуется автоматически.
+    """
+    _inst = globals().get("gbp_client_inst")
+    if not _gbp_available or not _inst:
+        return
+    log.info("Генерация еженедельного GBP поста")
+    try:
+        # Получаем последние посты чтобы не повторяться
+        posts = await _inst.get_posts(page_size=3)
+        last_posts = posts.get("posts", [])
+        last_topics = [p.get("text", "")[:50] for p in last_posts]
+
+        today = datetime.now(NY_TZ)
+        month = today.month
+
+        # Сезонная тема
+        if month in [6, 7, 8]:
+            theme = "AC / refrigerator repair (summer peak season)"
+            hint = "Focus on same-day AC repair, fridge not cooling, ice maker issues"
+        elif month in [9, 10, 11]:
+            theme = "oven, stove, dishwasher repair (pre-holiday season)"
+            hint = "Focus on getting appliances ready before holidays"
+        elif month in [12, 1, 2]:
+            theme = "heating, washer/dryer, refrigerator (winter)"
+            hint = "Focus on heating systems, winter appliance issues"
+        else:
+            theme = "general appliance repair (spring)"
+            hint = "Focus on spring cleaning, washer/dryer tune-up"
+
+        context_data = {
+            "_period": {"date_from": "", "date_to": ""},
+            "gbp_posts": posts,
+            "current_season": theme,
+            "posting_hint": hint,
+            "last_post_topics": last_topics,
+        }
+
+        question = (
+            f"Напиши новый пост для Google Business Profile на тему: {theme}. "
+            f"Подсказка: {hint}. "
+            f"Последние посты были про: {last_topics}. "
+            f"НЕ повторяй те же темы. "
+            f"Пост должен быть на английском, 150-250 слов, "
+            f"с призывом позвонить (917) 935-4553 или зайти на bchdcompany.com. "
+            f"Создай карточку create_gbp_post."
+        )
+
+        result = await ai_analyst.chat_action(question, context_data, "create_gbp_post")
+        reply = result.get("reply", "")
+        if reply:
+            await _safe_send(app.bot, config.OWNER_CHAT_ID,
+                f"📝 *Еженедельный пост GBP*\n\n{reply}", parse_mode="Markdown")
+
+        for action in result.get("proposed_actions", []):
+            if action.get("type") == "create_gbp_post":
+                action.setdefault("requires_approval", True)
+                action_id = await pending.add(action)
+                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+
+    except Exception as e:
+        log.error(f"Ошибка еженедельного GBP поста: {e}")
+
+
 async def scheduled_gbp_profile_check(app):
     """
     Еженедельная проверка профиля GBP — каждый понедельник в 09:45.
@@ -3412,6 +3478,8 @@ def main():
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
         scheduler.add_job(scheduled_gbp_profile_check, "cron",
                           day_of_week="mon", hour=9, minute=45, args=[app])
+        scheduler.add_job(scheduled_gbp_weekly_post, "cron",
+                          day_of_week="wed", hour=10, minute=0, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
