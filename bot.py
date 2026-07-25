@@ -2864,6 +2864,53 @@ def _build_keyword_actions(analysis: dict, account: str) -> list:
 # ── Расписание ───────────────────────────────────────────
 
 
+async def scheduled_gbp_profile_check(app):
+    """
+    Еженедельная проверка профиля GBP — каждый понедельник в 09:45.
+    Анализирует заполненность, категории, посты и создаёт карточки на улучшения.
+    """
+    _inst = globals().get("gbp_client_inst")
+    if not _gbp_available or not _inst:
+        return
+    log.info("Мониторинг профиля GBP")
+    try:
+        profile = await _inst.get_profile()
+        posts = await _inst.get_posts(page_size=3)
+        reviews = await _inst.get_unanswered_reviews(days=7)
+
+        context_data = {
+            "_period": {"date_from": "", "date_to": ""},
+            "gbp_profile": profile,
+            "gbp_posts": posts,
+            "gbp_reviews": reviews,
+        }
+
+        question = (
+            "Проанализируй данные Google Business Profile. "
+            "Проверь категории, описание, посты, отзывы без ответа. "
+            "Создай карточки на все улучшения которые можно сделать через API: "
+            "добавить категории, обновить описание, опубликовать пост, ответить на отзывы. "
+            "Не создавай карточки на фото и логотип — только текстовое напоминание."
+        )
+
+        result = await ai_analyst.chat_action(question, context_data, "action")
+        reply = result.get("reply", "")
+        if reply:
+            header = f"📍 *Еженедельный мониторинг GBP*\n\n"
+            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+
+        for action in result.get("proposed_actions", []):
+            try:
+                action.setdefault("requires_approval", True)
+                action_id = await pending.add(action)
+                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            except Exception as e:
+                log.error(f"GBP profile card error: {e}")
+
+    except Exception as e:
+        log.error(f"Ошибка мониторинга профиля GBP: {e}")
+
+
 async def scheduled_gbp_reviews(app):
     """Ежедневная проверка отзывов GBP в 09:30."""
     _inst = globals().get("gbp_client_inst")
@@ -3335,6 +3382,8 @@ def main():
     scheduler.add_job(scheduled_weekly_strategy, "cron", day_of_week="mon", hour=8, minute=45, args=[app])
     if _gbp_available and globals().get("gbp_client_inst"):
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
+        scheduler.add_job(scheduled_gbp_profile_check, "cron",
+                          day_of_week="mon", hour=9, minute=45, args=[app])
     scheduler.start()
 
     log.info("BCHD Marketer Agent v5 запущен (история команд включена)")
