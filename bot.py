@@ -1941,6 +1941,15 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     context_data["gbp_profile"] = {"error": "GBP не настроен"}
             except Exception as e:
                 log.warning(f"Ошибка сбора gbp_profile: {e}")
+        if "gbp_posts" in data_needed:
+            try:
+                _gbp_inst = globals().get("gbp_client_inst")
+                if _gbp_inst:
+                    context_data["gbp_posts"] = await _gbp_inst.get_posts(page_size=5)
+                else:
+                    context_data["gbp_posts"] = {"error": "GBP не настроен", "posts": []}
+            except Exception as e:
+                log.warning(f"Ошибка сбора gbp_posts: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
@@ -2311,15 +2320,32 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 log.warning(f"Одобрена устаревшая карточка {param}: {action.get('description')}")
             await _safe_edit(query, f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
             # Специальная обработка GBP действий
-            if action.get("type") == "reply_to_review":
+            _gbp_action_types = ("reply_to_review", "update_gbp_description",
+                                  "update_gbp_categories", "create_gbp_post")
+            if action.get("type") in _gbp_action_types:
                 try:
                     _gbp_inst = globals().get("gbp_client_inst")
                     if not _gbp_inst:
                         await _safe_edit(query, "GBP API не настроен")
                         return
-                    result = await _gbp_inst.reply_to_review(
-                        action["review_name"], action["reply_text"]
-                    )
+                    atype = action.get("type")
+                    if atype == "reply_to_review":
+                        result = await _gbp_inst.reply_to_review(
+                            action["review_name"], action["reply_text"]
+                        )
+                    elif atype == "update_gbp_description":
+                        result = await _gbp_inst.update_description(action["description_text"])
+                    elif atype == "update_gbp_categories":
+                        result = await _gbp_inst.update_categories(
+                            action.get("primary_category_id", ""),
+                            action.get("additional_category_ids", [])
+                        )
+                    elif atype == "create_gbp_post":
+                        result = await _gbp_inst.create_post(
+                            action["post_text"], action.get("topic_type", "STANDARD")
+                        )
+                    else:
+                        result = {"success": False, "error": "Неизвестный тип"}
                     if result.get("success"):
                         await _safe_edit(query,
                             "Ответ опубликован: " + action.get("description", "") + "\n\n" +
