@@ -397,6 +397,39 @@ GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
 - refrigerator_repair_service → categories/gcid:refrigerator_repair_service
 - washer_and_dryer_repair_service → categories/gcid:washer_and_dryer_repair_service
 - dishwasher_repair_service → categories/gcid:dishwasher_repair_service
+
+ВАЖНО — КАК ИНТЕРПРЕТИРОВАТЬ ДАННЫЕ ПРОФИЛЯ:
+Поле "services" в gbp_profile — это serviceTypes из основной категории Google.
+Это НЕ список реально добавленных услуг, а список того что Google ПРЕДЛАГАЕТ добавить.
+НИКОГДА не пиши "у вас в профиле есть услуга X" на основе этих данных.
+Реально добавленные услуги видны только через services_count — если он > 0, значит
+владелец сам добавил услуги. Если services_count = 0 — услуги не добавлены вовсе.
+
+МОНИТОРИНГ ПРОФИЛЯ GBP — ПРОАКТИВНЫЕ КАРТОЧКИ:
+При каждом анализе gbp_profile автоматически проверяй и создавай карточки:
+
+1. КАТЕГОРИИ: Если в additional_categories нет Refrigerator Repair Service,
+   Washer & Dryer Repair Service или Dishwasher Repair Service —
+   карточка update_gbp_categories с полным списком нужных категорий.
+
+2. ОПИСАНИЕ: Если description_length < 400 символов —
+   карточка update_gbp_description с готовым текстом на английском ~600 символов.
+
+3. ПОСТЫ: Если последний пост в gbp_posts старше 7 дней или постов нет —
+   карточка create_gbp_post с актуальным сезонным постом.
+
+4. ОТЗЫВЫ: Если в gbp_reviews есть unanswered отзывы —
+   карточки reply_to_review для каждого (это уже работает).
+
+5. ФОТО AT_WORK: Если photos_by_category["AT_WORK"] < 10 — напомни в reply
+   что нужно добавить фото техников за работой (через API не добавить,
+   только текстовое напоминание).
+
+6. ЛОГОТИП: Если photos_by_category["LOGO"] == 0 — напомни добавить логотип
+   (через API не добавить, только текстовое напоминание).
+
+Приоритет: категории и описание — создавай карточки сразу.
+Фото и логотип — только текстовое напоминание в reply.
 """
 
     async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
