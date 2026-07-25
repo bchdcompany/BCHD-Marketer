@@ -377,6 +377,83 @@ class GBPClient:
             "total": len(posts),
         }
 
+
+    async def get_insights(self, days: int = 28) -> dict:
+        """
+        Метрики профиля GBP за последние N дней:
+        просмотры в картах/поиске, клики на сайт, звонки, маршруты.
+        Использует Business Profile Performance API v1.
+        """
+        from datetime import datetime, timedelta
+        end = datetime.now(NY_TZ)
+        start = end - timedelta(days=days)
+
+        token = await self._get_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        loc_id = LOCATION_NAME.split("/locations/")[-1]
+        url = f"https://businessprofileperformance.googleapis.com/v1/locations/{loc_id}:fetchMultiDailyMetricsTimeSeries"
+        params = {
+            "dailyMetrics": [
+                "CALL_CLICKS",
+                "WEBSITE_CLICKS",
+                "BUSINESS_DIRECTION_REQUESTS",
+                "BUSINESS_IMPRESSIONS_DESKTOP_MAPS",
+                "BUSINESS_IMPRESSIONS_MOBILE_MAPS",
+                "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH",
+                "BUSINESS_IMPRESSIONS_MOBILE_SEARCH",
+            ],
+            "dailyRange.startDate.year": start.year,
+            "dailyRange.startDate.month": start.month,
+            "dailyRange.startDate.day": start.day,
+            "dailyRange.endDate.year": end.year,
+            "dailyRange.endDate.month": end.month,
+            "dailyRange.endDate.day": end.day,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    return {"error": f"{resp.status_code}: {resp.text[:200]}"}
+                data = resp.json()
+        except Exception as e:
+            log.error(f"GBP insights error: {e}")
+            return {"error": str(e)}
+
+        # Агрегируем по метрикам
+        totals = {}
+        series = {}
+        for item in data.get("multiDailyMetricTimeSeries", []):
+            for ts in item.get("dailyMetricTimeSeries", []):
+                metric = ts.get("dailyMetric", "")
+                values = ts.get("timeSeries", {}).get("datedValues", [])
+                total = sum(int(v.get("value", 0)) for v in values if v.get("value"))
+                totals[metric] = total
+                series[metric] = [
+                    {"date": f"{v['date']['year']}-{v['date']['month']:02d}-{v['date']['day']:02d}",
+                     "value": int(v.get("value", 0))}
+                    for v in values
+                ]
+
+        # Считаем суммарные просмотры
+        views_maps = totals.get("BUSINESS_IMPRESSIONS_DESKTOP_MAPS", 0) + totals.get("BUSINESS_IMPRESSIONS_MOBILE_MAPS", 0)
+        views_search = totals.get("BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", 0) + totals.get("BUSINESS_IMPRESSIONS_MOBILE_SEARCH", 0)
+
+        return {
+            "days": days,
+            "date_from": start.strftime("%Y-%m-%d"),
+            "date_to": end.strftime("%Y-%m-%d"),
+            "totals": {
+                "views_maps": views_maps,
+                "views_search": views_search,
+                "views_total": views_maps + views_search,
+                "call_clicks": totals.get("CALL_CLICKS", 0),
+                "website_clicks": totals.get("WEBSITE_CLICKS", 0),
+                "direction_requests": totals.get("BUSINESS_DIRECTION_REQUESTS", 0),
+            },
+            "series": series,
+        }
+
     async def delete_reply(self, review_name: str) -> dict:
         """Удаляет ответ на отзыв."""
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
