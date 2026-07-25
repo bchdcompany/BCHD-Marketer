@@ -1196,6 +1196,23 @@ async def scheduled_weekly_roas(app):
         date_to = datetime.now(NY_TZ).strftime("%Y-%m-%d")
         date_from = (datetime.now(NY_TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
         text = await _build_roas_report(date_from, date_to)
+        # Добавляем метрики GBP если доступны
+        _gbp_inst = globals().get("gbp_client_inst")
+        if _gbp_available and _gbp_inst:
+            try:
+                ins = await _gbp_inst.get_insights(days=7)
+                t = ins.get("totals", {})
+                if not ins.get("error"):
+                    text += (
+                        f"\n\n📍 *Google Business Profile (7 дней):*\n"
+                        f"• Просмотры: {t.get('views_total', 0)} "
+                        f"(карты: {t.get('views_maps', 0)}, поиск: {t.get('views_search', 0)})\n"
+                        f"• Звонки из профиля: {t.get('call_clicks', 0)}\n"
+                        f"• Клики на сайт: {t.get('website_clicks', 0)}\n"
+                        f"• Запросы маршрута: {t.get('direction_requests', 0)}"
+                    )
+            except Exception as e:
+                log.warning(f"GBP insights в ROAS: {e}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка еженедельного ROAS: {e}")
@@ -1950,6 +1967,15 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     context_data["gbp_posts"] = {"error": "GBP не настроен", "posts": []}
             except Exception as e:
                 log.warning(f"Ошибка сбора gbp_posts: {e}")
+        if "gbp_insights" in data_needed:
+            try:
+                _gbp_inst = globals().get("gbp_client_inst")
+                if _gbp_inst:
+                    context_data["gbp_insights"] = await _gbp_inst.get_insights(days=28)
+                else:
+                    context_data["gbp_insights"] = {"error": "GBP не настроен"}
+            except Exception as e:
+                log.warning(f"Ошибка сбора gbp_insights: {e}")
         if "seasonal" in data_needed:
             context_data["season"] = ads_client.get_current_season_recommendations()
             context_data.setdefault("budgets", {})
@@ -2877,12 +2903,14 @@ async def scheduled_gbp_profile_check(app):
         profile = await _inst.get_profile()
         posts = await _inst.get_posts(page_size=3)
         reviews = await _inst.get_unanswered_reviews(days=7)
+        insights = await _inst.get_insights(days=28)
 
         context_data = {
             "_period": {"date_from": "", "date_to": ""},
             "gbp_profile": profile,
             "gbp_posts": posts,
             "gbp_reviews": reviews,
+            "gbp_insights": insights,
         }
 
         question = (
