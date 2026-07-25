@@ -182,6 +182,99 @@ class GBPClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def get_profile(self) -> dict:
+        """Полные данные профиля GBP для аналитики заполненности."""
+        MYBUSINESS_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+        location_url = f"{MYBUSINESS_BASE}/{LOCATION_NAME}"
+        read_mask = (
+            "name,title,phoneNumbers,categories,storefrontAddress,"
+            "websiteUri,regularHours,profile,serviceArea,metadata"
+        )
+        location_data = await self._get(location_url, {"readMask": read_mask})
+        media_url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/media"
+        media_data = await self._get(media_url, {"pageSize": 100})
+        services_url = f"{MYBUSINESS_BASE}/{LOCATION_NAME}/services"
+        services_data = await self._get(services_url, {})
+
+        missing = []
+        score = 0
+        total = 0
+
+        def check(cond, name, w=1):
+            nonlocal score, total
+            total += w
+            if cond:
+                score += w
+            else:
+                missing.append(name)
+
+        has_phone = bool(location_data.get("phoneNumbers", {}).get("primaryPhone"))
+        has_website = bool(location_data.get("websiteUri"))
+        description = location_data.get("profile", {}).get("description", "")
+        has_description = bool(description)
+        has_primary_cat = bool(location_data.get("categories", {}).get("primaryCategory"))
+        has_add_cats = len(location_data.get("categories", {}).get("additionalCategories", [])) > 0
+        has_hours = bool(location_data.get("regularHours", {}).get("periods"))
+        has_service_area = bool(location_data.get("serviceArea"))
+
+        check(has_phone, "Телефон", 2)
+        check(has_website, "Сайт", 2)
+        check(has_description, "Описание бизнеса", 3)
+        check(len(description) >= 400, f"Описание 400+ символов (сейчас {len(description)})", 2)
+        check(has_primary_cat, "Основная категория", 3)
+        check(has_add_cats, "Дополнительные категории", 2)
+        check(has_hours, "Часы работы", 2)
+        check(has_service_area, "Зона обслуживания", 1)
+
+        media_items = media_data.get("mediaItems", []) if "error" not in media_data else []
+        photos_by_cat = {}
+        for m in media_items:
+            cat = m.get("locationAssociation", {}).get("category", "ADDITIONAL")
+            photos_by_cat[cat] = photos_by_cat.get(cat, 0) + 1
+
+        check(photos_by_cat.get("LOGO", 0) > 0, "Логотип", 2)
+        check(photos_by_cat.get("COVER", 0) > 0, "Обложка", 2)
+        check(len(media_items) >= 5, f"5+ фото (сейчас {len(media_items)})", 2)
+        check(len(media_items) >= 10, f"10+ фото (сейчас {len(media_items)})", 1)
+
+        service_items = services_data.get("serviceItems", []) if "error" not in services_data else []
+        check(len(service_items) >= 3, f"3+ услуги (сейчас {len(service_items)})", 3)
+
+        completion_pct = round(score / total * 100) if total > 0 else 0
+        primary_cat = location_data.get("categories", {}).get("primaryCategory", {})
+        add_cats = location_data.get("categories", {}).get("additionalCategories", [])
+
+        return {
+            "location_name": LOCATION_NAME,
+            "title": location_data.get("title", ""),
+            "phone": location_data.get("phoneNumbers", {}).get("primaryPhone", ""),
+            "website": location_data.get("websiteUri", ""),
+            "description": description,
+            "description_length": len(description),
+            "primary_category": primary_cat.get("displayName", ""),
+            "additional_categories": [c.get("displayName", "") for c in add_cats],
+            "has_hours": has_hours,
+            "photos_total": len(media_items),
+            "photos_by_category": photos_by_cat,
+            "services_count": len(service_items),
+            "services": [
+                (s.get("structuredServiceItem", {}).get("serviceTypeId") or
+                 s.get("freeFormServiceItem", {}).get("label", {}).get("displayName", ""))
+                for s in service_items[:20]
+            ],
+            "completion_pct": completion_pct,
+            "missing": missing,
+            "score": score,
+            "total_points": total,
+            "errors": {
+                k: v.get("error") for k, v in {
+                    "location": location_data,
+                    "media": media_data,
+                    "services": services_data,
+                }.items() if "error" in v
+            }
+        }
+
     async def delete_reply(self, review_name: str) -> dict:
         """Удаляет ответ на отзыв."""
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
