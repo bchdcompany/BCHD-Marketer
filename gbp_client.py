@@ -292,6 +292,91 @@ class GBPClient:
             }
         }
 
+
+    async def _patch(self, url: str, data: dict, update_mask: str) -> dict:
+        """PATCH запрос для обновления данных профиля."""
+        token = await self._get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.patch(
+                    url, headers=headers, json=data,
+                    params={"updateMask": update_mask}
+                )
+                if resp.status_code in (200, 201):
+                    return resp.json() if resp.text else {"success": True}
+                return {"error": f"{resp.status_code}: {resp.text[:300]}"}
+        except Exception as e:
+            log.error(f"GBP PATCH {url}: {e}")
+            return {"error": str(e)}
+
+    async def update_description(self, description: str) -> dict:
+        """Обновляет описание бизнеса в GBP."""
+        MBIZ_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+        loc_id = LOCATION_NAME.split("/locations/")[-1]
+        url = f"{MBIZ_BASE}/locations/{loc_id}"
+        result = await self._patch(url, {"profile": {"description": description}}, "profile.description")
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "description": description}
+
+    async def update_categories(self, primary_category_id: str, additional_category_ids: list) -> dict:
+        """Обновляет категории бизнеса в GBP."""
+        MBIZ_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+        loc_id = LOCATION_NAME.split("/locations/")[-1]
+        url = f"{MBIZ_BASE}/locations/{loc_id}"
+        data = {
+            "categories": {
+                "primaryCategory": {"name": primary_category_id},
+                "additionalCategories": [{"name": cid} for cid in additional_category_ids]
+            }
+        }
+        result = await self._patch(url, data, "categories")
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "categories_updated": True}
+
+    async def create_post(self, text: str, topic_type: str = "STANDARD") -> dict:
+        """
+        Публикует пост в GBP (Google Business Profile Posts).
+        topic_type: STANDARD (обычный пост), EVENT (событие), OFFER (акция)
+        """
+        url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/localPosts"
+        data = {
+            "languageCode": "en-US",
+            "summary": text,
+            "topicType": topic_type,
+        }
+        result = await self._post(url, data)
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {
+            "success": True,
+            "post_name": result.get("name", ""),
+            "text": text[:100],
+        }
+
+    async def get_posts(self, page_size: int = 10) -> dict:
+        """Получает последние посты GBP."""
+        url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/localPosts"
+        result = await self._get(url, {"pageSize": page_size})
+        if "error" in result:
+            return {"error": result["error"], "posts": []}
+        posts = result.get("localPosts", [])
+        return {
+            "posts": [{
+                "name": p.get("name"),
+                "text": p.get("summary", "")[:200],
+                "state": p.get("state"),
+                "create_time": p.get("createTime"),
+                "topic_type": p.get("topicType"),
+            } for p in posts],
+            "total": len(posts),
+        }
+
     async def delete_reply(self, review_name: str) -> dict:
         """Удаляет ответ на отзыв."""
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
