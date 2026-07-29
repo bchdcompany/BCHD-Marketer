@@ -1205,17 +1205,13 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
 
 - update_ad_headlines (обновить заголовки RSA объявления — старое ставится на паузу,
   создаётся новое с новыми заголовками; используй когда QS низкий из-за нерелевантных
-  заголовков или владелец просит обновить тексты объявлений):
-  {"type": "update_ad_headlines", "account": "ads",
-   "resource_name": "customers/xxx/adGroupAds/adGroupId~adId",
-   "ad_group": "название группы объявлений",
-   "headlines": ["Заголовок 1 до 30 симв", "Заголовок 2", "Заголовок 3",
-                 "Заголовок 4", "Заголовок 5"],
-   "description": "Обновить заголовки RSA — [группа объявлений]",
-   "reasoning": "конкретная причина: QS X, ключ Y не совпадает с заголовком",
-   "urgency": "medium", "urgency_label": "Средняя", "confidence": "high"}
+  заголовков или владелец просит обновить тексты объявлений).
+  Поля: type="update_ad_headlines", account="ads",
+  resource_name — из context_data ad_performance (поле resource_name объявления),
+  ad_group — название группы объявлений,
+  headlines — список 3-15 заголовков, каждый не более 30 символов,
+  description, reasoning, urgency="medium", urgency_label="Средняя", confidence="high".
   ОБЯЗАТЕЛЬНО: минимум 3 заголовка, максимум 15, каждый не более 30 символов.
-  resource_name берёшь из context_data["ad_performance"] — поле resource_name объявления.
   НИКОГДА не пиши "недоступно через API" или "сделай вручную в Google Ads UI" для
   изменения заголовков — update_ad_headlines РЕАЛИЗОВАН и работает через API.
 
