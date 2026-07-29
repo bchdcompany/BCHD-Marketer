@@ -3168,6 +3168,162 @@ async def scheduled_weekly_strategy(app):
         log.error(f"Ошибка еженедельной стратегии: {e}")
 
 
+async def scheduled_campaign_audit(app):
+    """
+    Каждый понедельник в 09:55 — полный проактивный аудит кампании.
+    Агент сам анализирует ключи, минус-слова, QS, IS, объявления
+    и создаёт карточки на конкретные улучшения без запроса от владельца.
+    """
+    if not config.google_ads_configured:
+        return
+    log.info("Проактивный аудит кампании")
+    try:
+        today = datetime.now(NY_TZ)
+        date_from = today.replace(day=1).strftime("%Y-%m-%d")
+        date_to = today.strftime("%Y-%m-%d")
+
+        # Собираем все данные для полного аудита
+        context_data = {"_period": {"date_from": date_from, "date_to": date_to}}
+        context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
+            date_from=date_from, date_to=date_to
+        )
+        context_data["keywords"] = {
+            "ads": await ads_client.get_keywords_analysis(
+                account="ads", date_from=date_from, date_to=date_to
+            )
+        }
+        context_data["budgets"] = {"ads": await ads_client.get_budget_data(account="ads")}
+        context_data["negatives"] = {
+            "ads": await ads_client.get_negative_keywords_list(account="ads")
+        }
+        context_data["search_terms"] = {
+            "ads": await ads_client.get_search_terms(account="ads")
+        }
+        context_data["ad_performance"] = {
+            "ads": await ads_client.get_ad_performance(account="ads")
+        }
+
+        question = (
+            "Выполни ПОЛНЫЙ проактивный аудит рекламной кампании. "
+            "Проверь ВСЁ и создай карточки на конкретные улучшения:\n"
+            "1. Ключи с QS < 5 — предложи обновить заголовки объявлений (update_ad_headlines)\n"
+            "2. Ключи с 0 показов за 14+ дней — предложи поднять ставку или паузу\n"
+            "3. Ключи с CPA > $100 при 5+ кликах — предложи снизить ставку или паузу\n"
+            "4. Поисковые запросы нерелевантные — предложи добавить минус-слова\n"
+            "5. Impression Share < 40% — предложи увеличить ставки на топ-ключах\n"
+            "6. Объявления с CTR < 3% при 100+ показах — предложи обновить заголовки\n"
+            "7. Конфликты ключей с минус-словами активной кампании\n"
+            "Создавай карточки СРАЗУ — не спрашивай разрешения. "
+            "Максимум 8 карточек за раз, приоритизируй по влиянию на бизнес."
+        )
+
+        result = await ai_analyst.chat_action(question, context_data, "action")
+        reply = result.get("reply", "")
+
+        if reply:
+            header = f"🔍 *Еженедельный аудит кампании — {today.strftime('%d.%m.%Y')}*\n\n"
+            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+
+        proposed = result.get("proposed_actions", [])
+        log.info(f"scheduled_campaign_audit: {len(proposed)} карточек")
+
+        for action in proposed:
+            try:
+                action.setdefault("account", "ads")
+                action.setdefault("requires_approval", True)
+                action_id = await pending.add(action)
+                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            except Exception as e:
+                log.error(f"campaign_audit card error: {e}")
+
+    except Exception as e:
+        log.error(f"Ошибка scheduled_campaign_audit: {e}")
+
+
+async def scheduled_campaign_audit(app):
+    """
+    Каждый понедельник в 09:55 — полный проактивный аудит кампании:
+    ключи, QS, IS, объявления, минус-слова. Создаёт карточки без запроса.
+    """
+    if not config.google_ads_configured:
+        return
+    log.info("Проактивный аудит кампании")
+    try:
+        today = datetime.now(NY_TZ)
+        date_from = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+        date_to = today.strftime("%Y-%m-%d")
+
+        context_data = {"_period": {"date_from": date_from, "date_to": date_to}}
+        context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
+            date_from=date_from, date_to=date_to
+        )
+        context_data["keywords"] = {
+            "ads": await ads_client.get_keywords_analysis(
+                account="ads", date_from=date_from, date_to=date_to
+            )
+        }
+        context_data["negatives"] = {
+            "ads": await ads_client.get_negative_keywords_list(account="ads")
+        }
+        context_data["search_terms"] = {
+            "ads": await ads_client.get_search_terms(account="ads")
+        }
+        context_data["ad_performance"] = {
+            "ads": await ads_client.get_ad_performance(account="ads")
+        }
+        context_data["budgets"] = {
+            "ads": await ads_client.get_budget_data(account="ads")
+        }
+
+        question = (
+            f"Проактивный еженедельный аудит кампании BCHD Appliance Repair NYC "
+            f"за {date_from} — {date_to}.\n\n"
+            f"Проверь ВСЁ и создай карточки на конкретные улучшения:\n"
+            f"1. Ключи с QS < 5 — что мешает, как исправить (лендинг или заголовки)\n"
+            f"2. Ключи с 0 показов > 7 дней — ставка ниже порога или другая причина\n"
+            f"3. Минус-слова в активной кампании — нет ли конфликтов с нашими услугами\n"
+            f"4. Поисковые запросы — нет ли нерелевантных которые тратят бюджет\n"
+            f"5. Объявления — заголовки релевантны ключам группы\n"
+            f"6. IS < 40% — что конкретно мешает (ставка или QS)\n\n"
+            f"Для каждой найденной проблемы создай карточку. "
+            f"Не более 8 карточек за раз — выбирай самые приоритетные."
+        )
+
+        result = await ai_analyst.chat_action(question, context_data, "action")
+        reply = result.get("reply", "")
+
+        if reply:
+            header = f"🔍 *Еженедельный аудит кампании — {today.strftime('%d.%m.%Y')}*\n\n"
+            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+
+        proposed = result.get("proposed_actions", [])
+        if not proposed:
+            await _safe_send(
+                app.bot, config.OWNER_CHAT_ID,
+                "✅ Аудит завершён — критических проблем не найдено."
+            )
+            return
+
+        for action in proposed[:8]:
+            try:
+                action.setdefault("account", "ads")
+                action.setdefault("requires_approval", True)
+                if not _action_ids_verified(action, context_data):
+                    log.warning(f"campaign_audit: ID не верифицирован: {action}")
+                    continue
+                already, reason = _action_already_applied(action, context_data)
+                if already:
+                    log.info(f"campaign_audit: уже применено: {reason}")
+                    continue
+                action_id = await pending.add(action)
+                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            except Exception as e:
+                log.error(f"campaign_audit card error: {e}")
+
+    except Exception as e:
+        log.error(f"Ошибка проактивного аудита кампании: {e}")
+
+
 async def scheduled_morning_report(app):
     if not config.google_ads_configured:
         return
@@ -3485,6 +3641,7 @@ def main():
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
     scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="mon", hour=9,  minute=0,  args=[app])
+    scheduler.add_job(scheduled_campaign_audit,   "cron", day_of_week="mon", hour=9,  minute=55, args=[app])
     scheduler.add_job(scheduled_competitors_check,"cron", day_of_week="sun", hour=9,  minute=30, args=[app])
     scheduler.add_job(scheduled_ab_test_check,    "cron", day_of_week="wed", hour=10, minute=0,  args=[app])
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
@@ -3494,6 +3651,8 @@ def main():
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.add_job(scheduled_anomaly_check, "interval", hours=4, args=[app])
+    scheduler.add_job(scheduled_campaign_audit, "cron",
+                      day_of_week="mon", hour=9, minute=55, args=[app])
     scheduler.add_job(scheduled_weekly_strategy, "cron", day_of_week="mon", hour=8, minute=45, args=[app])
     if _gbp_available and globals().get("gbp_client_inst"):
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
