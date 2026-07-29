@@ -321,6 +321,11 @@ https://www.bchdcompany.com/washer
   ссылку на специализированную страницу — ты делаешь это сам через
   действие update_final_url, владельцу не нужно вручную заходить в
   Google Ads и менять URL
+- Обновлять заголовки RSA объявлений через действие update_ad_headlines —
+  старое объявление ставится на паузу, создаётся новое с новыми заголовками.
+  Это РЕАЛИЗОВАНО через API. НИКОГДА не говори "сделай вручную в Google Ads"
+  для изменения заголовков. Для этого нужны данные ad_performance (resource_name
+  объявления) — включай в data_needed когда вопрос касается текстов объявлений
 
 Механизм: ты предлагаешь конкретное действие с обоснованием, оно
 показывается владельцу как карточка с кнопками "✅ Применить" / "❌ Отклонить".
@@ -1198,10 +1203,27 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "reason": "..."}}], "description": "...", "reasoning": "...", "risks": "...",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 
+- update_ad_headlines (обновить заголовки RSA объявления — старое ставится на паузу,
+  создаётся новое с новыми заголовками; используй когда QS низкий из-за нерелевантных
+  заголовков или владелец просит обновить тексты объявлений):
+  {"type": "update_ad_headlines", "account": "ads",
+   "resource_name": "customers/xxx/adGroupAds/adGroupId~adId",
+   "ad_group": "название группы объявлений",
+   "headlines": ["Заголовок 1 до 30 симв", "Заголовок 2", "Заголовок 3",
+                 "Заголовок 4", "Заголовок 5"],
+   "description": "Обновить заголовки RSA — [группа объявлений]",
+   "reasoning": "конкретная причина: QS X, ключ Y не совпадает с заголовком",
+   "urgency": "medium", "urgency_label": "Средняя", "confidence": "high"}
+  ОБЯЗАТЕЛЬНО: минимум 3 заголовка, максимум 15, каждый не более 30 символов.
+  resource_name берёшь из context_data["ad_performance"] — поле resource_name объявления.
+  НИКОГДА не пиши "недоступно через API" или "сделай вручную в Google Ads UI" для
+  изменения заголовков — update_ad_headlines РЕАЛИЗОВАН и работает через API.
+
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead
+update_final_url, seasonal_adjustments, dispute_lsa_lead, update_ad_headlines,
+reply_to_review, update_gbp_description, update_gbp_categories, create_gbp_post
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
 ЖЁСТКИЙ ЗАПРЕТ — НИКОГДА НЕ ПРЕДЛАГАЙ ДЕЙСТВИЯ С REMOVED КАМПАНИЯМИ:
