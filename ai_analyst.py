@@ -1207,7 +1207,8 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
   создаётся новое с новыми заголовками; используй когда QS низкий из-за нерелевантных
   заголовков или владелец просит обновить тексты объявлений).
   Поля: type="update_ad_headlines", account="ads",
-  resource_name — из context_data ad_performance (поле resource_name объявления),
+  resource_name — из context_data ad_performance если есть, иначе оставь пустым "",
+  ad_id — числовой ID объявления из ad_performance (поле ad_id или id), ВСЕГДА передавай,
   ad_group — название группы объявлений,
   headlines — список 3-15 заголовков, каждый не более 30 символов,
   description, reasoning, urgency="medium", urgency_label="Средняя", confidence="high".
