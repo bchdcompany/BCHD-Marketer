@@ -1799,6 +1799,19 @@ class GoogleAdsClient:
             log.error(f"get_ads_for_group({ad_group_id}) error: {e}")
             return []
 
+    async def _get_ad_resource_name_by_id(self, ad_id: str, customer_id: str) -> str:
+        """Находит resource_name объявления по его ad_id."""
+        query = f"""
+            SELECT ad_group_ad.resource_name, ad_group_ad.ad.id
+            FROM ad_group_ad
+            WHERE ad_group_ad.ad.id = {ad_id}
+              AND ad_group_ad.status != 'REMOVED'
+        """
+        rows = await self._search(customer_id, query)
+        if not rows:
+            raise ValueError(f"Объявление с ad_id={ad_id} не найдено")
+        return rows[0].ad_group_ad.resource_name
+
     async def _update_ad_headlines(self, action: dict, customer_id: str = None) -> dict:
         """
         Обновляет заголовки RSA объявления.
@@ -1809,8 +1822,15 @@ class GoogleAdsClient:
             customer_id = self.customer_id
         rn = action.get("resource_name")
         new_headlines = action.get("headlines", [])
+
+        # Если resource_name не указан но есть ad_id — ищем сами
         if not rn:
-            raise ValueError("resource_name объявления не указан")
+            ad_id = action.get("ad_id") or action.get("ad_group_ad_id")
+            if ad_id:
+                log.info(f"resource_name не указан, ищем по ad_id={ad_id}")
+                rn = await self._get_ad_resource_name_by_id(str(ad_id), customer_id)
+            else:
+                raise ValueError("resource_name или ad_id объявления не указан")
         if not new_headlines:
             raise ValueError("Список заголовков (headlines) не указан")
         if len(new_headlines) > 15:
