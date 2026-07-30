@@ -1830,7 +1830,6 @@ class GoogleAdsClient:
                 ad_group.resource_name
             FROM ad_group_ad
             WHERE ad_group_ad.resource_name = '{rn}'
-              AND campaign.status != 'REMOVED'
         """
         rows = await self._search(customer_id, ad_query)
         if not rows:
@@ -1895,6 +1894,15 @@ class GoogleAdsClient:
                 )
             }
         except Exception as e:
+            error_str = str(e)
+            # Частая причина: resource_name указывает на PAUSED объявление
+            # В этом случае агент должен найти ENABLED объявление в группе
+            if 'INVALID_ARGUMENT' in error_str or 'invalid argument' in error_str.lower():
+                raise ValueError(
+                    f"Ошибка создания объявления: {error_str[:300]}. "
+                    f"Возможно resource_name указывает на объявление в неверном статусе. "
+                    f"Используй resource_name ENABLED объявления из свежих данных ad_performance."
+                )
             raise ValueError(f"Ошибка обновления заголовков: {e}")
 
 
