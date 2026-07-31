@@ -16,7 +16,6 @@ import os
 import re
 import logging
 import aiohttp
-from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -191,14 +190,16 @@ async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
 
     return {'found': len(matches) > 0, 'jobs': matches, 'total_jobs_scanned': result.get('total', 0)}
 
-
-async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
-    """Анализ джобов по часу создания — для dayparting."""
-    # Пагинация — собираем все джобы за период
+async def get_clients_with_email(limit: int = 2000) -> dict:
+    """
+    Получает список уникальных клиентов с email адресами из Workiz.
+    Используется для email рассылок через SendGrid.
+    Дедуплицирует по email — один клиент = одно письмо.
+    """
     all_jobs = []
     offset = 0
     while True:
-        params = {"start_date": date_from, "records": 100, "offset": offset}
+        params = {"records": 100, "offset": offset}
         result = await _get("job/all/", params)
         if "error" in result:
             break
@@ -207,65 +208,50 @@ async def get_jobs_by_hour(date_from: str, date_to: str) -> dict:
             jobs_page = jobs_page.get("data", [])
         if not jobs_page:
             break
-        for job in jobs_page:
-            created = (job.get("CreatedDate") or "")[:10]
-            if date_from <= created <= date_to:
-                all_jobs.append(job)
-        if len(jobs_page) < 100:
+        all_jobs.extend(jobs_page)
+        if len(jobs_page) < 100 or len(all_jobs) >= limit:
             break
         offset += 100
-        if offset > 1000:  # защита
+        if offset > 5000:
             break
 
-    by_hour = {h: {"hour": h, "jobs": 0, "revenue": 0.0, "label": f"{h:02d}:00", "pct": 0.0} for h in range(24)}
-
+    # Дедупликация по email
+    seen_emails = set()
+    clients = []
     for job in all_jobs:
-        dt_str = (job.get("CreatedDate") or job.get("JobDateTime") or "")
-        if not dt_str or len(dt_str) < 10:
-            continue
-        try:
-            dt_str_clean = dt_str.replace("T", " ")
-            if len(dt_str_clean) >= 19:
-                dt = datetime.strptime(dt_str_clean[:19], "%Y-%m-%d %H:%M:%S")
-            elif len(dt_str_clean) >= 16:
-                dt = datetime.strptime(dt_str_clean[:16], "%Y-%m-%d %H:%M")
-            else:
-                # Только дата без времени — пропускаем для hourly анализа
-                continue
-            hour = dt.hour
-            revenue = float(job.get("JobTotalPrice", 0) or 0)
-            by_hour[hour]["jobs"] += 1
-            by_hour[hour]["revenue"] += revenue
-        except Exception:
-            continue
+        email = (
+            job.get("Email") or
+            job.get("ClientEmail") or
+            job.get("client_email") or
+            job.get("CustomerEmail") or ""
+        ).strip().lower()
 
-    hours_list = list(by_hour.values())
-    total_jobs = sum(h["jobs"] for h in hours_list)
-    peak_hours = []
-    low_hours = []
-    if total_jobs > 0:
-        for h in hours_list:
-            pct = h["jobs"] / total_jobs * 100
-            h["pct"] = round(pct, 1)
-            if pct >= 5:
-                peak_hours.append(h["hour"])
-            elif pct < 1:
-                low_hours.append(h["hour"])
+        if not email or "@" not in email:
+            continue
+        if email in seen_emails:
+            continue
+        seen_emails.add(email)
 
-    groups = {
-        "night_0_7":     sum(by_hour[h]["jobs"] for h in range(0, 8)),
-        "morning_8_11":  sum(by_hour[h]["jobs"] for h in range(8, 12)),
-        "day_12_17":     sum(by_hour[h]["jobs"] for h in range(12, 18)),
-        "evening_18_23": sum(by_hour[h]["jobs"] for h in range(18, 24)),
-    }
+        first_name = (
+            job.get("FirstName") or
+            job.get("ClientFirstName") or
+            job.get("client_first_name") or ""
+        ).strip()
+        last_name = (
+            job.get("LastName") or
+            job.get("ClientLastName") or
+            job.get("client_last_name") or ""
+        ).strip()
+        full_name = f"{first_name} {last_name}".strip() or "Valued Customer"
+
+        clients.append({
+            "email": email,
+            "name": full_name,
+            "first_name": first_name or "there",
+        })
 
     return {
-        "by_hour": hours_list,
-        "total_jobs": total_jobs,
-        "peak_hours": peak_hours,
-        "low_hours": low_hours,
-        "groups": groups,
-        "date_from": date_from,
-        "date_to": date_to,
-        "recommended_off_hours": [h for h in low_hours if h < 7 or h > 21],
+        "clients": clients,
+        "total": len(clients),
+        "total_jobs_scanned": len(all_jobs),
     }
