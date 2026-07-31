@@ -1078,10 +1078,30 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "reason": "..."}}], "description": "...", "reasoning": "...", "risks": "...",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 
+- send_email_campaign (email рассылка по базе клиентов Workiz через SendGrid —
+  используй когда владелец просит рассылку, письмо клиентам, email маркетинг).
+  ВАЖНО: НЕ возвращай JSON в тексте reply — создавай КАРТОЧКУ через proposed_actions.
+  НИКОГДА не пиши в reply "если всё устраивает — создам карточку" или "хочешь изменить?" —
+  СРАЗУ создавай карточку, владелец одобрит или отклонит. Это стандартный механизм.
+  Поля действия:
+  type="send_email_campaign", account="email",
+  subject="тема письма",
+  headline="заголовок баннера до 40 символов",
+  subheadline="оффер до 50 символов",
+  body_text="текст письма на английском 2-3 абзаца",
+  offer="короткий оффер для баннера до 60 символов",
+  theme="название темы",
+  total_clients=0,
+  description="Email рассылка: [тема]",
+  reasoning="обоснование",
+  urgency="medium", urgency_label="Средняя", confidence="high"
+
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead
+update_final_url, seasonal_adjustments, dispute_lsa_lead, update_ad_headlines,
+reply_to_review, update_gbp_description, update_gbp_categories, create_gbp_post,
+send_email_campaign
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
 Верни ТОЛЬКО JSON:
