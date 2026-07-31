@@ -317,6 +317,77 @@ async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
 
 # ── Команды ──────────────────────────────────────────────
 
+async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /email <тема> — создаёт карточку email рассылки напрямую,
+    без участия ИИ. Система сама генерирует сезонный текст.
+    Пример: /email Летняя скидка $20 на ремонт AC
+    """
+    if not _is_owner(update):
+        return
+    if not _email_available:
+        await update.message.reply_text("❌ email_sender не установлен")
+        return
+
+    theme = " ".join(ctx.args) if ctx.args else ""
+    today = datetime.now(NY_TZ)
+    month = today.month
+
+    # Сезонные дефолты если тема не указана
+    if not theme:
+        if month in [6, 7, 8]:
+            theme = "Summer AC & Refrigerator Repair Special"
+        elif month in [9, 10, 11]:
+            theme = "Holiday Season Appliance Check"
+        elif month in [12, 1, 2]:
+            theme = "Winter Heating & Appliance Special"
+        else:
+            theme = "Spring Appliance Tune-Up"
+
+    # Получаем количество клиентов
+    msg = await update.message.reply_text(f"📧 Подготавливаю рассылку: {theme}...")
+    try:
+        clients_data = await workiz_client.get_clients_with_email()
+        total_clients = clients_data.get("total", 0)
+    except Exception as e:
+        total_clients = 0
+        log.warning(f"Не удалось получить клиентов: {e}")
+
+    action = {
+        "type": "send_email_campaign",
+        "account": "email",
+        "description": f"Email рассылка: {theme}",
+        "subject": f"BCHD: {theme}",
+        "headline": theme[:40],
+        "subheadline": "Same-day service in Brooklyn, Queens & Manhattan",
+        "body_text": (
+            f"We wanted to reach out with a special offer for our valued customers. "
+            f"BCHD Appliance Repair & HVAC provides fast, reliable repair services "
+            f"across Brooklyn, Queens, and Manhattan — same day when possible. "
+            f"Call us at (917) 935-4553 or book online at bchdcompany.com."
+        ),
+        "offer": "Same-day service • Licensed & Insured • 90-day warranty",
+        "theme": theme,
+        "total_clients": total_clients,
+        "reasoning": f"Рассылка по {total_clients} клиентам из Workiz. Тема: {theme}.",
+        "risks": "Проверь текст перед отправкой",
+        "urgency": "medium",
+        "urgency_label": "Средняя",
+        "confidence": "high",
+        "requires_approval": True,
+    }
+
+    await _safe_edit(msg, (
+        f"📧 *Email рассылка готова*\n\n"
+        f"*Тема:* {action['subject']}\n"
+        f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
+        f"Карточка одобрения ниже 👇"
+    ), parse_mode="Markdown")
+
+    action_id = await pending.add(action)
+    await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -3808,6 +3879,7 @@ def main():
     app.add_handler(CommandHandler("reviews", cmd_reviews))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
+    app.add_handler(CommandHandler("email", cmd_email))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
     app.add_error_handler(global_error_handler)
 
