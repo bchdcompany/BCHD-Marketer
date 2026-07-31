@@ -377,12 +377,39 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "requires_approval": True,
     }
 
-    await _safe_edit(msg, (
-        f"📧 *Email рассылка готова*\n\n"
-        f"*Тема:* {action['subject']}\n"
-        f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
-        f"Карточка одобрения ниже 👇"
-    ), parse_mode="Markdown")
+    # Генерируем баннер и отправляем превью
+    await _safe_edit(msg, "🎨 Генерирую баннер для превью...")
+    try:
+        from email_sender import generate_banner_base64, build_html_email
+        import io, base64
+        banner_b64 = generate_banner_base64(
+            action["headline"], action["subheadline"], action["offer"]
+        )
+        # Декодируем base64 обратно в байты для отправки в Telegram
+        banner_bytes = base64.b64decode(banner_b64)
+        banner_bio = io.BytesIO(banner_bytes)
+        banner_bio.name = "bchd_banner.png"
+        # Отправляем баннер как фото
+        await ctx.bot.send_photo(
+            chat_id=config.OWNER_CHAT_ID,
+            photo=banner_bio,
+            caption=(
+                f"📧 *Превью баннера для рассылки*\n\n"
+                f"*Тема:* {action['subject']}\n"
+                f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
+                f"Если баннер устраивает — одобри карточку ниже.\n"
+                f"Если нужно изменить — напиши что поправить."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        log.warning(f"Не удалось отправить превью баннера: {e}")
+        await _safe_edit(msg, (
+            f"📧 *Email рассылка готова*\n\n"
+            f"*Тема:* {action['subject']}\n"
+            f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
+            f"Карточка одобрения ниже 👇"
+        ), parse_mode="Markdown")
 
     action_id = await pending.add(action)
     await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
