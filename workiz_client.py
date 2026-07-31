@@ -190,36 +190,45 @@ async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
 
     return {'found': len(matches) > 0, 'jobs': matches, 'total_jobs_scanned': result.get('total', 0)}
 
-async def get_clients_with_email(limit: int = 5000) -> dict:
+async def get_clients_with_email(limit: int = 10000) -> dict:
     """
     Получает список уникальных клиентов с email адресами из Workiz.
-    Использует пагинацию чтобы получить всех клиентов.
+    Собирает джобы по всем валидным статусам с пагинацией.
     Дедуплицирует по email — один клиент = одно письмо.
     """
+    # Валидные статусы в Workiz API (проверено)
+    VALID_STATUSES = ["submitted", "in_progress", "done"]
     all_jobs = []
-    offset = 0
-    while True:
-        params = {"records": 100, "offset": offset}
-        result = await _get("job/all/", params)
-        if "error" in result:
-            log.error(f"Ошибка получения клиентов: {result['error']}")
-            break
-        data = result.get("data", [])
-        if isinstance(data, dict):
-            jobs_page = data.get("data", [])
-        else:
-            jobs_page = data
-        if not jobs_page:
-            break
-        all_jobs.extend(jobs_page)
-        log.info(f"get_clients_with_email: получено {len(all_jobs)} джобов (offset={offset})")
-        if len(jobs_page) < 100:
-            break
-        if len(all_jobs) >= limit:
-            break
-        offset += 100
-        if offset > 50000:
-            break
+
+    for status in VALID_STATUSES:
+        offset = 0
+        while True:
+            params = {"records": 100, "offset": offset, "status": status}
+            result = await _get("job/all/", params)
+            if result.get("error"):
+                break
+            data = result.get("data", [])
+            if isinstance(data, dict):
+                jobs_page = data.get("data", [])
+            else:
+                jobs_page = data
+            if not jobs_page:
+                break
+            all_jobs.extend(jobs_page)
+            log.info(f"get_clients: status={status} offset={offset} total={len(all_jobs)}")
+            if len(jobs_page) < 100:
+                break
+            offset += 100
+            if offset > 50000 or len(all_jobs) >= limit:
+                break
+
+    # Также берём без фильтра статуса (последние джобы)
+    result = await _get("job/all/", {"records": 100})
+    data = result.get("data", [])
+    if isinstance(data, dict):
+        data = data.get("data", [])
+    if isinstance(data, list):
+        all_jobs.extend(data)
 
     # Дедупликация по email
     seen_emails = set()
