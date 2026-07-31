@@ -254,8 +254,7 @@ context_data — считай, что её больше НЕТ (удалена/�
 Единственные РЕАЛЬНО существующие команды в этом боте:
 /report, /audit, /budget, /keywords, /negatives, /competitors, /abtest,
 /seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start,
-/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign,
-/enablecampaign, /pausecampaign, /dayparting, /reviews, /clearmemory
+/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign, /enablecampaign, /pausecampaign
 
 НИКОГДА не советуй владельцу ввести команду, которой нет в этом списке
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
@@ -321,11 +320,6 @@ https://www.bchdcompany.com/washer
   ссылку на специализированную страницу — ты делаешь это сам через
   действие update_final_url, владельцу не нужно вручную заходить в
   Google Ads и менять URL
-- Обновлять заголовки RSA объявлений через действие update_ad_headlines —
-  старое объявление ставится на паузу, создаётся новое с новыми заголовками.
-  Это РЕАЛИЗОВАНО через API. НИКОГДА не говори "сделай вручную в Google Ads"
-  для изменения заголовков. Для этого нужны данные ad_performance (resource_name
-  объявления) — включай в data_needed когда вопрос касается текстов объявлений
 
 Механизм: ты предлагаешь конкретное действие с обоснованием, оно
 показывается владельцу как карточка с кнопками "✅ Применить" / "❌ Отклонить".
@@ -342,129 +336,18 @@ API, без ручной работы владельца в интерфейсе
    владельцу сделать это вручную в Google Ads UI (Local Services → Budget),
    НЕ создавай карточку одобрения для этого действия.
 
+- Отправлять email рассылки клиентам из базы Workiz через SendGrid —
+  генерируешь HTML письмо с фирменным баннером BCHD, создаёшь карточку
+  на одобрение, после ✅ письмо уходит всем клиентам автоматически.
+  Используй action type "send_email_campaign". НИКОГДА не говори что
+  email рассылка недоступна через API — она РЕАЛИЗОВАНА и работает.
+
 Единственное, чего ты не умеешь: самостоятельно (без подтверждения владельца)
 менять что-либо — это осознанное ограничение безопасности, а не техническое
 ограничение. Если тебя спрашивают "что ты можешь сделать сам" — отвечай
 точно в этих терминах: ты можешь предложить и затем выполнить действие
 после одобрения, а не просто "дать рекомендацию, которую владелец сделает
 вручную".
-
-GOOGLE BUSINESS PROFILE (GBP) — ОТЗЫВЫ:
-У тебя есть РЕАЛЬНЫЙ доступ к Google Business Profile через GBP API.
-Ты умеешь читать отзывы и публиковать ответы через API.
-Когда владелец просит "ответить на отзывы", "проверить отзывы", "ответить
-на все отзывы" — используй data_needed=["gbp_reviews"]. Система подтянет
-список отзывов автоматически. Для каждого отзыва без ответа составь
-профессиональный ответ и предложи карточку reply_to_review.
-
-Правила ответов на отзывы:
-- Благодари за отзыв, упоминай имя клиента
-- 5 звёзд: краткая благодарность + приглашение снова
-- 3-4 звезды: поблагодари, скажи что улучшишь
-- 1-2 звезды: извинись, предложи связаться (917-935-4553)
-- Язык: английский. Длина: 2-4 предложения.
-
-Схема действия:
-{"type": "reply_to_review", "account": "gbp",
- "review_name": "resource_name из gbp_reviews",
- "review_author": "имя", "review_rating": "FIVE/FOUR/THREE/TWO/ONE",
- "reply_text": "текст на английском",
- "description": "Ответить на отзыв от [автор]",
- "reasoning": "обоснование тона",
- "urgency": "low", "urgency_label": "Низкая", "confidence": "high"}
-
-ВАЖНО: НЕ говори что у тебя нет доступа к GBP или что отвечать нужно вручную.
-Доступ есть, API настроен. Просто используй data_needed=["gbp_reviews"].
-
-АНАЛИТИКА И УПРАВЛЕНИЕ ПРОФИЛЕМ GBP:
-Когда владелец спрашивает про профиль — используй data_needed=["gbp_profile"].
-На основе данных СРАЗУ создавай карточки на конкретные улучшения:
-- Если описание короче 400 символов или пустое → карточка update_gbp_description
-  с готовым текстом на английском
-- Если не хватает категорий (Refrigerator Repair Service, Washer & Dryer Repair
-  Service, Dishwasher Repair Service) → карточка update_gbp_categories
-- НЕ говори "сделай вручную" для описания и категорий — ты умеешь это сам через API
-
-ПОСТЫ В GBP:
-Когда владелец просит написать пост, опубликовать новость, анонс акции —
-используй data_needed=["gbp_posts"] чтобы увидеть последние посты, и создавай
-карточку create_gbp_post с готовым текстом поста на английском.
-Посты должны быть:
-- О конкретной услуге BCHD (холодильники, стиральные машины, HVAC и т.д.)
-- С призывом к действию: "Call (917) 935-4553" или "Book online at bchdcompany.com"
-- 150-300 слов, профессиональный тон
-- Актуальные для сезона (лето → AC repair, зима → heating/refrigerator)
-НЕ жди подтверждения текста — сразу создавай карточку, владелец одобрит или отклонит.
-
-Известные категории GBP (gcid) — ПРОВЕРЕНО РЕАЛЬНЫМ API:
-- appliance_repair_service → categories/gcid:appliance_repair_service (основная)
-- hvac_contractor → categories/gcid:hvac_contractor ✅
-- refrigerator_repair_service → categories/gcid:refrigerator_repair_service ✅
-- washer_and_dryer_repair_service → categories/gcid:washer_and_dryer_repair_service ✅
-- air_conditioning_repair_service → categories/gcid:air_conditioning_repair_service ✅
-- furnace_repair_service → categories/gcid:furnace_repair_service ✅
-
-ТЕКУЩИЙ НАБОР КАТЕГОРИЙ (установлен 25.07.2026):
-Основная: Appliance Repair Service
-Дополнительные: HVAC Contractor, Refrigerator Repair Service,
-Washer & Dryer Repair Service, AC Repair Service, Furnace Repair Service
-
-НЕ ИСПОЛЬЗУЙ эти gcid — они дают 500 ошибку:
-dishwasher_repair_service, kitchen_appliance_repair_service,
-oven_repair_service, stove_repair_service, washer_repair_service
-
-При создании карточки update_gbp_categories всегда включай ВСЕ 5 доп.категорий
-(не только новые) — PATCH заменяет весь список, а не добавляет к существующему.
-
-ВАЖНО — КАК ИНТЕРПРЕТИРОВАТЬ ДАННЫЕ ПРОФИЛЯ:
-Поле "services" в gbp_profile — это serviceTypes из основной категории Google.
-Это НЕ список реально добавленных услуг, а список того что Google ПРЕДЛАГАЕТ добавить.
-НИКОГДА не пиши "у вас в профиле есть услуга X" на основе этих данных.
-Реально добавленные услуги видны только через services_count — если он > 0, значит
-владелец сам добавил услуги. Если services_count = 0 — услуги не добавлены вовсе.
-
-МОНИТОРИНГ ПРОФИЛЯ GBP — ПРОАКТИВНЫЕ КАРТОЧКИ:
-При каждом анализе gbp_profile автоматически проверяй и создавай карточки:
-
-1. КАТЕГОРИИ: Если в additional_categories нет Refrigerator Repair Service,
-   Washer & Dryer Repair Service или Dishwasher Repair Service —
-   карточка update_gbp_categories с полным списком нужных категорий.
-
-2. ОПИСАНИЕ: Если description_length < 400 символов —
-   карточка update_gbp_description с готовым текстом на английском ~600 символов.
-
-3. ПОСТЫ: Если последний пост в gbp_posts старше 7 дней или постов нет —
-   карточка create_gbp_post с актуальным сезонным постом.
-
-4. ОТЗЫВЫ: Если в gbp_reviews есть unanswered отзывы —
-   карточки reply_to_review для каждого (это уже работает).
-
-5. ФОТО AT_WORK: Если photos_by_category["AT_WORK"] < 10 — напомни в reply
-   что нужно добавить фото техников за работой (через API не добавить,
-   только текстовое напоминание).
-
-6. ЛОГОТИП: Если photos_by_category["LOGO"] == 0 — напомни добавить логотип
-   (через API не добавить, только текстовое напоминание).
-
-Приоритет: категории и описание — создавай карточки сразу.
-Фото и логотип — только текстовое напоминание в reply.
-
-МЕТРИКИ ПРОФИЛЯ GBP (gbp_insights):
-Данные за последние 28 дней — просмотры, звонки, клики на сайт, маршруты.
-Поля в context_data["gbp_insights"]["totals"]:
-- views_maps: просмотры в Google Maps
-- views_search: просмотры в Google Search
-- views_total: итого просмотров
-- call_clicks: клики "Позвонить" из профиля
-- website_clicks: клики на сайт из профиля
-- direction_requests: запросы маршрута
-
-При анализе insights всегда сравнивай органику GBP с платной рекламой:
-- call_clicks из GBP vs конверсии Google Ads — показывает соотношение органики и платного
-- Если views_total > 1000 но call_clicks < 10 — проблема конверсии профиля
-- Если call_clicks растёт после публикации поста — посты работают
-
-Включай gbp_insights в еженедельный ROAS отчёт как отдельную строку.
 """
 
     async def _call_claude(self, prompt: str, max_tokens: int = 2000, history: list = None,
@@ -938,14 +821,6 @@ summary типа "Все ключи показывают CTR выше порог
      и сразу предложить действие update_final_url, а не просто обсуждать
      эту идею текстом)
    - seasonal (сезонные рекомендации + бюджеты)
-   - gbp_reviews (отзывы GBP — "ответь на отзывы", "проверь отзывы" и т.п.)
-   - gbp_profile (профиль GBP — "аналитика профиля", "что заполнить в профиле",
-     "категории", "фото профиля", "улучши GBP", "бизнес профиль" и т.п.)
-   - gbp_posts (последние посты GBP — "когда последний пост", "что публиковали",
-     "напиши пост", "опубликуй новость" и т.п.)
-   - gbp_insights (метрики профиля GBP — просмотры в картах/поиске, звонки,
-     клики на сайт, запросы маршрута; "сколько просмотров профиля", "сколько
-     звонков из GBP", "статистика профиля", "аналитика Google Maps" и т.п.)
    Если action_type="audit_lsa_calls" — верни пустой список [] (данные
    соберутся отдельно). Если вопрос общий и данные не нужны — тоже верни
    пустой список [].
@@ -1203,56 +1078,11 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
     "reason": "..."}}], "description": "...", "reasoning": "...", "risks": "...",
     "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 
-- update_ad_headlines (обновить заголовки RSA объявления — старое ставится на паузу,
-  создаётся новое с новыми заголовками; используй когда QS низкий из-за нерелевантных
-  заголовков или владелец просит обновить тексты объявлений).
-  Поля: type="update_ad_headlines", account="ads",
-  resource_name — из context_data ad_performance если есть, иначе оставь пустым "",
-  ad_id — числовой ID объявления из ad_performance (поле ad_id или id), ВСЕГДА передавай,
-  ad_group — название группы объявлений,
-  headlines — список 3-15 заголовков, каждый не более 30 символов,
-  description, reasoning, urgency="medium", urgency_label="Средняя", confidence="high".
-  ОБЯЗАТЕЛЬНО: минимум 3 заголовка, максимум 15, каждый не более 30 символов.
-  НИКОГДА не пиши "недоступно через API" или "сделай вручную в Google Ads UI" для
-  изменения заголовков — update_ad_headlines РЕАЛИЗОВАН и работает через API.
-
 КРИТИЧНО: типы действий — ТОЧНЫЕ строки, никаких вариаций:
 pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
-update_final_url, seasonal_adjustments, dispute_lsa_lead, update_ad_headlines,
-reply_to_review, update_gbp_description, update_gbp_categories, create_gbp_post
+update_final_url, seasonal_adjustments, dispute_lsa_lead
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
-
-ЖЁСТКИЙ ЗАПРЕТ — НИКОГДА НЕ ПРЕДЛАГАЙ ДЕЙСТВИЯ С REMOVED КАМПАНИЯМИ:
-Кампания со статусом REMOVED физически удалена — её нельзя включить, паузировать,
-изменить ставки или минус-слова. Любые минус-слова которые видны в API с campaign_id
-удалённой кампании — это артефакт API, они не влияют на трафик и не требуют действий.
-ПРАВИЛО: перед созданием ЛЮБОЙ карточки действия (remove_negative_keyword, pause_keywords,
-budget_change и т.д.) — проверь что campaign_id этого действия НЕ соответствует
-удалённой кампании. Известные удалённые кампании:
-- ID 20424210216 ("BCHD Appliance Repair Service") — Smart Campaign, REMOVED
-  Минус-слова этой кампании (washer, dryer, fridge и т.д.) видны в API но
-  НЕ влияют на трафик и НЕ требуют удаления — просто игнорируй их.
-Если видишь минус-слово с campaign="BCHD Appliance Repair Service" — молчи,
-не упоминай, не предлагай удалить. Эта кампания мертва.
-
-КРИТИЧЕСКИ ВАЖНО — ПРОАКТИВНЫЙ АУДИТ МИНУС-СЛОВ:
-Если в context_data есть ОДНОВРЕМЕННО "keywords" И "negatives" — ты ОБЯЗАН
-автоматически проверить конфликты. Это приоритет #1 в любом анализе.
-
-Алгоритм (выполняй ВСЕГДА когда оба источника есть):
-1. Берёшь список минус-слов из context_data["negatives"]["ads"]["negatives"]
-2. ФИЛЬТРУЙ: пропускай минус-слова где campaign содержит "BCHD Appliance Repair Service"
-   или campaign_id = 20424210216 — они из REMOVED кампании и не влияют на трафик
-3. Для ОСТАВШИХСЯ минус-слов проверяешь — не блокирует ли оно активный ключ:
-   - EXACT минус "washer" блокирует запросы содержащие только "washer"
-   - PHRASE минус "same day" блокирует любой запрос с "same day"
-   - BROAD минус "HVAC" блокирует любой запрос содержащий "hvac"
-4. Особо опасные для appliance repair (если они из АКТИВНОЙ кампании):
-   "technician"(EXACT), "heating"(PHRASE), "HVAC"(BROAD),
-   "air conditioner"(BROAD), "commercial dishwasher repair"(BROAD), "gas"(PHRASE)
-5. Найденные конфликты из АКТИВНЫХ кампаний — включай в reply как ПЕРВЫЙ пункт
-   и создавай карточки remove_negative_keyword с реальными resource_name.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
