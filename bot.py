@@ -42,6 +42,11 @@ try:
 except ImportError:
     _gbp_available = False
 from ai_analyst import AIAnalyst
+try:
+    from email_sender import send_campaign, generate_banner_base64, build_html_email
+    _email_available = True
+except ImportError:
+    _email_available = False
 from config import config
 from pending_actions import PendingActions, STALE_AFTER_HOURS
 from report_generator import ReportGenerator
@@ -2367,6 +2372,26 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 log.warning(f"Одобрена устаревшая карточка {param}: {action.get('description')}")
             await _safe_edit(query, f"⏳ Применяю: {action['description']}...{stale_note}", parse_mode="Markdown")
             # Специальная обработка GBP действий
+            # Email рассылка
+            if action.get("type") == "send_email_campaign":
+                try:
+                    await _safe_edit(query, f"📧 Отправляю рассылку по {action.get('total_clients', '?')} клиентам...")
+                    result = await _execute_email_campaign(action)
+                    if result.get("success"):
+                        await _safe_edit(query,
+                            f"✅ *Рассылка завершена*\n\n"
+                            f"• Отправлено: {result.get('sent', 0)}\n"
+                            f"• Ошибок: {result.get('failed', 0)}\n"
+                            f"• Всего получателей: {result.get('total', 0)}",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await _safe_edit(query, f"❌ Ошибка рассылки: {result.get('error')}")
+                    return
+                except Exception as e:
+                    await _safe_edit(query, f"❌ Ошибка: {e}")
+                    return
+
             _gbp_action_types = ("reply_to_review", "update_gbp_description",
                                   "update_gbp_categories", "create_gbp_post")
             if action.get("type") in _gbp_action_types:
@@ -3324,6 +3349,156 @@ async def scheduled_campaign_audit(app):
         log.error(f"Ошибка проактивного аудита кампании: {e}")
 
 
+async def scheduled_weekly_email(app):
+    """
+    Каждое воскресенье в 12:00 NY — генерирует письмо для рассылки
+    и присылает карточку на одобрение. После ✅ — рассылка по всем клиентам.
+    """
+    if not _email_available:
+        return
+    log.info("Генерация еженедельного email письма")
+    try:
+        today = datetime.now(NY_TZ)
+        month = today.month
+
+        if month in [6, 7, 8]:
+            theme = "Summer AC & Refrigerator Repair Special"
+            headline = "Beat the Heat This Summer"
+            subheadline = "$20 OFF Your AC or Fridge Repair"
+            body = (
+                "Summer is tough on your appliances — especially your AC and refrigerator. "
+                "If your AC isn't cooling or your fridge isn't keeping temperature, "
+                "don't wait. Our licensed technicians offer same-day service across "
+                "Brooklyn, Queens, and Manhattan. Call us today and get $20 off your repair!"
+            )
+            offer = "Same-day service • All brands • 90-day warranty"
+        elif month in [9, 10, 11]:
+            theme = "Get Ready for the Holidays"
+            headline = "Holiday Season Appliance Check"
+            subheadline = "Is Your Oven & Dishwasher Ready?"
+            body = (
+                "The holiday season is coming — don't let a broken oven or dishwasher "
+                "ruin your family dinner. BCHD offers fast, reliable appliance repair "
+                "across Brooklyn, Queens, and Manhattan. Book your service today!"
+            )
+            offer = "Same-day service • Licensed technicians • 90-day warranty"
+        elif month in [12, 1, 2]:
+            theme = "Winter Heating & Appliance Special"
+            headline = "Stay Warm This Winter"
+            subheadline = "Heating & Appliance Repair — Same Day"
+            body = (
+                "Cold weather puts extra strain on your heating system and appliances. "
+                "If your furnace, washer, or refrigerator needs attention, "
+                "BCHD is here 7 days a week across Brooklyn, Queens, and Manhattan."
+            )
+            offer = "Same-day service • All brands • Licensed & Insured"
+        else:
+            theme = "Spring Appliance Tune-Up"
+            headline = "Spring Clean Your Appliances"
+            subheadline = "Professional Appliance Repair & Maintenance"
+            body = (
+                "Spring is the perfect time to make sure all your appliances are "
+                "running efficiently. From washers to refrigerators, BCHD provides "
+                "expert repair and maintenance across Brooklyn, Queens, and Manhattan."
+            )
+            offer = "Same-day service • All brands • 90-day warranty"
+
+        subject = f"BCHD: {theme}"
+
+        # Генерируем превью баннера
+        try:
+            banner_b64 = generate_banner_base64(headline, subheadline, offer)
+            preview_html = build_html_email(
+                client_name="[Имя клиента]",
+                headline=headline,
+                subheadline=subheadline,
+                body_text=body,
+                offer=offer,
+                banner_b64=banner_b64,
+            )
+        except Exception as e:
+            log.warning(f"Ошибка генерации превью: {e}")
+            preview_html = ""
+            banner_b64 = ""
+
+        # Получаем количество клиентов
+        clients_data = await workiz_client.get_clients_with_email()
+        total_clients = clients_data.get("total", 0)
+
+        # Сохраняем данные рассылки для использования после одобрения
+        campaign_data = {
+            "subject": subject,
+            "headline": headline,
+            "subheadline": subheadline,
+            "body_text": body,
+            "offer": offer,
+            "theme": theme,
+            "total_clients": total_clients,
+        }
+
+        action = {
+            "type": "send_email_campaign",
+            "account": "email",
+            "description": f"Email рассылка: {theme}",
+            "subject": subject,
+            "headline": headline,
+            "subheadline": subheadline,
+            "body_text": body,
+            "offer": offer,
+            "theme": theme,
+            "total_clients": total_clients,
+            "reasoning": (
+                f"Еженедельная рассылка по {total_clients} клиентам из Workiz. "
+                f"Тема: {theme}."
+            ),
+            "risks": "Проверь текст и баннер перед отправкой",
+            "urgency": "medium",
+            "urgency_label": "Средняя",
+            "confidence": "high",
+            "requires_approval": True,
+        }
+
+        # Отправляем превью в Telegram
+        preview_text = (
+            f"📧 *Еженедельная email рассылка*\n\n"
+            f"*Тема:* {subject}\n"
+            f"*Заголовок:* {headline}\n"
+            f"*Оффер:* {subheadline}\n\n"
+            f"*Текст:*\n{body}\n\n"
+            f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
+            f"Одобри карточку ниже → письмо уйдёт всем клиентам."
+        )
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, preview_text, parse_mode="Markdown")
+
+        action_id = await pending.add(action)
+        await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+
+    except Exception as e:
+        log.error(f"Ошибка генерации email рассылки: {e}")
+
+
+async def _execute_email_campaign(action: dict) -> dict:
+    """Выполняет email рассылку после одобрения."""
+    if not _email_available:
+        return {"success": False, "error": "email_sender не установлен"}
+
+    clients_data = await workiz_client.get_clients_with_email()
+    clients = clients_data.get("clients", [])
+
+    if not clients:
+        return {"success": False, "error": "Клиентов с email не найдено в Workiz"}
+
+    result = await send_campaign(
+        clients=clients,
+        subject=action.get("subject", "BCHD Appliance Repair"),
+        headline=action.get("headline", "BCHD Appliance Repair & HVAC"),
+        subheadline=action.get("subheadline", "Same-day service in NYC"),
+        body_text=action.get("body_text", ""),
+        offer=action.get("offer", ""),
+    )
+    return result
+
+
 async def scheduled_morning_report(app):
     if not config.google_ads_configured:
         return
@@ -3658,6 +3833,9 @@ def main():
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
         scheduler.add_job(scheduled_gbp_profile_check, "cron",
                           day_of_week="mon", hour=9, minute=45, args=[app])
+    if _email_available:
+        scheduler.add_job(scheduled_weekly_email, "cron",
+                          day_of_week="sun", hour=12, minute=0, args=[app])
         scheduler.add_job(scheduled_gbp_weekly_post, "cron",
                           day_of_week="wed", hour=10, minute=0, args=[app])
     scheduler.start()
