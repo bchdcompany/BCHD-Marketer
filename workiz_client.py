@@ -190,10 +190,10 @@ async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
 
     return {'found': len(matches) > 0, 'jobs': matches, 'total_jobs_scanned': result.get('total', 0)}
 
-async def get_clients_with_email(limit: int = 2000) -> dict:
+async def get_clients_with_email(limit: int = 5000) -> dict:
     """
     Получает список уникальных клиентов с email адресами из Workiz.
-    Используется для email рассылок через SendGrid.
+    Использует пагинацию чтобы получить всех клиентов.
     Дедуплицирует по email — один клиент = одно письмо.
     """
     all_jobs = []
@@ -202,17 +202,23 @@ async def get_clients_with_email(limit: int = 2000) -> dict:
         params = {"records": 100, "offset": offset}
         result = await _get("job/all/", params)
         if "error" in result:
+            log.error(f"Ошибка получения клиентов: {result['error']}")
             break
-        jobs_page = result.get("data", [])
-        if isinstance(jobs_page, dict):
-            jobs_page = jobs_page.get("data", [])
+        data = result.get("data", [])
+        if isinstance(data, dict):
+            jobs_page = data.get("data", [])
+        else:
+            jobs_page = data
         if not jobs_page:
             break
         all_jobs.extend(jobs_page)
-        if len(jobs_page) < 100 or len(all_jobs) >= limit:
+        log.info(f"get_clients_with_email: получено {len(all_jobs)} джобов (offset={offset})")
+        if len(jobs_page) < 100:
+            break
+        if len(all_jobs) >= limit:
             break
         offset += 100
-        if offset > 5000:
+        if offset > 50000:
             break
 
     # Дедупликация по email
