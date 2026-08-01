@@ -3503,25 +3503,16 @@ async def scheduled_weekly_email(app):
 
         subject = f"BCHD: {theme}"
 
-        # Генерируем превью баннера
-        try:
-            banner_b64 = generate_banner_base64(headline, subheadline, offer)
-            preview_html = build_html_email(
-                client_name="[Имя клиента]",
-                headline=headline,
-                subheadline=subheadline,
-                body_text=body,
-                offer=offer,
-                banner_b64=banner_b64,
-            )
-        except Exception as e:
-            log.warning(f"Ошибка генерации превью: {e}")
-            preview_html = ""
-            banner_b64 = ""
-
         # Получаем количество клиентов
         clients_data = await workiz_client.get_clients_with_email()
         total_clients = clients_data.get("total", 0)
+
+        # Генерируем баннер для превью
+        banner_b64 = ""
+        try:
+            banner_b64 = generate_banner_base64(headline, subheadline, offer)
+        except Exception as e:
+            log.warning(f"Ошибка генерации баннера: {e}")
 
         # Сохраняем данные рассылки для использования после одобрения
         campaign_data = {
@@ -3556,17 +3547,36 @@ async def scheduled_weekly_email(app):
             "requires_approval": True,
         }
 
-        # Отправляем превью в Telegram
-        preview_text = (
-            f"📧 *Еженедельная email рассылка*\n\n"
-            f"*Тема:* {subject}\n"
-            f"*Заголовок:* {headline}\n"
-            f"*Оффер:* {subheadline}\n\n"
-            f"*Текст:*\n{body}\n\n"
-            f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
-            f"Одобри карточку ниже → письмо уйдёт всем клиентам."
-        )
-        await _safe_send(app.bot, config.OWNER_CHAT_ID, preview_text, parse_mode="Markdown")
+        # Отправляем превью баннера в Telegram
+        if banner_b64:
+            try:
+                import io as _io, base64 as _b64
+                banner_bytes = _b64.b64decode(banner_b64)
+                banner_bio = _io.BytesIO(banner_bytes)
+                banner_bio.name = "bchd_banner.png"
+                await app.bot.send_photo(
+                    chat_id=config.OWNER_CHAT_ID,
+                    photo=banner_bio,
+                    caption=(
+                        f"📧 *Еженедельная email рассылка*\n\n"
+                        f"*Тема:* {subject}\n"
+                        f"*Оффер:* {subheadline}\n"
+                        f"*Текст:* {body[:200]}...\n\n"
+                        f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
+                        f"Если баннер устраивает — одобри карточку ниже.\n"
+                        f"Если нужно изменить — напиши что поправить."
+                    ),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                log.warning(f"Ошибка отправки превью: {e}")
+                await _safe_send(app.bot, config.OWNER_CHAT_ID,
+                    f"📧 *Еженедельная email рассылка*\n\nТема: {subject}\nПолучателей: {total_clients}",
+                    parse_mode="Markdown")
+        else:
+            await _safe_send(app.bot, config.OWNER_CHAT_ID,
+                f"📧 *Еженедельная email рассылка*\n\nТема: {subject}\nПолучателей: {total_clients}",
+                parse_mode="Markdown")
 
         action_id = await pending.add(action)
         await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
@@ -3713,25 +3723,69 @@ async def scheduled_ab_test_check(app):
 
 
 async def scheduled_seasonal_check(app):
+    """
+    Сезонные корректировки бюджета — ТОЛЬКО если кампания уже эффективна.
+    Правило: предлагаем увеличить бюджет только когда IS > 60% и CPA < $65.
+    Пока IS низкий или CPA высокий — сначала оптимизируем текущие настройки.
+    """
     if not config.google_ads_configured:
         return
-    log.info("Сезонная оптимизация")
+    log.info("Сезонная оптимизация — проверка условий")
     try:
+        from datetime import datetime as _dt
+        today = _dt.now(NY_TZ)
+        date_from = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+        date_to = today.strftime("%Y-%m-%d")
+
+        # Проверяем текущую эффективность кампании
+        summary = await ads_client.get_both_accounts_summary(date_from=date_from, date_to=date_to)
+        ads_data = summary.get("google_ads", {})
+
+        spend = ads_data.get("total_spend", 0)
+        conversions = ads_data.get("total_conversions", 0)
+        impression_share = ads_data.get("impression_share", 0) or 0
+        cpa = spend / conversions if conversions > 0 else 999
+
+        log.info(f"seasonal_check: IS={impression_share:.1f}%, CPA=${cpa:.0f}, конверсий={conversions:.0f}")
+
+        # Условие: предлагаем сезонные корректировки только при хорошей эффективности
+        IS_THRESHOLD = 60.0   # IS должен быть > 60%
+        CPA_THRESHOLD = 65.0  # CPA должен быть < $65
+
+        if impression_share < IS_THRESHOLD or cpa > CPA_THRESHOLD:
+            log.info(
+                f"seasonal_check: условия не выполнены — "
+                f"IS={impression_share:.1f}% (нужно >{IS_THRESHOLD}%), "
+                f"CPA=${cpa:.0f} (нужно <${CPA_THRESHOLD}). "
+                f"Сначала оптимизируем текущие настройки."
+            )
+            return
+
+        # Условия выполнены — предлагаем сезонные корректировки
         season_data = ads_client.get_current_season_recommendations()
-        for account in ["ads", "lsa"]:
+        for account in ["ads"]:  # LSA бюджет меняется только вручную
             budget_data = await ads_client.get_budget_data(account=account)
-            action_plan = await ai_analyst.build_seasonal_action(season_data, budget_data.get("campaigns", []))
+            action_plan = await ai_analyst.build_seasonal_action(
+                season_data, budget_data.get("campaigns", [])
+            )
             if action_plan.get("adjustments"):
                 action = {
                     "type": "seasonal_adjustments",
                     "account": account,
                     "description": f"Сезонные корректировки {season_data['season_name']}",
-                    "reasoning": season_data["reason"],
-                    "data_summary": f"{len(action_plan['adjustments'])} кампаний",
+                    "reasoning": (
+                        f"Условия выполнены: IS={impression_share:.1f}% > {IS_THRESHOLD}%, "
+                        f"CPA=${cpa:.0f} < ${CPA_THRESHOLD}. "
+                        f"{season_data['reason']}"
+                    ),
+                    "data_summary": (
+                        f"IS={impression_share:.1f}%, CPA=${cpa:.0f}, "
+                        f"конверсий за 14 дней: {conversions:.0f}"
+                    ),
                     "expected_impact": action_plan.get("expected_impact", ""),
-                    "urgency": "medium",
-                    "urgency_label": "Средняя",
-                    "risks": "Обратимо",
+                    "urgency": "low",
+                    "urgency_label": "Низкая",
+                    "risks": "Обратимо. Увеличение бюджета оправдано только при текущей эффективности.",
                     "adjustments": action_plan["adjustments"],
                 }
                 action_id = await pending.add(action)
