@@ -3619,6 +3619,11 @@ async def _execute_email_campaign(action: dict) -> dict:
     if not clients:
         return {"success": False, "error": "Клиентов с email не найдено"}
 
+    # Всегда добавляем владельца первым для контроля рассылки
+    owner_email = "you@bchdcompany.com"
+    if not any(c["email"] == owner_email for c in clients):
+        clients = [{"email": owner_email, "name": "Chingis", "first_name": "Chingis"}] + clients
+
     result = await send_campaign(
         clients=clients,
         subject=action.get("subject", "BCHD Appliance Repair"),
