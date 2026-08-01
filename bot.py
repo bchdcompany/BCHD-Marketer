@@ -377,16 +377,20 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "requires_approval": True,
     }
 
-    # Генерируем баннер и отправляем превью
-    await _safe_edit(msg, "🎨 Генерирую баннер для превью...")
+    # Генерируем баннер через Ideogram и отправляем превью
+    await _safe_edit(msg, "🎨 Генерирую баннер через Ideogram AI (~15 сек)...")
     try:
-        from email_sender import generate_banner_base64, build_html_email
+        from email_sender import generate_banner_ideogram, generate_banner_base64, build_html_email
         import io, base64
-        banner_b64 = generate_banner_base64(
-            action["headline"], action["subheadline"], action["offer"]
-        )
-        # Декодируем base64 обратно в байты для отправки в Telegram
-        banner_bytes = base64.b64decode(banner_b64)
+        # Пробуем Ideogram
+        try:
+            banner_bytes = await generate_banner_ideogram(
+                action["headline"], action["subheadline"], action["offer"], action.get("theme","")
+            )
+        except Exception as ie:
+            log.warning(f"Ideogram недоступен: {ie} — используем Pillow")
+            banner_b64 = generate_banner_base64(action["headline"], action["subheadline"], action["offer"])
+            banner_bytes = base64.b64decode(banner_b64)
         banner_bio = io.BytesIO(banner_bytes)
         banner_bio.name = "bchd_banner.png"
         # Отправляем баннер как фото
@@ -3507,12 +3511,17 @@ async def scheduled_weekly_email(app):
         clients_data = await workiz_client.get_clients_with_email()
         total_clients = clients_data.get("total", 0)
 
-        # Генерируем баннер для превью
-        banner_b64 = ""
+        # Генерируем баннер через Ideogram
+        banner_bytes_weekly = None
         try:
-            banner_b64 = generate_banner_base64(headline, subheadline, offer)
+            banner_bytes_weekly = await generate_banner_ideogram(headline, subheadline, offer, theme)
         except Exception as e:
-            log.warning(f"Ошибка генерации баннера: {e}")
+            log.warning(f"Ideogram недоступен: {e} — используем Pillow")
+            try:
+                import base64 as _b64
+                banner_bytes_weekly = _b64.b64decode(generate_banner_base64(headline, subheadline, offer))
+            except Exception as e2:
+                log.warning(f"Pillow тоже не работает: {e2}")
 
         # Сохраняем данные рассылки для использования после одобрения
         campaign_data = {
@@ -3590,11 +3599,25 @@ async def _execute_email_campaign(action: dict) -> dict:
     if not _email_available:
         return {"success": False, "error": "email_sender не установлен"}
 
-    clients_data = await workiz_client.get_clients_with_email()
-    clients = clients_data.get("clients", [])
+    # Пробуем получить из Postgres (импортированная база)
+    clients = []
+    pool = await _get_db_pool()
+    if pool:
+        try:
+            db_result = await workiz_client.get_clients_from_db(pool)
+            if db_result.get("total", 0) > 0:
+                clients = db_result["clients"]
+                log.info(f"Email: используем БД — {len(clients)} клиентов")
+        except Exception as e:
+            log.warning(f"Ошибка получения из БД: {e}")
+
+    # Fallback — из Workiz API
+    if not clients:
+        clients_data = await workiz_client.get_clients_with_email()
+        clients = clients_data.get("clients", [])
 
     if not clients:
-        return {"success": False, "error": "Клиентов с email не найдено в Workiz"}
+        return {"success": False, "error": "Клиентов с email не найдено"}
 
     result = await send_campaign(
         clients=clients,
