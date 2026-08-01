@@ -15,10 +15,78 @@ import base64
 log = logging.getLogger(__name__)
 
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+IDEOGRAM_API_KEY = os.environ.get("IDEOGRAM_API_KEY", "")
+IDEOGRAM_API_KEY = os.environ.get("IDEOGRAM_API_KEY", "")
 FROM_EMAIL = "you@bchdcompany.com"
 FROM_NAME = "BCHD Appliance Repair & HVAC"
 UNSUBSCRIBE_GROUP_ID = None  # Заполнить после создания группы в SendGrid
 
+
+
+async def generate_banner_ideogram(
+    headline: str,
+    subheadline: str,
+    offer: str = "",
+    theme: str = "",
+) -> bytes:
+    """
+    Генерирует профессиональный баннер через Ideogram AI.
+    Возвращает байты PNG изображения.
+    """
+    import httpx as _httpx
+
+    if not IDEOGRAM_API_KEY:
+        raise RuntimeError("IDEOGRAM_API_KEY не настроен")
+
+    # Определяем визуальную тему по содержанию
+    if any(w in (headline + subheadline + theme).lower() for w in ['ac', 'hvac', 'air', 'cool']):
+        bg_scene = "air conditioner unit being repaired by professional technician, modern NYC apartment background"
+    elif any(w in (headline + subheadline + theme).lower() for w in ['fridge', 'refriger']):
+        bg_scene = "stainless steel refrigerator being repaired by technician in modern kitchen"
+    elif any(w in (headline + subheadline + theme).lower() for w in ['washer', 'dryer', 'laundry']):
+        bg_scene = "washing machine repair in NYC home, professional technician"
+    elif any(w in (headline + subheadline + theme).lower() for w in ['heat', 'furnace', 'winter']):
+        bg_scene = "furnace and heating system repair by licensed technician"
+    else:
+        bg_scene = "professional appliance repair technician working in modern NYC home"
+
+    prompt = (
+        f"Professional email marketing banner 600x300 pixels horizontal format. "
+        f"Dark navy blue (#0A1628) left side taking 60% width with gold left border stripe (#E8A020). "
+        f"Right side shows: {bg_scene}, slightly darkened. "
+        f"On dark left side, bold white large text: '{headline}'. "
+        f"Below in gold color: '{subheadline}'. "
+        f"Small gray text: '{offer}'. "
+        f"Gold rounded button labeled 'Book Now'. "
+        f"Phone (917) 935-4553 in white. "
+        f"Bottom gold stripe with 'bchdcompany.com | Brooklyn · Queens · Manhattan'. "
+        f"Top left: BCHD logo area with gold background rectangle. "
+        f"Clean corporate design, high quality, photorealistic right side."
+    )
+
+    payload = {
+        "image_request": {
+            "prompt": prompt,
+            "negative_prompt": "cartoon, low quality, blurry, watermark, text errors, amateur",
+            "aspect_ratio": "ASPECT_16_9",
+            "model": "V_2",
+            "magic_prompt_option": "OFF",
+            "style_type": "REALISTIC",
+        }
+    }
+
+    async with _httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(
+            "https://api.ideogram.ai/generate",
+            headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ideogram {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        image_url = data["data"][0]["url"]
+        img_resp = await client.get(image_url, timeout=30)
+        return img_resp.content
 
 def generate_banner_base64(
     headline: str,
