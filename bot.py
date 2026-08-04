@@ -43,6 +43,11 @@ except ImportError:
     _gbp_available = False
 from ai_analyst import AIAnalyst
 try:
+    import email_agent as _email_agent
+    _email_agent_available = True
+except ImportError:
+    _email_agent_available = False
+try:
     from email_sender import send_campaign, generate_banner_base64, build_html_email
     _email_available = True
 except ImportError:
@@ -319,12 +324,29 @@ async def _send_approval_card(bot, chat_id: int, action_id: str, action: dict):
 
 async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /email <тема> — создаёт карточку email рассылки напрямую,
-    без участия ИИ. Система сама генерирует сезонный текст.
-    Пример: /email Летняя скидка $20 на ремонт AC
+    /email <тема> — создаёт рассылку через email_agent.
+    Пример: /email Летняя скидка 30% на ремонт AC
     """
     if not _is_owner(update):
         return
+
+    theme = " ".join(ctx.args) if ctx.args else ""
+
+    # Используем email_agent если доступен
+    if _email_agent_available:
+        try:
+            _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
+            msg = await update.message.reply_text("⏳ Генерирую баннер, подожди 30–60 секунд...")
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: _email_agent.handle_campaign_request(theme or "seasonal promotion", ctx.bot)
+            )
+            return
+        except Exception as e:
+            log.error(f"email_agent error: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+            return
+
     if not _email_available:
         await update.message.reply_text("❌ email_sender не установлен")
         return
@@ -1878,6 +1900,30 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     if not question or not question.strip():
         return
+
+    # Email agent: подтверждение или запрос рассылки
+    if _email_agent_available:
+        text_lower = question.lower()
+        confirm_kw = ["отправляй", "давай отправляй", "подтверждаю", "send it", "go ahead"]
+        campaign_kw = ["рассылк", "баннер для рассылки", "письмо клиент", "email кампани"]
+        if (any(kw in text_lower for kw in confirm_kw) or "✅" in question) and _email_agent.has_pending_campaign():
+            try:
+                _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _email_agent.confirm_and_send(update.message.bot)
+                )
+                return
+            except Exception as e:
+                log.error(f"email confirm error: {e}")
+        elif any(kw in text_lower for kw in campaign_kw):
+            try:
+                _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _email_agent.handle_campaign_request(question, update.message.bot)
+                )
+                return
+            except Exception as e:
+                log.error(f"email campaign error: {e}")
 
     # Если владелец пишет уточнение к карточке (после нажатия "💬 Уточнить")
     awaiting_action_id = ctx.user_data.pop("awaiting_comment_for", None)
@@ -3458,9 +3504,23 @@ async def scheduled_campaign_audit(app):
 
 async def scheduled_weekly_email(app):
     """
-    Каждое воскресенье в 12:00 NY — генерирует письмо для рассылки
-    и присылает карточку на одобрение. После ✅ — рассылка по всем клиентам.
+    Каждое воскресенье в 12:00 NY — спрашивает тему рассылки через email_agent.
     """
+    if _email_agent_available:
+        try:
+            _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
+            _email_agent.ask_campaign_topic(app.bot)
+            log.info("scheduled_weekly_email: вопрос о теме отправлен")
+            return
+        except Exception as e:
+            log.error(f"email_agent.ask_campaign_topic error: {e}")
+    # Fallback — старая логика
+    log.info("Fallback: старая логика weekly email")
+    async def _old_weekly_email():
+        """
+        Каждое воскресенье в 12:00 NY — генерирует письмо для рассылки
+        и присылает карточку на одобрение. После ✅ — рассылка по всем клиентам.
+        """
     if not _email_available:
         return
     log.info("Генерация еженедельного email письма")
