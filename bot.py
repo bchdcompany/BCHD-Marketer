@@ -330,115 +330,70 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
 
-    theme = " ".join(ctx.args) if ctx.args else ""
+    theme = " ".join(ctx.args) if ctx.args else "seasonal appliance repair promotion"
 
-    # Используем email_agent если доступен
-    if _email_agent_available:
-        try:
-            _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
-            msg = await update.message.reply_text("⏳ Генерирую баннер, подожди 30–60 секунд...")
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: _email_agent.handle_campaign_request(theme or "seasonal promotion", ctx.bot)
-            )
-            return
-        except Exception as e:
-            log.error(f"email_agent error: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {e}")
-            return
-
-    if not _email_available:
-        await update.message.reply_text("❌ email_sender не установлен")
+    if not _email_agent_available:
+        await update.message.reply_text("❌ email_agent не установлен")
         return
 
-    theme = " ".join(ctx.args) if ctx.args else ""
-    today = datetime.now(NY_TZ)
-    month = today.month
-
-    # Сезонные дефолты если тема не указана
-    if not theme:
-        if month in [6, 7, 8]:
-            theme = "Summer AC & Refrigerator Repair Special"
-        elif month in [9, 10, 11]:
-            theme = "Holiday Season Appliance Check"
-        elif month in [12, 1, 2]:
-            theme = "Winter Heating & Appliance Special"
-        else:
-            theme = "Spring Appliance Tune-Up"
-
-    # Получаем количество клиентов
-    msg = await update.message.reply_text(f"📧 Подготавливаю рассылку: {theme}...")
     try:
-        clients_data = await workiz_client.get_clients_with_email()
-        total_clients = clients_data.get("total", 0)
-    except Exception as e:
-        total_clients = 0
-        log.warning(f"Не удалось получить клиентов: {e}")
+        _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
+        msg = await update.message.reply_text("⏳ Генерирую баннер через AI, подожди 30–60 секунд...")
 
-    action = {
-        "type": "send_email_campaign",
-        "account": "email",
-        "description": f"Email рассылка: {theme}",
-        "subject": f"BCHD: {theme}",
-        "headline": theme[:40],
-        "subheadline": "Same-day service in Brooklyn, Queens & Manhattan",
-        "body_text": (
-            f"We wanted to reach out with a special offer for our valued customers. "
-            f"BCHD Appliance Repair & HVAC provides fast, reliable repair services "
-            f"across Brooklyn, Queens, and Manhattan — same day when possible. "
-            f"Call us at (917) 935-4553 or book online at bchdcompany.com."
-        ),
-        "offer": "Same-day service • Licensed & Insured • 90-day warranty",
-        "theme": theme,
-        "total_clients": total_clients,
-        "reasoning": f"Рассылка по {total_clients} клиентам из Workiz. Тема: {theme}.",
-        "risks": "Проверь текст перед отправкой",
-        "urgency": "medium",
-        "urgency_label": "Средняя",
-        "confidence": "high",
-        "requires_approval": True,
-    }
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
 
-    # Генерируем баннер через Ideogram и отправляем превью
-    await _safe_edit(msg, "🎨 Генерирую баннер через Ideogram AI (~15 сек)...")
-    try:
-        from email_sender import generate_banner_ideogram, generate_banner_base64, build_html_email
-        import io, base64
-        # Пробуем Ideogram
-        try:
-            banner_bytes = await generate_banner_ideogram(
-                action["headline"], action["subheadline"], action["offer"], action.get("theme","")
+        def _generate():
+            campaign_data = _email_agent._generate_campaign_content(theme)
+            image_url = _email_agent._generate_ideogram_image(
+                campaign_data.get("ideogram_prompt", "Professional appliance repair NYC")
             )
-        except Exception as ie:
-            log.warning(f"Ideogram недоступен: {ie} — используем Pillow")
-            banner_b64 = generate_banner_base64(action["headline"], action["subheadline"], action["offer"])
-            banner_bytes = base64.b64decode(banner_b64)
-        banner_bio = io.BytesIO(banner_bytes)
-        banner_bio.name = "bchd_banner.png"
-        # Отправляем баннер как фото
-        await ctx.bot.send_photo(
-            chat_id=config.OWNER_CHAT_ID,
-            photo=banner_bio,
-            caption=(
-                f"📧 *Превью баннера для рассылки*\n\n"
-                f"*Тема:* {action['subject']}\n"
-                f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
-                f"Если баннер устраивает — одобри карточку ниже.\n"
-                f"Если нужно изменить — напиши что поправить."
-            ),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        log.warning(f"Не удалось отправить превью баннера: {e}")
-        await _safe_edit(msg, (
-            f"📧 *Email рассылка готова*\n\n"
-            f"*Тема:* {action['subject']}\n"
-            f"*Получателей:* {total_clients} клиентов из Workiz\n\n"
-            f"Карточка одобрения ниже 👇"
-        ), parse_mode="Markdown")
+            html = _email_agent._build_html(campaign_data, image_url)
+            return campaign_data, html
 
-    action_id = await pending.add(action)
-    await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            campaign_data, html = await loop.run_in_executor(pool, _generate)
+
+        # Сохраняем в pending
+        _email_agent._pending_campaign = {
+            "html": html,
+            "subject": campaign_data["email_subject"],
+            "preview_text": campaign_data.get("preview_text", ""),
+            "generated_at": datetime.now(NY_TZ).isoformat(),
+        }
+
+        # Формируем превью
+        cards = campaign_data.get("cards", [])
+        cards_lines = []
+        for c in cards:
+            title = c.get("title", "")
+            text = c.get("text", "")[:80]
+            cards_lines.append(f"- {title}: {text}...")
+            cards_lines.append(f"- {title}: {text}...")
+        cards_text = "\n".join(cards_lines)
+
+        preview_msg = (
+            f"\u2705 *\u0411\u0430\u043d\u043d\u0435\u0440 \u0433\u043e\u0442\u043e\u0432!*\n\n"
+            f"\U0001f4cc *\u0422\u0435\u043c\u0430:* {campaign_data.get('campaign_title', '')}\n"
+            f"\U0001f4e7 *Subject:* {campaign_data.get('email_subject', '')}\n"
+            f"\U0001f4ac *\u041e\u0444\u0444\u0435\u0440:* {campaign_data.get('offer_text', '')}\n\n"
+            f"*\u0422\u0435\u0437\u0438\u0441\u044b:*\n{cards_text}\n\n"
+            f"\U0001f4e8 *\u041f\u043e\u043b\u0443\u0447\u0430\u0442:* ~957 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432\n\n"
+            "\u041d\u0430\u043f\u0438\u0448\u0438 *\u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0439* \u0438\u043b\u0438 \u2705 \u0434\u043b\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438"
+        )
+
+        # Отправляем HTML файл
+        html_bytes = html.encode("utf-8")
+        await ctx.bot.send_document(
+            chat_id=config.OWNER_CHAT_ID,
+            document=html_bytes,
+            filename="campaign_preview.html",
+            caption="👆 Открой в браузере для просмотра"
+        )
+
+    except Exception as e:
+        log.error(f"email_agent error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка генерации: {e}")
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
