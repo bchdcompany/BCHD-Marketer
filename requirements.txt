@@ -10,3 +10,4 @@ groq>=0.11.0
 Pillow>=10.0.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
+playwright>=1.40.0
