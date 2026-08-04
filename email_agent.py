@@ -396,12 +396,11 @@ def _build_html(data: dict, image_url: str) -> str:
   <!-- HEADER -->
   <div style="background:#1a1a1a;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
     <a href="https://bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:14px;">
-      <div style="width:56px;height:56px;flex-shrink:0;">
-        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" style="width:56px;height:56px;">
-          <circle cx="100" cy="100" r="95" fill="#ffffff" opacity="0.08"/>
-          <path d="M 68 50 A 60 60 0 1 0 132 50" fill="none" stroke="#cc1f1f" stroke-width="14" stroke-linecap="round"/>
-          <line x1="100" y1="30" x2="100" y2="78" stroke="#cc1f1f" stroke-width="14" stroke-linecap="round"/>
-        </svg>
+      <div style="height:56px;flex-shrink:0;">
+        <img src="https://raw.githubusercontent.com/bchdcompany/BCHD-Marketer/main/bchd_white_transparent.png"
+             alt="BCHD Appliance Repair"
+             style="height:56px;width:auto;display:block;"
+        />
       </div>
       <div style="line-height:1.15;">
         <span style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:1px;display:block;">BCHD</span>
