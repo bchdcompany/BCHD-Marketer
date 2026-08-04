@@ -414,8 +414,8 @@ def _build_html(data: dict, image_url: str) -> str:
   </div>
 
   <!-- HERO -->
-  <div style="position:relative;background:{c['hero_bg']};min-height:280px;display:flex;align-items:center;overflow:hidden;">
-    <div style="position:absolute;inset:0;background-image:url('{image_url}');background-size:cover;background-position:center;opacity:0.35;"></div>
+  <div style="position:relative;background:{c['hero_bg']};min-height:280px;overflow:hidden;">
+    {'<img src="' + image_url + '" alt="" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0.35;display:block;" />' if image_url else ''}
     <div style="position:relative;padding:40px 36px;z-index:2;">
       <span style="display:inline-block;background:{c['eyebrow_bg']};color:{c['eyebrow_color']};font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:5px 12px;border-radius:3px;margin-bottom:16px;">
         {data['hero_eyebrow']}
