@@ -382,31 +382,53 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\u041d\u0430\u043f\u0438\u0448\u0438 *\u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0439* \u0438\u043b\u0438 \u2705 \u0434\u043b\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438"
         )
 
-        # Превью письма — показываем фоновое изображение от Ideogram
-        if image_url:
-            try:
-                import httpx as _httpx
-                async with _httpx.AsyncClient(timeout=30) as hc:
-                    img_resp = await hc.get(image_url)
-                import io as _io
-                await ctx.bot.send_photo(
-                    chat_id=config.OWNER_CHAT_ID,
-                    photo=_io.BytesIO(img_resp.content),
-                    caption=(
-                        "🖼 *Превью фона письма*\n\n"
-                        "📧 Клиенты получат полноценное HTML письмо с этим фоном, "
-                        "текстом, кнопками и логотипом.\n\n"
-                        "Напиши *отправляй* чтобы разослать по всей базе."
-                    ),
-                    parse_mode="Markdown"
-                )
-            except Exception as img_e:
-                log.warning(f"Не удалось отправить превью: {img_e}")
-                await ctx.bot.send_message(
-                    chat_id=config.OWNER_CHAT_ID,
-                    text="📧 Письмо готово. Напиши *отправляй* чтобы разослать.",
-                    parse_mode="Markdown"
-                )
+        # Превью письма — рендерим HTML в изображение через playwright или отправляем текст
+        try:
+            # Пробуем скриншот через playwright
+            from playwright.async_api import async_playwright
+            import io as _io
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch()
+                page = await browser.new_page(viewport={"width": 640, "height": 900})
+                await page.set_content(html, wait_until="networkidle")
+                screenshot = await page.screenshot(full_page=True)
+                await browser.close()
+            await ctx.bot.send_photo(
+                chat_id=config.OWNER_CHAT_ID,
+                photo=_io.BytesIO(screenshot),
+                caption=(
+                    "📧 *Превью письма*\n\n"
+                    "Именно так клиенты увидят письмо в почте.\n\n"
+                    "Напиши *отправляй* или скажи что исправить."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as pw_e:
+            log.warning(f"Playwright недоступен: {pw_e} — отправляем фон")
+            # Fallback — отправляем фоновое изображение
+            if image_url:
+                try:
+                    import httpx as _httpx
+                    import io as _io
+                    async with _httpx.AsyncClient(timeout=30) as hc:
+                        img_resp = await hc.get(image_url)
+                    await ctx.bot.send_photo(
+                        chat_id=config.OWNER_CHAT_ID,
+                        photo=_io.BytesIO(img_resp.content),
+                        caption=(
+                            "🖼 *Превью фона письма*\n\n"
+                            "Клиенты получат HTML письмо с логотипом, текстом и кнопками.\n\n"
+                            "Напиши *отправляй* или скажи что исправить."
+                        ),
+                        parse_mode="Markdown"
+                    )
+                except Exception as img_e:
+                    log.warning(f"Не удалось отправить превью: {img_e}")
+                    await ctx.bot.send_message(
+                        chat_id=config.OWNER_CHAT_ID,
+                        text="📧 Письмо готово. Напиши *отправляй* чтобы разослать.",
+                        parse_mode="Markdown"
+                    )
 
     except Exception as e:
         log.error(f"email_agent error: {e}", exc_info=True)
