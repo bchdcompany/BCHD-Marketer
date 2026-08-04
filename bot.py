@@ -396,6 +396,69 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка генерации: {e}")
 
 
+async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/sendemail — отправить последний одобренный баннер по базе клиентов."""
+    if not _is_owner(update):
+        return
+    if not _email_agent_available:
+        await update.message.reply_text("❌ email_agent не установлен")
+        return
+    if not _email_agent.has_pending_campaign():
+        await update.message.reply_text("❌ Нет готового баннера. Сначала создай через /email")
+        return
+    msg = await update.message.reply_text("📤 Отправляю рассылку...")
+    try:
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            sent = await loop.run_in_executor(
+                pool,
+                lambda: _email_agent._send_via_sendgrid(
+                    _email_agent._pending_campaign["html"],
+                    _email_agent._pending_campaign["subject"],
+                    _email_agent._pending_campaign.get("preview_text", ""),
+                )
+            )
+        _email_agent._pending_campaign = None
+        result_text = "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем"
+        await _safe_edit(msg, result_text)
+    except Exception as e:
+        log.error(f"sendemail error: {e}", exc_info=True)
+        await _safe_edit(msg, f"❌ Ошибка отправки: {e}")
+
+
+async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/sendemail — отправить последний одобренный баннер по базе клиентов."""
+    if not _is_owner(update):
+        return
+    if not _email_agent_available:
+        await update.message.reply_text("❌ email_agent не установлен")
+        return
+    if not _email_agent.has_pending_campaign():
+        await update.message.reply_text("❌ Нет готового баннера. Создай через /email")
+        return
+    msg = await update.message.reply_text("📤 Отправляю рассылку...")
+    try:
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        pending = _email_agent._pending_campaign
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            sent = await loop.run_in_executor(
+                pool,
+                lambda: _email_agent._send_via_sendgrid(
+                    pending["html"],
+                    pending["subject"],
+                    pending.get("preview_text", ""),
+                )
+            )
+        _email_agent._pending_campaign = None
+        result_text = "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем"
+        await _safe_edit(msg, result_text)
+    except Exception as e:
+        log.error(f"sendemail error: {e}", exc_info=True)
+        await _safe_edit(msg, "❌ Ошибка отправки: " + str(e))
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -1856,29 +1919,45 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
-    # Email agent: подтверждение или запрос рассылки
+    # Email agent: подтверждение или запрос рассылки — ПРИОРИТЕТ над обычным чатом
     if _email_agent_available:
-        text_lower = question.lower()
-        confirm_kw = ["отправляй", "давай отправляй", "подтверждаю", "send it", "go ahead"]
+        text_lower = question.lower().strip()
+        confirm_kw = [
+            "отправляй", "отправить", "давай отправляй", "подтверждаю",
+            "send it", "go ahead", "да отправляй", "отправь",
+            "отправить рассылку", "запускай рассылку", "запускай"
+        ]
         campaign_kw = ["рассылк", "баннер для рассылки", "письмо клиент", "email кампани"]
-        if (any(kw in text_lower for kw in confirm_kw) or "✅" in question) and _email_agent.has_pending_campaign():
+
+        is_confirm = (any(kw in text_lower for kw in confirm_kw) or "✅" in question)
+
+        if is_confirm and _email_agent.has_pending_campaign():
+            msg = await update.message.reply_text("📤 Отправляю рассылку...")
             try:
-                _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: _email_agent.confirm_and_send(update.message.bot)
-                )
-                return
+                import concurrent.futures
+                loop = asyncio.get_event_loop()
+                pending = _email_agent._pending_campaign
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    sent = await loop.run_in_executor(
+                        pool,
+                        lambda: _email_agent._send_via_sendgrid(
+                            pending["html"],
+                            pending["subject"],
+                            pending.get("preview_text", ""),
+                        )
+                    )
+                _email_agent._pending_campaign = None
+                await _safe_edit(msg, "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем")
             except Exception as e:
-                log.error(f"email confirm error: {e}")
-        elif any(kw in text_lower for kw in campaign_kw):
-            try:
-                _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: _email_agent.handle_campaign_request(question, update.message.bot)
-                )
-                return
-            except Exception as e:
-                log.error(f"email campaign error: {e}")
+                log.error(f"email send error: {e}", exc_info=True)
+                await _safe_edit(msg, "❌ Ошибка отправки: " + str(e))
+            return
+
+        elif is_confirm and not _email_agent.has_pending_campaign():
+            await update.message.reply_text(
+                "❌ Нет готового баннера. Сначала создай через /email"
+            )
+            return
 
     # Если владелец пишет уточнение к карточке (после нажатия "💬 Уточнить")
     awaiting_action_id = ctx.user_data.pop("awaiting_comment_for", None)
@@ -4009,6 +4088,8 @@ def main():
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
     app.add_handler(CommandHandler("email", cmd_email))
+    app.add_handler(CommandHandler("sendemail", cmd_sendemail))
+    app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
     app.add_error_handler(global_error_handler)
 
