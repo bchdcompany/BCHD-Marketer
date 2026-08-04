@@ -29,7 +29,7 @@ OWNER_CHAT_ID     = os.environ.get("OWNER_CHAT_ID")  # Telegram chat ID Чинг
 
 SENDGRID_FROM_EMAIL = "you@bchdcompany.com"
 SENDGRID_FROM_NAME  = "BCHD Appliance Repair"
-WORKIZ_BOOKING_URL  = "https://go.workiz.com/BCHD"
+WORKIZ_BOOKING_URL  = "https://www.bchdcompany.com/#booking-form"
 
 # ── Состояние ожидания (простой in-memory флаг, для Railway достаточно) ──
 _pending_campaign: dict | None = None  # хранит сгенерированный HTML до подтверждения
@@ -398,6 +398,7 @@ def _build_html(data: dict, image_url: str) -> str:
     <a href="https://bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:14px;">
       <div style="width:56px;height:56px;flex-shrink:0;">
         <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" style="width:56px;height:56px;">
+          <circle cx="100" cy="100" r="95" fill="#ffffff" opacity="0.08"/>
           <path d="M 68 50 A 60 60 0 1 0 132 50" fill="none" stroke="#cc1f1f" stroke-width="14" stroke-linecap="round"/>
           <line x1="100" y1="30" x2="100" y2="78" stroke="#cc1f1f" stroke-width="14" stroke-linecap="round"/>
         </svg>
@@ -408,7 +409,7 @@ def _build_html(data: dict, image_url: str) -> str:
         <span style="font-size:10px;color:#cc1f1f;font-style:italic;display:block;margin-top:2px;">Fast Quality Guaranteed</span>
       </div>
     </a>
-    <a href="tel:9179354553" style="text-decoration:none;background:#cc1f1f;color:#fff;font-size:17px;font-weight:700;padding:12px 20px;border-radius:6px;white-space:nowrap;">
+    <a href="tel:9179354553" style="text-decoration:none;background:#cc1f1f;color:#fff;font-size:15px;font-weight:700;padding:10px 16px;border-radius:6px;white-space:nowrap;margin-left:12px;">
       📞 (917) 935-4553
     </a>
   </div>
