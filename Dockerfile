@@ -2,13 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Системные зависимости для Playwright
+RUN apt-get update && apt-get install -y \
+    wget gnupg ca-certificates \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+    libasound2 libpango-1.0-0 libpangocairo-1.0-0 \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
 # Копируем только requirements.txt первым — Docker кэширует этот слой
-# и не переустанавливает пакеты если requirements.txt не изменился.
-# Это сокращает деплой с 6-10 минут до 30-60 секунд при изменении .py файлов.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код отдельным слоем — только он меняется при каждом деплое
+# Устанавливаем браузер для Playwright
+RUN playwright install chromium --with-deps 2>/dev/null || true
+
+# Копируем код отдельным слоем
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
