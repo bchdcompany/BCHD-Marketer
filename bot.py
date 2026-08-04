@@ -382,14 +382,31 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "\u041d\u0430\u043f\u0438\u0448\u0438 *\u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0439* \u0438\u043b\u0438 \u2705 \u0434\u043b\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438"
         )
 
-        # Отправляем HTML файл
-        html_bytes = html.encode("utf-8")
-        await ctx.bot.send_document(
-            chat_id=config.OWNER_CHAT_ID,
-            document=html_bytes,
-            filename="campaign_preview.html",
-            caption="👆 Открой в браузере для просмотра"
-        )
+        # Превью письма — показываем фоновое изображение от Ideogram
+        if image_url:
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=30) as hc:
+                    img_resp = await hc.get(image_url)
+                import io as _io
+                await ctx.bot.send_photo(
+                    chat_id=config.OWNER_CHAT_ID,
+                    photo=_io.BytesIO(img_resp.content),
+                    caption=(
+                        "🖼 *Превью фона письма*\n\n"
+                        "📧 Клиенты получат полноценное HTML письмо с этим фоном, "
+                        "текстом, кнопками и логотипом.\n\n"
+                        "Напиши *отправляй* чтобы разослать по всей базе."
+                    ),
+                    parse_mode="Markdown"
+                )
+            except Exception as img_e:
+                log.warning(f"Не удалось отправить превью: {img_e}")
+                await ctx.bot.send_message(
+                    chat_id=config.OWNER_CHAT_ID,
+                    text="📧 Письмо готово. Напиши *отправляй* чтобы разослать.",
+                    parse_mode="Markdown"
+                )
 
     except Exception as e:
         log.error(f"email_agent error: {e}", exc_info=True)
