@@ -397,7 +397,7 @@ def _build_html(data: dict, image_url: str) -> str:
   <div style="background:#1a1a1a;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
     <a href="https://bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:14px;">
       <div style="height:56px;flex-shrink:0;">
-        <img src="https://raw.githubusercontent.com/bchdcompany/BCHD-Marketer/main/bchd_white_transparent.png"
+        <img src="http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/def6291d-dfc8-4dcd-8744-a195f135a22c/2697x1448.png"
              alt="BCHD Appliance Repair"
              style="height:56px;width:auto;display:block;"
         />
