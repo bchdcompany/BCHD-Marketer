@@ -397,16 +397,12 @@ def _build_html(data: dict, image_url: str) -> str:
   <div style="background:#1a1a1a;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
     <a href="https://bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:14px;">
       <div style="height:56px;flex-shrink:0;">
-        <img src="http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/97181709-02bf-4488-8fe0-00aaa3016aa6/593x1158.png"
-             alt="BCHD"
-             style="height:60px;width:auto;display:block;"
+        <img src="http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/def6291d-dfc8-4dcd-8744-a195f135a22c/2697x1448.png"
+             alt="BCHD Appliance Repair"
+             style="height:50px;width:auto;display:block;"
         />
       </div>
-      <div style="line-height:1.15;">
-        <span style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:1px;display:block;">BCHD</span>
-        <span style="font-size:12px;color:#aaaaaa;display:block;">Appliance Repair Service &amp; HVAC</span>
-        <span style="font-size:10px;color:#cc1f1f;font-style:italic;display:block;margin-top:2px;">Fast Quality Guaranteed</span>
-      </div>
+
     </a>
     <a href="tel:9179354553" style="text-decoration:none;background:#cc1f1f;color:#fff;font-size:15px;font-weight:700;padding:10px 16px;border-radius:6px;white-space:nowrap;margin-left:12px;">
       📞 (917) 935-4553
