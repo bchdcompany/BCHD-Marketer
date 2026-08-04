@@ -345,14 +345,14 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         def _generate():
             campaign_data = _email_agent._generate_campaign_content(theme)
-            image_url = _email_agent._generate_ideogram_image(
+            img_url = _email_agent._generate_ideogram_image(
                 campaign_data.get("ideogram_prompt", "Professional appliance repair NYC")
             )
-            html = _email_agent._build_html(campaign_data, image_url)
-            return campaign_data, html
+            html = _email_agent._build_html(campaign_data, img_url)
+            return campaign_data, html, img_url
 
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            campaign_data, html = await loop.run_in_executor(pool, _generate)
+            campaign_data, html, image_url = await loop.run_in_executor(pool, _generate)
 
         # Сохраняем в pending
         _email_agent._pending_campaign = {
