@@ -486,39 +486,63 @@ def _build_html(data: dict, image_url: str) -> str:
 # 7. ОТПРАВКА ЧЕРЕЗ SENDGRID
 # ══════════════════════════════════════════════════════════
 
-def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> int:
-    """
-    Отправляет HTML письмо по списку clients_clean.txt через SendGrid.
-    Возвращает количество отправленных писем.
-    """
-    # Читаем список клиентов
+def _get_client_emails() -> list:
+    """Получает список email клиентов из Postgres или clients_clean.txt."""
+    try:
+        import asyncpg, asyncio
+        DATABASE_URL = os.environ.get("DATABASE_URL", "")
+        if DATABASE_URL:
+            async def _fetch():
+                pool = await asyncpg.create_pool(DATABASE_URL)
+                rows = await pool.fetch(
+                    "SELECT email FROM email_clients WHERE unsubscribed = FALSE"
+                )
+                await pool.close()
+                return [r["email"] for r in rows]
+            loop = asyncio.new_event_loop()
+            emails = loop.run_until_complete(_fetch())
+            loop.close()
+            if emails:
+                owner = "you@bchdcompany.com"
+                if owner not in emails:
+                    emails = [owner] + emails
+                logger.info(f"Клиентов из Postgres: {len(emails)}")
+                return emails
+    except Exception as e:
+        logger.warning(f"Postgres недоступен: {e}")
     clients_file = Path("clients_clean.txt")
-    if not clients_file.exists():
-        raise FileNotFoundError("clients_clean.txt not found")
+    if clients_file.exists():
+        emails = [line.strip() for line in clients_file.read_text().splitlines() if "@" in line]
+        logger.info(f"Клиентов из файла: {len(emails)}")
+        return emails
+    return []
 
-    emails = [line.strip() for line in clients_file.read_text().splitlines() if "@" in line]
 
-    headers = {
-        "Authorization": f"Bearer {SENDGRID_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "personalizations": [{"to": [{"email": e}]} for e in emails],
-        "from": {"email": SENDGRID_FROM_EMAIL, "name": SENDGRID_FROM_NAME},
-        "subject": subject,
-        "content": [{"type": "text/html", "value": html_content}],
-        "tracking_settings": {
-            "click_tracking": {"enable": True},
-            "open_tracking": {"enable": True}
+def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> int:
+    """Отправляет письмо каждому клиенту индивидуально. Возвращает кол-во отправленных."""
+    emails = _get_client_emails()
+    if not emails:
+        raise RuntimeError("Список клиентов пуст")
+    headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
+    sent = 0
+    failed = 0
+    for email in emails:
+        payload = {
+            "personalizations": [{"to": [{"email": email}]}],
+            "from": {"email": SENDGRID_FROM_EMAIL, "name": SENDGRID_FROM_NAME},
+            "subject": subject,
+            "content": [{"type": "text/html", "value": html_content}],
+            "tracking_settings": {"click_tracking": {"enable": True}, "open_tracking": {"enable": True}}
         }
-    }
-
-    resp = requests.post(
-        "https://api.sendgrid.com/v3/mail/send",
-        headers=headers,
-        json=payload,
-        timeout=30
-    )
-    resp.raise_for_status()
-    return len(emails)
+        try:
+            resp = requests.post("https://api.sendgrid.com/v3/mail/send", headers=headers, json=payload, timeout=30)
+            if resp.status_code == 202:
+                sent += 1
+            else:
+                failed += 1
+                logger.error(f"SendGrid {email}: {resp.status_code}")
+        except Exception as e:
+            failed += 1
+            logger.error(f"SendGrid error {email}: {e}")
+    logger.info(f"Рассылка: отправлено {sent}, ошибок {failed}")
+    return sent
