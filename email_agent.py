@@ -397,9 +397,9 @@ def _build_html(data: dict, image_url: str) -> str:
   <div style="background:#1a1a1a;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
     <a href="https://bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:14px;">
       <div style="height:56px;flex-shrink:0;">
-        <img src="http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/64a8cd5c-6bc0-4f81-a37d-39b3abbdb616/660x465.png"
+        <img src="http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/97181709-02bf-4488-8fe0-00aaa3016aa6/593x1158.png"
              alt="BCHD"
-             style="height:60px;width:auto;display:block;filter:invert(1);"
+             style="height:60px;width:auto;display:block;"
         />
       </div>
       <div style="line-height:1.15;">
