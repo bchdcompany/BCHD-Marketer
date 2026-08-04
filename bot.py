@@ -476,6 +476,57 @@ async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(msg, "❌ Ошибка отправки: " + str(e))
 
 
+async def cmd_emailtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/emailtest — отправить тестовое письмо только на you@bchdcompany.com."""
+    if not _is_owner(update):
+        return
+    if not _email_agent_available:
+        await update.message.reply_text("❌ email_agent не установлен")
+        return
+    if not _email_agent.has_pending_campaign():
+        await update.message.reply_text("❌ Нет готового баннера. Создай через /email")
+        return
+    msg = await update.message.reply_text("🧪 Отправляю тестовое письмо на you@bchdcompany.com...")
+    try:
+        import concurrent.futures, requests
+        loop = asyncio.get_event_loop()
+        pending = _email_agent._pending_campaign
+
+        def _send_test():
+            key = os.environ.get("SENDGRID_API_KEY", "")
+            payload = {
+                "personalizations": [{"to": [{"email": "you@bchdcompany.com", "name": "Chingis"}]}],
+                "from": {"email": "you@bchdcompany.com", "name": "BCHD Appliance Repair"},
+                "subject": "[TEST] " + pending["subject"],
+                "content": [{"type": "text/html", "value": pending["html"]}],
+                "tracking_settings": {
+                    "click_tracking": {"enable": True},
+                    "open_tracking": {"enable": True}
+                }
+            }
+            resp = requests.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=payload, timeout=30
+            )
+            return resp.status_code
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            status = await loop.run_in_executor(pool, _send_test)
+
+        if status == 202:
+            await _safe_edit(msg,
+                "✅ Тестовое письмо отправлено на you@bchdcompany.com\n\n"
+                "Проверь почту — если всё хорошо, напиши *отправляй* для рассылки по всей базе.",
+                parse_mode="Markdown"
+            )
+        else:
+            await _safe_edit(msg, f"❌ Ошибка SendGrid: {status}")
+    except Exception as e:
+        log.error(f"emailtest error: {e}", exc_info=True)
+        await _safe_edit(msg, f"❌ Ошибка: {e}")
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -4106,6 +4157,7 @@ def main():
     app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
     app.add_handler(CommandHandler("email", cmd_email))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
+    app.add_handler(CommandHandler("emailtest", cmd_emailtest))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
     app.add_error_handler(global_error_handler)
