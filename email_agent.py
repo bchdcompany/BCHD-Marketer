@@ -18,7 +18,7 @@ OWNER_CHAT_ID     = os.environ.get("OWNER_CHAT_ID")
 SENDGRID_FROM_EMAIL = "you@bchdcompany.com"
 SENDGRID_FROM_NAME  = "BCHD Appliance Repair"
 WORKIZ_BOOKING_URL  = "https://www.bchdcompany.com/#booking-form"
-LOGO_URL = "http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/def6291d-dfc8-4dcd-8744-a195f135a22c/2697x1448.png"
+LOGO_URL = "http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/49a5a9a0-80f2-432d-9af0-972544bd432d/400x400.png"
 _pending_campaign = None
 
 def ask_campaign_topic(bot):
@@ -202,7 +202,7 @@ def _build_html(data: dict, image_url: str) -> str:
     <tr>
       <td>
         <a href="https://www.bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:12px;">
-          <img src="{LOGO_URL}" alt="BCHD" style="height:52px;width:auto;display:block;object-fit:contain;object-position:left center;max-width:52px;" />
+          <img src="{LOGO_URL}" alt="BCHD" style="height:70px;width:70px;display:block;object-fit:contain;" />
           <div>
             <div style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:1px;line-height:1.1;">BCHD</div>
             <div style="font-size:11px;color:#aaaaaa;line-height:1.2;">Appliance Repair Service &amp; HVAC</div>
