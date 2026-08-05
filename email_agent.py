@@ -201,9 +201,13 @@ def _build_html(data: dict, image_url: str) -> str:
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#111111;padding:16px 24px;">
     <tr>
       <td>
-        <a href="https://www.bchdcompany.com" target="_blank" style="text-decoration:none;display:block;">
-          <img src="{LOGO_URL}" alt="BCHD Appliance Repair Service &amp; HVAC"
-               style="height:70px;width:auto;display:block;max-width:280px;" />
+        <a href="https://www.bchdcompany.com" target="_blank" style="text-decoration:none;display:flex;align-items:center;gap:12px;">
+          <img src="{LOGO_URL}" alt="BCHD" style="height:52px;width:auto;display:block;object-fit:contain;object-position:left center;max-width:52px;" />
+          <div>
+            <div style="font-size:22px;font-weight:900;color:#ffffff;letter-spacing:1px;line-height:1.1;">BCHD</div>
+            <div style="font-size:11px;color:#aaaaaa;line-height:1.2;">Appliance Repair Service &amp; HVAC</div>
+            <div style="font-size:10px;color:#cc1f1f;font-style:italic;">Fast Quality Guaranteed</div>
+          </div>
         </a>
       </td>
       <td align="right" style="white-space:nowrap;">
