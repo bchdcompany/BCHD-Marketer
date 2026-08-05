@@ -280,41 +280,93 @@ def _build_html(data: dict, image_url: str) -> str:
 </body>
 </html>"""
 
-def _get_client_emails() -> list:
+def _get_client_emails(unsent_only: bool = False) -> list:
+    """Получает список email клиентов из Postgres."""
     try:
         import asyncpg, asyncio
         DATABASE_URL = os.environ.get("DATABASE_URL", "")
         if DATABASE_URL:
             async def _fetch():
                 pool = await asyncpg.create_pool(DATABASE_URL)
-                rows = await pool.fetch("SELECT email FROM email_clients WHERE unsubscribed = FALSE")
+                if unsent_only:
+                    rows = await pool.fetch(
+                        "SELECT email FROM email_clients WHERE unsubscribed = FALSE AND last_sent_at IS NULL ORDER BY id"
+                    )
+                else:
+                    rows = await pool.fetch(
+                        "SELECT email FROM email_clients WHERE unsubscribed = FALSE ORDER BY id"
+                    )
                 await pool.close()
                 return [r["email"] for r in rows]
             loop = asyncio.new_event_loop()
             emails = loop.run_until_complete(_fetch())
             loop.close()
-            if emails:
-                owner = "you@bchdcompany.com"
-                if owner not in emails:
-                    emails = [owner] + emails
-                logger.info(f"Клиентов из Postgres: {len(emails)}")
-                return emails
+            logger.info(f"Клиентов{'(не получали)' if unsent_only else ''}: {len(emails)}")
+            return emails
     except Exception as e:
         logger.warning(f"Postgres недоступен: {e}")
     clients_file = Path("clients_clean.txt")
     if clients_file.exists():
-        emails = [line.strip() for line in clients_file.read_text().splitlines() if "@" in line]
-        return emails
+        return [line.strip() for line in clients_file.read_text().splitlines() if "@" in line]
     return []
 
+def _mark_emails_sent(emails: list) -> None:
+    """Помечает клиентов как получивших рассылку."""
+    try:
+        import asyncpg, asyncio
+        DATABASE_URL = os.environ.get("DATABASE_URL", "")
+        if not DATABASE_URL:
+            return
+        async def _update():
+            pool = await asyncpg.create_pool(DATABASE_URL)
+            await pool.execute(
+                "UPDATE email_clients SET last_sent_at = NOW() WHERE email = ANY($1::text[])",
+                emails
+            )
+            await pool.close()
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(_update())
+        loop.close()
+    except Exception as e:
+        logger.warning(f"Ошибка пометки отправленных: {e}")
+
 def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> int:
-    emails = _get_client_emails()
-    if not emails:
+    """Отправляет только тем кто ещё не получал рассылку."""
+    # Сначала всегда добавляем владельца
+    all_emails = _get_client_emails(unsent_only=False)
+    unsent = _get_client_emails(unsent_only=True)
+
+    # Владелец всегда первым если не в unsent
+    owner = "you@bchdcompany.com"
+    if owner not in unsent and owner in all_emails:
+        unsent = [owner] + [e for e in unsent if e != owner]
+
+    if not unsent:
+        # Все уже получили — сбрасываем и начинаем заново
+        logger.info("Все клиенты получили рассылку — сбрасываем историю")
+        try:
+            import asyncpg, asyncio
+            DATABASE_URL = os.environ.get("DATABASE_URL", "")
+            async def _reset():
+                pool = await asyncpg.create_pool(DATABASE_URL)
+                await pool.execute("UPDATE email_clients SET last_sent_at = NULL")
+                await pool.close()
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_reset())
+            loop.close()
+        except Exception as e:
+            logger.warning(f"Ошибка сброса: {e}")
+        unsent = all_emails
+
+    if not unsent:
         raise RuntimeError("Список клиентов пуст")
+
     headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
     sent = 0
     failed = 0
-    for email in emails:
+    sent_emails = []
+
+    for email in unsent:
         payload = {
             "personalizations": [{"to": [{"email": email}]}],
             "from": {"email": SENDGRID_FROM_EMAIL, "name": SENDGRID_FROM_NAME},
@@ -326,11 +378,18 @@ def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> in
             resp = requests.post("https://api.sendgrid.com/v3/mail/send", headers=headers, json=payload, timeout=30)
             if resp.status_code == 202:
                 sent += 1
+                sent_emails.append(email)
             else:
                 failed += 1
                 logger.error(f"SendGrid {email}: {resp.status_code}")
         except Exception as e:
             failed += 1
             logger.error(f"SendGrid error {email}: {e}")
-    logger.info(f"Рассылка: отправлено {sent}, ошибок {failed}")
+
+    # Помечаем отправленных
+    if sent_emails:
+        _mark_emails_sent(sent_emails)
+
+    remaining = len(unsent) - sent
+    logger.info(f"Рассылка: отправлено {sent}, ошибок {failed}, осталось {remaining}")
     return sent
