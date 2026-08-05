@@ -1104,18 +1104,32 @@ reply_to_review, update_gbp_description, update_gbp_categories, create_gbp_post,
 send_email_campaign
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
-ИНСТРУКЦИЯ ПО update_ad_headlines — ОБЯЗАТЕЛЬНО ЧИТАЙ:
+ИНСТРУКЦИЯ ПО update_ad_headlines — КРИТИЧНО:
 Когда владелец просит обновить/создать заголовки объявления:
-1. Если в context_data есть ad_performance — найди нужное объявление по группе
-2. Возьми ad_id из поля ad_id или id объявления
-3. СРАЗУ создай объект в proposed_actions с type="update_ad_headlines"
-4. НЕ ПИШИ "карточка ниже" без самой карточки в proposed_actions — это баг
-5. Карточка — это JSON объект в proposed_actions, не текст в reply
-Поля: type="update_ad_headlines", account="ads",
-resource_name="" (пустой если нет), ad_id=числовой ID,
-ad_group="название группы", headlines=[список 3-15 заголовков до 30 символов],
-description, reasoning, urgency="medium", urgency_label="Средняя", confidence="high"
-Если ad_performance нет в context_data — добавь "ad_performance" в data_needed.
+1. Включи "ad_performance" в data_needed если его нет в context_data
+2. Найди ad_id нужного объявления в context_data["ad_performance"]
+3. СРАЗУ помести действие в proposed_actions — НЕ в reply
+4. proposed_actions должен содержать реальный объект, а НЕ фразу "карточка ниже"
+
+ПРИМЕР правильного proposed_actions:
+proposed_actions = [
+  {
+    "type": "update_ad_headlines",
+    "account": "ads",
+    "resource_name": "",
+    "ad_id": 800710431782,
+    "ad_group": "General Appliance Repair",
+    "headlines": ["Licensed & Insured Techs", "5-Star Appliance Repair NYC", "Same Day Service NYC", "All Brands Repaired Fast", "Affordable Appliance Repair"],
+    "description": "Обновить заголовки RSA — General Appliance Repair",
+    "reasoning": "Добавляем 5 новых заголовков для A/B теста",
+    "urgency": "medium",
+    "urgency_label": "Средняя",
+    "confidence": "high"
+  }
+]
+
+ЗАПРЕЩЕНО: писать в reply "карточка ниже 👇" без объекта в proposed_actions.
+Карточка = объект в proposed_actions. Текст в reply = пояснение что делаем.
 
 Верни ТОЛЬКО JSON:
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
