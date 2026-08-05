@@ -1111,22 +1111,16 @@ send_email_campaign
 3. СРАЗУ помести действие в proposed_actions — НЕ в reply
 4. proposed_actions должен содержать реальный объект, а НЕ фразу "карточка ниже"
 
-ПРИМЕР правильного proposed_actions:
-proposed_actions = [
-  {
-    "type": "update_ad_headlines",
-    "account": "ads",
-    "resource_name": "",
-    "ad_id": 800710431782,
-    "ad_group": "General Appliance Repair",
-    "headlines": ["Licensed & Insured Techs", "5-Star Appliance Repair NYC", "Same Day Service NYC", "All Brands Repaired Fast", "Affordable Appliance Repair"],
-    "description": "Обновить заголовки RSA — General Appliance Repair",
-    "reasoning": "Добавляем 5 новых заголовков для A/B теста",
-    "urgency": "medium",
-    "urgency_label": "Средняя",
-    "confidence": "high"
-  }
-]
+Поля объекта в proposed_actions:
+- type = "update_ad_headlines"
+- account = "ads"
+- resource_name = "" (пустой если нет)
+- ad_id = числовой ID объявления из ad_performance
+- ad_group = название группы объявлений
+- headlines = список 3-15 заголовков, каждый не более 30 символов
+- description = краткое описание действия
+- reasoning = обоснование
+- urgency = "medium", urgency_label = "Средняя", confidence = "high"
 
 ЗАПРЕЩЕНО: писать в reply "карточка ниже 👇" без объекта в proposed_actions.
 Карточка = объект в proposed_actions. Текст в reply = пояснение что делаем.
