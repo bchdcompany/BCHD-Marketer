@@ -458,6 +458,153 @@ class GBPClient:
         """Удаляет ответ на отзыв."""
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
         return await self._delete(url)
+    async def upload_media(self, image_url: str, category: str = "ADDITIONAL") -> dict:
+        """
+        Загружает фото в GBP профиль.
+        category: ADDITIONAL, COVER, PROFILE, LOGO, EXTERIOR, INTERIOR, PRODUCT, AT_WORK, FOOD_AND_DRINK, MENU, COMMON_AREA, ROOMS, TEAMS, VIRTUAL_TOUR
+        """
+        import httpx as _httpx
+        # Скачиваем изображение
+        async with _httpx.AsyncClient(timeout=30) as client:
+            img_resp = await client.get(image_url)
+            image_data = img_resp.content
+            content_type = img_resp.headers.get("content-type", "image/jpeg")
+
+        # Загружаем через multipart
+        token = await self._get_access_token()
+        url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/media"
+        
+        import base64
+        payload = {
+            "mediaFormat": "PHOTO",
+            "locationAssociation": {"category": category},
+            "sourceUrl": image_url
+        }
+        result = await self._post(url, payload)
+        return result
+
+    async def get_media(self, page_size: int = 20) -> list:
+        """Получает список медиафайлов профиля."""
+        url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/media"
+        result = await self._get(url, params={"pageSize": page_size})
+        return result.get("mediaItems", [])
+
+    async def update_hours(self, hours: dict) -> dict:
+        """
+        Обновляет часы работы.
+        hours = {"monday": {"openTime": "09:00", "closeTime": "18:00"}, ...}
+        """
+        periods = []
+        day_map = {
+            "monday": "MONDAY", "tuesday": "TUESDAY", "wednesday": "WEDNESDAY",
+            "thursday": "THURSDAY", "friday": "FRIDAY", "saturday": "SATURDAY", "sunday": "SUNDAY"
+        }
+        for day, times in hours.items():
+            if times:
+                h_open, m_open = times["openTime"].split(":")
+                h_close, m_close = times["closeTime"].split(":")
+                periods.append({
+                    "openDay": day_map[day],
+                    "closeDay": day_map[day],
+                    "openTime": {"hours": int(h_open), "minutes": int(m_open)},
+                    "closeTime": {"hours": int(h_close), "minutes": int(m_close)}
+                })
+
+        url = f"https://mybusinessbusinessinformation.googleapis.com/v1/locations/{LOCATION_ID}"
+        payload = {"regularHours": {"periods": periods}}
+        return await self._patch(url, payload, mask="regularHours")
+
+    async def create_offer_post(self, title: str, summary: str, coupon_code: str = "",
+                                 offer_url: str = "https://www.bchdcompany.com/#booking-form",
+                                 start_date: str = "", end_date: str = "") -> dict:
+        """Создаёт пост-акцию в GBP."""
+        post = {
+            "topicType": "OFFER",
+            "summary": summary,
+            "offer": {
+                "couponCode": coupon_code,
+                "redeemOnlineUrl": offer_url,
+                "termsConditions": "Valid for new customers in Brooklyn, Queens & Manhattan."
+            }
+        }
+        if title:
+            post["title"] = title
+        if start_date and end_date:
+            sy, sm, sd = start_date.split("-")
+            ey, em, ed = end_date.split("-")
+            post["event"] = {
+                "title": title,
+                "schedule": {
+                    "startDate": {"year": int(sy), "month": int(sm), "day": int(sd)},
+                    "endDate": {"year": int(ey), "month": int(em), "day": int(ed)}
+                }
+            }
+        url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/localPosts"
+        return await self._post(url, post)
+
+    async def get_profile_completeness(self) -> dict:
+        """Анализирует заполненность профиля и возвращает рекомендации."""
+        profile = await self.get_profile()
+        media = await self.get_media(page_size=100)
+        reviews_data = await self.get_reviews(page_size=5)
+
+        score = 0
+        tips = []
+
+        # Базовые поля
+        if profile.get("title"): score += 10
+        else: tips.append("Добавь название компании")
+
+        if profile.get("phoneNumbers"): score += 10
+        else: tips.append("Добавь номер телефона")
+
+        if profile.get("websiteUri"): score += 10
+        else: tips.append("Добавь сайт")
+
+        if profile.get("regularHours"): score += 10
+        else: tips.append("Добавь часы работы")
+
+        desc = profile.get("profile", {}).get("description", "")
+        if len(desc) > 200: score += 15
+        elif desc: score += 5; tips.append("Расширь описание до 750 символов")
+        else: tips.append("Добавь описание компании")
+
+        # Категории
+        cats = profile.get("categories", {})
+        if cats.get("primaryCategory"): score += 5
+        if cats.get("additionalCategories"): score += 5
+        else: tips.append("Добавь дополнительные категории услуг")
+
+        # Фото
+        photo_count = len(media)
+        if photo_count >= 50: score += 15
+        elif photo_count >= 20: score += 10; tips.append(f"Добавь больше фото (сейчас {photo_count}, рекомендуется 50+)")
+        elif photo_count > 0: score += 5; tips.append(f"Добавь больше фото (сейчас {photo_count}, рекомендуется 50+)")
+        else: tips.append("Добавь фото работ и команды")
+
+        # Логотип
+        logos = [m for m in media if m.get("locationAssociation", {}).get("category") == "LOGO"]
+        if logos: score += 5
+        else: tips.append("Добавь логотип компании")
+
+        # Отзывы
+        review_count = reviews_data.get("totalReviewCount", 0)
+        rating = reviews_data.get("averageRating", 0)
+        if review_count >= 50: score += 10
+        elif review_count >= 20: score += 7
+        elif review_count > 0: score += 3
+
+        if rating >= 4.5: score += 5
+
+        return {
+            "score": score,
+            "photo_count": photo_count,
+            "review_count": review_count,
+            "rating": rating,
+            "tips": tips,
+            "profile_name": profile.get("title", ""),
+        }
+
 
 
 def init_gbp_client(config) -> Optional["GBPClient"]:
