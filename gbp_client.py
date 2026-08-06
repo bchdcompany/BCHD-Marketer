@@ -546,7 +546,7 @@ class GBPClient:
         """Анализирует заполненность профиля и возвращает рекомендации."""
         profile = await self.get_profile()
         media = await self.get_media()
-        reviews_data = await self.get_reviews()
+        reviews_data = await self.get_reviews(days=365)
 
         score = 0
         tips = []
@@ -598,7 +598,7 @@ class GBPClient:
         reviews_list = reviews_data.get("reviews", [])
         if reviews_list:
             star_map = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
-            ratings = [star_map.get(r.get("starRating", ""), 0) for r in reviews_list if r.get("starRating")]
+            ratings = [star_map.get(r.get("rating", ""), 0) for r in reviews_list if r.get("rating")]
             rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
         else:
             rating = 0
