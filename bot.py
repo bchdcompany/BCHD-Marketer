@@ -3475,7 +3475,7 @@ async def scheduled_gbp_review_check(app):
         return
     try:
         gbp = init_gbp_client(config)
-        reviews_data = await gbp.get_unanswered_reviews(page_size=10)
+        reviews_data = await gbp.get_unanswered_reviews()
         reviews = reviews_data if isinstance(reviews_data, list) else reviews_data.get("reviews", [])
 
         if not reviews:
@@ -3584,7 +3584,7 @@ async def scheduled_gbp_weekly_audit(app):
         }
 
         # Карточка на новый пост если давно не публиковали
-        posts = await gbp.get_posts(page_size=5)
+        posts = await gbp.get_posts()
         post_list = posts if isinstance(posts, list) else posts.get("localPosts", [])
         if not post_list:
             action = {
