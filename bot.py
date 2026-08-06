@@ -3465,6 +3465,234 @@ async def scheduled_weekly_strategy(app):
         log.error(f"Ошибка еженедельной стратегии: {e}")
 
 
+
+async def scheduled_gbp_review_check(app):
+    """
+    Ежедневно в 10:00 NY — проверяет новые отзывы GBP.
+    Создаёт карточки на одобрение ответов.
+    """
+    if not _gbp_available:
+        return
+    try:
+        gbp = await init_gbp_client(config)
+        reviews_data = await gbp.get_unanswered_reviews(page_size=10)
+        reviews = reviews_data if isinstance(reviews_data, list) else reviews_data.get("reviews", [])
+
+        if not reviews:
+            log.info("GBP: новых отзывов без ответа нет")
+            return
+
+        log.info(f"GBP: найдено {len(reviews)} отзывов без ответа")
+
+        for review in reviews:
+            review_id = review.get("reviewId", "")
+            author = review.get("reviewer", {}).get("displayName", "Клиент")
+            rating = review.get("starRating", "")
+            comment = review.get("comment", "")[:300]
+            create_time = review.get("createTime", "")[:10]
+
+            # Генерируем ответ через Claude
+            stars = {"ONE": "1★", "TWO": "2★", "THREE": "3★", "FOUR": "4★", "FIVE": "5★"}.get(rating, rating)
+
+            reply_prompt = (
+                f"You are responding to a Google review for BCHD Appliance Repair & HVAC in NYC. "
+                f"Write a professional, warm, personalized response in English. "
+                f"Reviewer: {author}. Rating: {stars}. Review: '{comment}'. "
+                f"Guidelines: thank by name, reference specific details from review, "
+                f"mention BCHD team if relevant, invite to contact again. "
+                f"Max 150 words. No generic templates."
+            )
+
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                messages=[{"role": "user", "content": reply_prompt}]
+            )
+            suggested_reply = resp.content[0].text.strip()
+
+            action = {
+                "type": "reply_to_review",
+                "review_id": review_id,
+                "review_author": author,
+                "review_rating": stars,
+                "review_comment": comment,
+                "review_date": create_time,
+                "suggested_reply": suggested_reply,
+                "description": f"Ответить на отзыв от {author} ({stars}, {create_time})",
+                "reasoning": f"Отзыв без ответа — отвечаем в течение 24 часов для GBP рейтинга",
+                "urgency": "low",
+                "urgency_label": "Низкая",
+                "confidence": "high",
+                "requires_approval": True
+            }
+            action_id = await pending.add(action)
+            await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+
+    except Exception as e:
+        log.error(f"Ошибка GBP review check: {e}", exc_info=True)
+
+
+async def scheduled_gbp_weekly_audit(app):
+    """
+    Еженедельно в понедельник 10:30 NY — аудит GBP профиля.
+    Анализирует заполненность и создаёт карточки на улучшения.
+    """
+    if not _gbp_available:
+        return
+    try:
+        gbp = await init_gbp_client(config)
+        data = await gbp.get_profile_completeness()
+
+        score = data.get("score", 0)
+        tips = data.get("tips", [])
+        photo_count = data.get("photo_count", 0)
+        review_count = data.get("review_count", 0)
+        rating = data.get("rating", 0)
+
+        # Отправляем сводку
+        msg = (
+            "\U0001f4ca *GBP Еженедельный аудит*\n\n"
+            f"\U0001f3af Заполненность: *{score}%*\n"
+            f"\U0001f4f8 Фото: {photo_count}\n"
+            f"\u2b50 Рейтинг: {rating} ({review_count} отзывов)\n"
+        )
+        if tips:
+            msg += "\n*Найдено улучшений:* " + str(len(tips)) + "\n"
+            for tip in tips[:5]:
+                msg += f"\u2022 {tip}\n"
+        else:
+            msg += "\n\u2705 Профиль полностью заполнен!"
+
+        await _safe_send(app.bot, config.OWNER_CHAT_ID, msg, parse_mode="Markdown")
+
+        # Создаём карточки на конкретные улучшения
+        action_map = {
+            "Добавь логотип компании": {
+                "type": "gbp_add_logo",
+                "description": "Добавить логотип в GBP (+7% completeness)",
+                "reasoning": "Логотип повышает доверие клиентов и заполненность профиля",
+                "urgency": "low", "urgency_label": "Низкая"
+            },
+            "Добавь дополнительные категории услуг": {
+                "type": "gbp_update_categories",
+                "description": "Добавить категории: Refrigerator Repair, Washer & Dryer Repair, Dishwasher Repair",
+                "reasoning": "Больше категорий = больше запросов в которых показывается профиль",
+                "urgency": "low", "urgency_label": "Низкая"
+            },
+        }
+
+        # Карточка на новый пост если давно не публиковали
+        posts = await gbp.get_posts(page_size=5)
+        post_list = posts if isinstance(posts, list) else posts.get("localPosts", [])
+        if not post_list:
+            action = {
+                "type": "gbp_create_post",
+                "description": "Создать пост в GBP — давно не публиковали",
+                "reasoning": "Регулярные посты повышают видимость профиля в поиске Google",
+                "suggested_text": (
+                    "Summer Special: 30% OFF appliance repair in Brooklyn, Queens & Manhattan! "
+                    "AC not cooling? Fridge acting up? Call BCHD — same-day service available. "
+                    "(917) 935-4553"
+                ),
+                "urgency": "medium", "urgency_label": "Средняя",
+                "confidence": "high", "requires_approval": True
+            }
+            action_id = await pending.add(action)
+            await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+
+        # Карточка если мало фото
+        if photo_count < 50:
+            action = {
+                "type": "gbp_add_photos",
+                "description": f"Добавить фото в GBP (сейчас {photo_count}, рекомендуется 50+)",
+                "reasoning": "Профили с 50+ фото получают в 2 раза больше кликов. Добавь фото техников за работой, офиса, транспорта.",
+                "urgency": "low", "urgency_label": "Низкая",
+                "confidence": "high", "requires_approval": False
+            }
+            action_id = await pending.add(action)
+            await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+
+    except Exception as e:
+        log.error(f"Ошибка GBP weekly audit: {e}", exc_info=True)
+
+
+async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /gbppost <текст> — публикует пост в GBP.
+    /gbppost offer <заголовок> | <текст> — публикует акцию.
+    """
+    if not _is_owner(update):
+        return
+    if not _gbp_available:
+        await update.message.reply_text("\u274c GBP не подключён")
+        return
+
+    args_text = " ".join(ctx.args) if ctx.args else ""
+    if not args_text:
+        await update.message.reply_text("Использование: /gbppost <текст поста>\nИли: /gbppost offer Заголовок | Текст акции")
+        return
+
+    try:
+        gbp = await init_gbp_client(config)
+        msg = await update.message.reply_text("\u23f3 Публикую пост...")
+
+        if args_text.startswith("offer "):
+            parts = args_text[6:].split("|", 1)
+            title = parts[0].strip()
+            summary = parts[1].strip() if len(parts) > 1 else title
+            result = await gbp.create_offer_post(title=title, summary=summary)
+        else:
+            result = await gbp.create_post(
+                summary=args_text,
+                call_to_action_type="BOOK",
+                call_to_action_url="https://www.bchdcompany.com/#booking-form"
+            )
+
+        if result.get("name"):
+            await _safe_edit(msg, "\u2705 Пост опубликован в Google Business Profile!")
+        else:
+            await _safe_edit(msg, f"\u274c Ошибка: {result}")
+
+    except Exception as e:
+        log.error(f"GBP post error: {e}", exc_info=True)
+        await update.message.reply_text(f"\u274c Ошибка: {e}")
+
+
+async def cmd_gbp_audit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/gbpaudit — проверяет заполненность GBP профиля."""
+    if not _is_owner(update):
+        return
+    if not _gbp_available:
+        await update.message.reply_text("\u274c GBP не подключён")
+        return
+    try:
+        gbp = await init_gbp_client(config)
+        data = await gbp.get_profile_completeness()
+        score = data.get("score", 0)
+        tips = data.get("tips", [])
+        photo_count = data.get("photo_count", 0)
+        review_count = data.get("review_count", 0)
+        rating = data.get("rating", 0)
+
+        msg = (
+            f"\U0001f4ca *GBP Профиль BCHD*\n\n"
+            f"\U0001f3af Заполненность: *{score}%*\n"
+            f"\U0001f4f8 Фото: {photo_count}\n"
+            f"\u2b50 Рейтинг: {rating} ({review_count} отзывов)\n"
+        )
+        if tips:
+            msg += f"\n*Что улучшить:*\n"
+            for tip in tips:
+                msg += f"\u2022 {tip}\n"
+        else:
+            msg += "\n\u2705 Профиль полностью заполнен!"
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"\u274c Ошибка: {e}")
+
 async def scheduled_campaign_audit(app):
     """
     Каждый понедельник в 09:55 — полный проактивный аудит кампании.
@@ -4179,6 +4407,8 @@ def main():
     app.add_handler(CommandHandler("clearmemory", cmd_clear_memory))
     app.add_handler(CommandHandler("email", cmd_email))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
+    app.add_handler(CommandHandler("gbppost", cmd_gbp_post))
+    app.add_handler(CommandHandler("gbpaudit", cmd_gbp_audit))
     app.add_handler(CommandHandler("emailtest", cmd_emailtest))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
