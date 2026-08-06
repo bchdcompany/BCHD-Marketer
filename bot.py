@@ -3474,7 +3474,7 @@ async def scheduled_gbp_review_check(app):
     if not _gbp_available:
         return
     try:
-        gbp = await init_gbp_client(config)
+        gbp = init_gbp_client(config)
         reviews_data = await gbp.get_unanswered_reviews(page_size=10)
         reviews = reviews_data if isinstance(reviews_data, list) else reviews_data.get("reviews", [])
 
@@ -3542,7 +3542,7 @@ async def scheduled_gbp_weekly_audit(app):
     if not _gbp_available:
         return
     try:
-        gbp = await init_gbp_client(config)
+        gbp = init_gbp_client(config)
         data = await gbp.get_profile_completeness()
 
         score = data.get("score", 0)
@@ -3635,7 +3635,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        gbp = await init_gbp_client(config)
+        gbp = init_gbp_client(config)
         msg = await update.message.reply_text("\u23f3 Публикую пост...")
 
         if args_text.startswith("offer "):
@@ -3668,7 +3668,7 @@ async def cmd_gbp_audit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\u274c GBP не подключён")
         return
     try:
-        gbp = await init_gbp_client(config)
+        gbp = init_gbp_client(config)
         data = await gbp.get_profile_completeness()
         score = data.get("score", 0)
         tips = data.get("tips", [])
