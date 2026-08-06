@@ -551,46 +551,31 @@ class GBPClient:
         score = 0
         tips = []
 
-        # Базовые поля — проверяем все возможные ключи
-        title = profile.get("title") or profile.get("name", "")
+        # Читаем данные из кастомного формата get_profile()
+        title = profile.get("title", "")
         if title: score += 10
         else: tips.append("Добавь название компании")
 
-        # Телефон — может быть в разных полях
-        phones = (profile.get("phoneNumbers") or
-                  profile.get("primaryPhone") or
-                  profile.get("additionalPhones") or
-                  profile.get("phone"))
-        if phones: score += 10
+        if profile.get("phone"): score += 10
         else: tips.append("Добавь номер телефона")
 
-        # Сайт
-        website = profile.get("websiteUri") or profile.get("website")
-        if website: score += 10
+        if profile.get("website"): score += 10
         else: tips.append("Добавь сайт")
 
-        # Часы работы
-        hours = profile.get("regularHours") or profile.get("hours")
-        if hours: score += 10
+        if profile.get("has_hours"): score += 10
         else: tips.append("Добавь часы работы")
 
-        # Описание
-        desc = (profile.get("profile", {}).get("description", "") or
-                profile.get("description", ""))
+        desc = profile.get("description", "")
         if len(desc) > 200: score += 15
         elif desc: score += 5; tips.append("Расширь описание до 750 символов")
         else: tips.append("Добавь описание компании")
 
-        # Категории
-        cats = profile.get("categories", {})
-        primary = cats.get("primaryCategory") or profile.get("primaryCategory")
-        additional = cats.get("additionalCategories") or profile.get("additionalCategories", [])
-        if primary: score += 5
-        if additional: score += 5
+        if profile.get("primary_category"): score += 5
+        if profile.get("additional_categories"): score += 5
         else: tips.append("Добавь дополнительные категории услуг")
 
-        # Фото
-        photo_count = len(media)
+        # Фото — из profile или из media
+        photo_count = profile.get("photos_total") or len(media)
         if photo_count >= 50: score += 15
         elif photo_count >= 20: score += 10
         elif photo_count > 0: score += 5
@@ -599,30 +584,29 @@ class GBPClient:
             tips.append(f"Добавь больше фото (сейчас {photo_count}, рекомендуется 50+)")
 
         # Логотип
-        logos = [m for m in media if m.get("locationAssociation", {}).get("category") == "LOGO"]
-        if logos: score += 5
-        else: tips.append("Добавь логотип компании")
-
-        # Отзывы — данные могут быть в разных форматах
-        if isinstance(reviews_data, dict):
-            review_count = (reviews_data.get("totalReviewCount") or
-                           reviews_data.get("reviewCount") or
-                           len(reviews_data.get("reviews", [])))
-            rating = reviews_data.get("averageRating") or reviews_data.get("rating") or 0
+        photos_by_cat = profile.get("photos_by_category", {})
+        if photos_by_cat.get("LOGO"):
+            score += 5
         else:
-            review_count = len(reviews_data) if isinstance(reviews_data, list) else 0
-            rating = 0
+            logos = [m for m in media if m.get("locationAssociation", {}).get("category") == "LOGO"]
+            if logos: score += 5
+            else: tips.append("Добавь логотип компании")
 
-        # Если рейтинг не получен через отзывы — берём из профиля
-        if not rating:
-            rating = profile.get("rating") or profile.get("averageRating") or 0
-        if not review_count:
-            review_count = profile.get("userRatingCount") or profile.get("reviewCount") or 0
+        # Отзывы из reviews_data
+        review_count = reviews_data.get("total", 0) or len(reviews_data.get("reviews", []))
+        # Считаем средний рейтинг из отзывов
+        reviews_list = reviews_data.get("reviews", [])
+        if reviews_list:
+            star_map = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
+            ratings = [star_map.get(r.get("starRating", ""), 0) for r in reviews_list if r.get("starRating")]
+            rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
+        else:
+            rating = 0
 
         if review_count >= 50: score += 10
         elif review_count >= 20: score += 7
         elif review_count > 0: score += 3
-        if float(rating) >= 4.5: score += 5
+        if rating >= 4.5: score += 5
 
         return {
             "score": min(score, 100),
