@@ -545,8 +545,8 @@ class GBPClient:
     async def get_profile_completeness(self) -> dict:
         """Анализирует заполненность профиля и возвращает рекомендации."""
         profile = await self.get_profile()
-        media = await self.get_media(page_size=100)
-        reviews_data = await self.get_reviews(page_size=5)
+        media = await self.get_media()
+        reviews_data = await self.get_reviews()
 
         score = 0
         tips = []
