@@ -2758,6 +2758,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 elif action_type == 'remove_negative_keyword':
                     verify_details = f"\n📊 Минус-слово отсутствует в настройках — удаление подтверждено"
 
+                # Логируем изменение для анализа через 7 дней
+                await _log_ads_change(action, result)
                 text = (
                     f"✅ *Выполнено и подтверждено:* {action['description']}\n\n"
                     f"{result.get('summary', str(result))}"
@@ -3699,6 +3701,161 @@ async def cmd_gbp_audit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"\u274c Ошибка: {e}")
+
+
+async def _log_ads_change(action: dict, result: dict) -> None:
+    """Логирует выполненное изменение в ads_changes_log для последующего анализа эффекта."""
+    try:
+        import json as _json
+        from datetime import datetime as _dt, timedelta as _td
+        pool = await _get_db_pool()
+        if not pool:
+            return
+        
+        action_type = action.get("type", "")
+        
+        # Определяем что изменилось
+        change_from = {}
+        change_to = {}
+        keyword = action.get("keyword") or (action.get("keywords", [None])[0] if action.get("keywords") else None)
+        if isinstance(keyword, dict):
+            keyword = keyword.get("keyword", "")
+        
+        if action_type == "update_bid":
+            change_from = {"bid": action.get("current_bid")}
+            change_to = {"bid": action.get("new_bid")}
+        elif action_type == "pause_keywords":
+            change_from = {"status": "ENABLED"}
+            change_to = {"status": "PAUSED"}
+        elif action_type == "enable_keywords":
+            change_from = {"status": "PAUSED"}
+            change_to = {"status": "ENABLED"}
+        elif action_type == "budget_change":
+            change_from = {"budget": action.get("current_budget")}
+            change_to = {"budget": action.get("proposed_budget")}
+        elif action_type == "update_ad_headlines":
+            change_from = {"headlines": action.get("current_headlines", [])}
+            change_to = {"headlines": action.get("headlines", [])}
+        elif action_type == "add_negative_keywords":
+            change_to = {"negatives": action.get("keywords", action.get("negatives", []))}
+        
+        # Анализ через 7 дней
+        analysis_due = _dt.now() + _td(days=7)
+        
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO ads_changes_log 
+                (action_id, action_type, description, account, keyword, 
+                 change_from, change_to, applied_at, analysis_due_at, analyzed)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, FALSE)
+            """,
+                action.get("id", ""),
+                action_type,
+                action.get("description", ""),
+                action.get("account", "ads"),
+                str(keyword) if keyword else None,
+                _json.dumps(change_from, ensure_ascii=False),
+                _json.dumps(change_to, ensure_ascii=False),
+                analysis_due,
+            )
+        log.info(f"Изменение залогировано: {action_type} — {action.get('description', '')[:50]}")
+    except Exception as e:
+        log.warning(f"Ошибка логирования изменения: {e}")
+
+
+async def scheduled_changes_analysis(app):
+    """
+    Ежедневно в 09:15 NY — проверяет изменения которые были сделаны 7 дней назад
+    и анализирует их эффект на метрики кампании.
+    """
+    if not config.google_ads_configured:
+        return
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        import json as _json
+        
+        pool = await _get_db_pool()
+        if not pool:
+            return
+        
+        # Ищем изменения которые пора анализировать
+        async with pool.acquire() as conn:
+            changes = await conn.fetch("""
+                SELECT * FROM ads_changes_log 
+                WHERE analyzed = FALSE 
+                AND analysis_due_at <= NOW()
+                ORDER BY applied_at DESC
+                LIMIT 10
+            """)
+        
+        if not changes:
+            return
+        
+        log.info(f"Анализ эффекта изменений: {len(changes)} записей")
+        
+        today = _dt.now(NY_TZ)
+        date_to = today.strftime("%Y-%m-%d")
+        date_from = (today - _td(days=7)).strftime("%Y-%m-%d")
+        
+        # Получаем текущие данные кампании
+        context_data = {"_period": {"date_from": date_from, "date_to": date_to}}
+        context_data["keywords"] = {
+            "ads": await ads_client.get_keywords_analysis(
+                account="ads", date_from=date_from, date_to=date_to
+            )
+        }
+        context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
+            date_from=date_from, date_to=date_to
+        )
+        
+        # Формируем список изменений для анализа
+        changes_text = ""
+        for ch in changes:
+            applied = ch["applied_at"].strftime("%d.%m.%Y %H:%M")
+            changes_text += (
+                f"- {applied}: {ch['action_type']} -- {ch['description']}\n"
+                f"  Было: {ch['change_from']} -> Стало: {ch['change_to']}\n"
+                f"  Ключ: {ch['keyword'] or 'н/д'}\n\n"
+            )
+        
+        question = (
+            f"7 дней назад были внесены следующие изменения в рекламную кампанию:\n\n"
+            f"{changes_text}\n"
+            f"Данные за последние 7 дней ({date_from} — {date_to}) прикреплены.\n\n"
+            f"Проанализируй эффект каждого изменения:\n"
+            f"1. Для каждого изменения найди соответствующий ключ/кампанию в данных\n"
+            f"2. Оцени изменение метрик: CPA, CTR, конверсии, расход\n"
+            f"3. Вынеси вердикт: изменение помогло / не помогло / нейтрально\n"
+            f"4. Предложи следующий шаг для каждого изменения\n\n"
+            f"Дай конкретный анализ с цифрами."
+        )
+        
+        result = await ai_analyst.chat_action(question, context_data, "action")
+        reply = result.get("reply", "")
+        
+        if reply:
+            header = f"📊 *Анализ эффекта изменений за 7 дней*\n\n"
+            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+        
+        # Помечаем как проанализированные
+        change_ids = [ch["id"] for ch in changes]
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE ads_changes_log SET analyzed = TRUE, analysis_result = $1 WHERE id = ANY($2::int[])",
+                _json.dumps({"reply": reply[:500]}),
+                change_ids
+            )
+        
+        # Создаём карточки если агент предложил действия
+        for action in result.get("proposed_actions", []):
+            if not isinstance(action, dict):
+                continue
+            action.setdefault("requires_approval", True)
+            action_id = await pending.add(action)
+            await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            
+    except Exception as e:
+        log.error(f"Ошибка анализа изменений: {e}", exc_info=True)
 
 async def scheduled_campaign_audit(app):
     """
