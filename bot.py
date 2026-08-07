@@ -910,6 +910,9 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "urgency": "medium", "urgency_label": "Средняя", "confidence": "high",
                 })
         for action in proposed:
+            if not isinstance(action, dict):
+                log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
+                continue
             try:
                 action.setdefault("account", "ads")
                 action.setdefault("requires_approval", True)
@@ -2318,6 +2321,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     already_applied_count = 0
     for action in proposed:
+        if not isinstance(action, dict):
+            log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
+            continue
         try:
             action.setdefault("account", accounts[0])
             action.setdefault("data_summary", action.get("reasoning", ""))
@@ -3753,6 +3759,9 @@ async def scheduled_campaign_audit(app):
         log.info(f"scheduled_campaign_audit: {len(proposed)} карточек")
 
         for action in proposed:
+            if not isinstance(action, dict):
+                log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
+                continue
             try:
                 action.setdefault("account", "ads")
                 action.setdefault("requires_approval", True)
