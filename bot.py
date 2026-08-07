@@ -549,6 +549,58 @@ async def cmd_emailtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(msg, f"❌ Ошибка: {e}")
 
 
+async def cmd_changes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/changes — журнал изменений рекламной кампании за последние 90 дней."""
+    if not _is_owner(update):
+        return
+    try:
+        import json as _json
+        pool = await _get_db_pool()
+        if not pool:
+            await update.message.reply_text("❌ База данных недоступна")
+            return
+        
+        async with pool.acquire() as conn:
+            changes = await conn.fetch("""
+                SELECT * FROM ads_changes_log
+                WHERE applied_at >= NOW() - INTERVAL '90 days'
+                ORDER BY applied_at DESC
+                LIMIT 20
+            """)
+        
+        if not changes:
+            await update.message.reply_text("📋 Журнал изменений пуст — изменения начнут записываться автоматически.")
+            return
+        
+        lines = ["📋 *Журнал изменений рекламы* (последние 90 дней)\n"]
+        for ch in changes:
+            applied = ch["applied_at"].strftime("%d.%m %H:%M")
+            due = ch["analysis_due_at"].strftime("%d.%m") if ch["analysis_due_at"] else "—"
+            result = ch.get("analysis_result")
+            status = "✅ проанализировано" if result else f"⏳ анализ {due}"
+            
+            change_from = _json.loads(ch["change_from"]) if ch["change_from"] else {}
+            change_to = _json.loads(ch["change_to"]) if ch["change_to"] else {}
+            
+            change_str = ""
+            if change_from and change_to:
+                from_val = list(change_from.values())[0] if change_from else ""
+                to_val = list(change_to.values())[0] if change_to else ""
+                change_str = f" ({from_val} → {to_val})"
+            
+            lines.append(
+                f"*{applied}* — {ch['action_type']}{change_str}\n"
+                f"  {ch['description'][:60]}\n"
+                f"  {status}\n"
+            )
+        
+        text = "\n".join(lines)
+        await _send_long_message(update.message.bot, config.OWNER_CHAT_ID, text)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -3778,14 +3830,14 @@ async def scheduled_changes_analysis(app):
         if not pool:
             return
         
-        # Ищем изменения которые пора анализировать
+        # Берём все активные изменения (последние 90 дней) которые пора проверить
         async with pool.acquire() as conn:
             changes = await conn.fetch("""
                 SELECT * FROM ads_changes_log 
-                WHERE analyzed = FALSE 
-                AND analysis_due_at <= NOW()
+                WHERE analysis_due_at <= NOW()
+                AND applied_at >= NOW() - INTERVAL '90 days'
                 ORDER BY applied_at DESC
-                LIMIT 10
+                LIMIT 15
             """)
         
         if not changes:
@@ -3819,15 +3871,17 @@ async def scheduled_changes_analysis(app):
             )
         
         question = (
-            f"7 дней назад были внесены следующие изменения в рекламную кампанию:\n\n"
-            f"{changes_text}\n"
+            f"Еженедельный анализ эффекта изменений в рекламной кампании BCHD.\n\n"
+            f"Изменения которые нужно проанализировать:\n{changes_text}\n"
             f"Данные за последние 7 дней ({date_from} — {date_to}) прикреплены.\n\n"
-            f"Проанализируй эффект каждого изменения:\n"
-            f"1. Для каждого изменения найди соответствующий ключ/кампанию в данных\n"
-            f"2. Оцени изменение метрик: CPA, CTR, конверсии, расход\n"
-            f"3. Вынеси вердикт: изменение помогло / не помогло / нейтрально\n"
-            f"4. Предложи следующий шаг для каждого изменения\n\n"
-            f"Дай конкретный анализ с цифрами."
+            f"Для КАЖДОГО изменения в журнале:\n"
+            f"1. Найди соответствующий ключ/кампанию в свежих данных\n"
+            f"2. Оцени метрики: CPA, CTR, конверсии, расход, QS\n"
+            f"3. Вердикт: ПОМОГЛО / НЕ ПОМОГЛО / НЕЙТРАЛЬНО / РАНО СУДИТЬ\n"
+            f"4. Следующий шаг: оставить / усилить / откатить / подождать ещё неделю\n"
+            f"5. Если изменение работает хорошо >2 недель — отметь как СТАБИЛЬНОЕ\n\n"
+            f"Формат ответа: по одному блоку на каждое изменение с датой и вердиктом. "
+            f"Дай конкретные цифры до и после где возможно."
         )
         
         result = await ai_analyst.chat_action(question, context_data, "action")
@@ -3837,11 +3891,14 @@ async def scheduled_changes_analysis(app):
             header = f"📊 *Анализ эффекта изменений за 7 дней*\n\n"
             await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
         
-        # Помечаем как проанализированные
+        # Обновляем дату следующего анализа — через 7 дней снова
         change_ids = [ch["id"] for ch in changes]
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE ads_changes_log SET analyzed = TRUE, analysis_result = $1 WHERE id = ANY($2::int[])",
+                """UPDATE ads_changes_log 
+                   SET analysis_due_at = NOW() + INTERVAL '7 days',
+                       analysis_result = $1
+                   WHERE id = ANY($2::int[])""",
                 _json.dumps({"reply": reply[:500]}),
                 change_ids
             )
@@ -4576,6 +4633,7 @@ def main():
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(CommandHandler("gbppost", cmd_gbp_post))
     app.add_handler(CommandHandler("gbpaudit", cmd_gbp_audit))
+    app.add_handler(CommandHandler("changes", cmd_changes))
     app.add_handler(CommandHandler("emailtest", cmd_emailtest))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
