@@ -2343,6 +2343,42 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await _safe_edit(thinking_msg, "🤔 Анализирую...")
     action_type = classification.get("action_type", "none")
+
+    # Журнал изменений — без загрузки данных из API
+    if action_type == "show_changes_log":
+        await _safe_edit(thinking_msg, "📋 Загружаю журнал изменений...")
+        try:
+            import json as _json
+            pool = await _get_db_pool()
+            if pool:
+                async with pool.acquire() as conn:
+                    changes = await conn.fetch(
+                        "SELECT * FROM ads_changes_log ORDER BY applied_at DESC LIMIT 50"
+                    )
+                if not changes:
+                    await _safe_edit(thinking_msg, "📋 Журнал пуст — изменения записываются автоматически при одобрении карточек.")
+                else:
+                    lines = ["📋 *Журнал изменений рекламы*\n"]
+                    for ch in changes:
+                        applied = ch["applied_at"].strftime("%d.%m %H:%M")
+                        due = ch["analysis_due_at"].strftime("%d.%m") if ch["analysis_due_at"] else "—"
+                        has_result = bool(ch.get("analysis_result"))
+                        status = "✅" if has_result else f"⏳ {due}"
+                        cf = _json.loads(ch["change_from"]) if ch["change_from"] else {}
+                        ct = _json.loads(ch["change_to"]) if ch["change_to"] else {}
+                        chg = ""
+                        if cf and ct:
+                            fv = list(cf.values())[0] if cf else ""
+                            tv = list(ct.values())[0] if ct else ""
+                            chg = f" ({fv} → {tv})"
+                        lines.append(f"*{applied}* {status}\n{ch['action_type']}{chg}\n_{ch['description'][:70]}_\n")
+                    await _send_long_message(ctx.bot, config.OWNER_CHAT_ID, "\n".join(lines))
+                await _append_history(ctx, chat_id, question, "Показал журнал изменений")
+            return
+        except Exception as e:
+            await _safe_edit(thinking_msg, f"❌ Ошибка: {e}")
+            return
+
     try:
         result = await ai_analyst.chat_action(question, context_data, action_type, history=history)
     except Exception as e:
