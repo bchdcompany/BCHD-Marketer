@@ -894,6 +894,7 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if reply:
             await _safe_send(ctx.bot, config.OWNER_CHAT_ID, reply, parse_mode="Markdown")
         proposed = result.get("proposed_actions", [])
+        proposed = [a for a in proposed if isinstance(a, dict)]
         if not any(a.get("type") in ("set_ad_schedule", "setadschedule") for a in proposed):
             camp_list = budgets_data.get("campaigns", [])
             camp_id = camp_list[0]["campaign_id"] if camp_list else None
