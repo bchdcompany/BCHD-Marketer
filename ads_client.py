@@ -1361,6 +1361,8 @@ class GoogleAdsClient:
 
         valid, skipped = [], []
         for kw in keywords:
+            if isinstance(kw, str):
+                kw = {'keyword': kw, 'resource_name': ''}
             rn = kw.get('resource_name', '').strip()
             kw_text = (kw.get('keyword') or kw.get('text', '')).strip().lower()
             if rn and rn in by_rn:
