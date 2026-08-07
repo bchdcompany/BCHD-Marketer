@@ -563,9 +563,8 @@ async def cmd_changes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         async with pool.acquire() as conn:
             changes = await conn.fetch("""
                 SELECT * FROM ads_changes_log
-                WHERE applied_at >= NOW() - INTERVAL '90 days'
                 ORDER BY applied_at DESC
-                LIMIT 20
+                LIMIT 50
             """)
         
         if not changes:
@@ -3830,14 +3829,13 @@ async def scheduled_changes_analysis(app):
         if not pool:
             return
         
-        # Берём все активные изменения (последние 90 дней) которые пора проверить
+        # Берём ВСЕ изменения которые пора проверить — без ограничения по дате
         async with pool.acquire() as conn:
             changes = await conn.fetch("""
                 SELECT * FROM ads_changes_log 
                 WHERE analysis_due_at <= NOW()
-                AND applied_at >= NOW() - INTERVAL '90 days'
                 ORDER BY applied_at DESC
-                LIMIT 15
+                LIMIT 20
             """)
         
         if not changes:
@@ -3879,9 +3877,12 @@ async def scheduled_changes_analysis(app):
             f"2. Оцени метрики: CPA, CTR, конверсии, расход, QS\n"
             f"3. Вердикт: ПОМОГЛО / НЕ ПОМОГЛО / НЕЙТРАЛЬНО / РАНО СУДИТЬ\n"
             f"4. Следующий шаг: оставить / усилить / откатить / подождать ещё неделю\n"
-            f"5. Если изменение работает хорошо >2 недель — отметь как СТАБИЛЬНОЕ\n\n"
-            f"Формат ответа: по одному блоку на каждое изменение с датой и вердиктом. "
-            f"Дай конкретные цифры до и после где возможно."
+            f"5. Если изменение работает хорошо >2 недель — отметь как СТАБИЛЬНОЕ\n"
+            f"6. Для приостановленных/отменённых изменений — оцени стоит ли их возобновить\n"
+            f"   Если ключ был на паузе >2 недель и ситуация изменилась (QS вырос, новый лендинг) — предложи возобновить\n\n"
+            f"Формат: по одному блоку на каждое изменение. "
+            f"Дай цифры до/после где возможно. "
+            f"В конце — топ-3 рекомендации на следующую неделю."
         )
         
         result = await ai_analyst.chat_action(question, context_data, "action")
