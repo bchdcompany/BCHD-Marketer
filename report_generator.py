@@ -91,12 +91,17 @@ class ReportGenerator:
             analysis.get('summary', ''),
         ]
         if negatives:
-            waste = sum(n.get('spend', 0) for n in negatives)
+            neg_dicts = [n for n in negatives if isinstance(n, dict)]
+            waste = sum(n.get('spend', 0) for n in neg_dicts)
             lines.append(f"\n💸 Потрачено на нерелевантные запросы: *${waste:.2f}*")
             lines.append("\n*Нерелевантные запросы:*")
             for n in negatives[:10]:
-                lines.append(f"• `{n['term']}` — {n['impressions']} показов, ${n.get('spend', 0):.2f}")
-                lines.append(f"  ↳ {n['reason']}")
+                if isinstance(n, str):
+                    lines.append(f"• `{n}`")
+                    continue
+                lines.append(f"• `{n.get('term', n)}` — {n.get('impressions', 0)} показов, ${n.get('spend', 0):.2f}")
+                if n.get('reason'):
+                    lines.append(f"  ↳ {n['reason']}")
         return "\n".join(lines)
 
     def format_budget_report(self, data: dict, analysis: dict) -> str:
@@ -199,6 +204,9 @@ class ReportGenerator:
             lines.append(f"")
             lines.append(f"🔑 *Ключевые слова ({len(kws)} шт):*")
             for kw in kws:
+                if isinstance(kw, str):
+                    lines.append(f"• `{kw}`")
+                    continue
                 keyword = kw.get('keyword') or kw.get('text') or '?'
                 parts = []
                 if kw.get('impressions'): parts.append(f"{kw['impressions']} показов")
@@ -214,6 +222,9 @@ class ReportGenerator:
             lines.append(f"")
             lines.append(f"🚫 *Минус-слова ({len(negs)} шт):*")
             for neg in negs:
+                if isinstance(neg, str):
+                    lines.append(f"• `{neg}`")
+                    continue
                 term   = neg.get('term', '?')
                 reason = neg.get('reason', '')
                 lines.append(f"• `{term}`" + (f" — {reason}" if reason else ""))
