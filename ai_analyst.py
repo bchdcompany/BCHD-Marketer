@@ -1101,7 +1101,11 @@ pause_keywords, enable_keywords, add_negative_keywords, remove_negative_keyword,
 budget_change, update_bid, pause_campaign, enable_campaign, remove_campaign,
 update_final_url, seasonal_adjustments, dispute_lsa_lead, update_ad_headlines,
 reply_to_review, update_gbp_description, update_gbp_categories, create_gbp_post,
-send_email_campaign
+send_email_campaign, show_changes_log
+
+Если владелец спрашивает про журнал изменений, историю корректировок, что мы меняли,
+какие правки вносили в рекламу — используй тип действия show_changes_log.
+Бот автоматически покажет журнал из базы данных.
 НЕ используй: removenegativekeywords, pauseKeywords, remove-negative-keyword и т.п.
 
 ИНСТРУКЦИЯ ПО update_ad_headlines — КРИТИЧНО:
