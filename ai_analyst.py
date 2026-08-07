@@ -1129,6 +1129,18 @@ send_email_campaign
 {{"reply": "текстовый ответ для владельца, Markdown для Telegram, без лишней воды",
   "proposed_actions": []}}
 
+КРИТИЧНО — КАК ЗАПОЛНЯТЬ proposed_actions:
+Если владелец просит действие (пауза ключа, изменение ставки, обновление заголовков и т.д.)
+— proposed_actions ДОЛЖЕН содержать объекты действий, НЕ быть пустым.
+— НИКОГДА не пиши в reply "карточка ниже" или "карточки ниже" без объектов в proposed_actions.
+— Карточка = объект в proposed_actions. Если нет объекта — нет карточки.
+
+Структура объектов в proposed_actions (БЕЗ примера с фигурными скобками — используй поля):
+Для паузы ключа: type=pause_keywords, keywords=[список], match_types=[список], description, reasoning, urgency, urgency_label, confidence, requires_approval=true
+Для ставки: type=update_bid, keyword=строка, current_bid=число, new_bid=число, description, reasoning, urgency, urgency_label, confidence, requires_approval=true
+Для заголовков: type=update_ad_headlines, ad_id=число, ad_group=строка, headlines=[список], description, reasoning, urgency, urgency_label, confidence, requires_approval=true
+Для минус-слов: type=add_negative_keywords, keywords=[список], description, reasoning, urgency, urgency_label, confidence, requires_approval=true
+
 Если действие не требуется (это просто вопрос) — верни "proposed_actions": [].
 
 ВАЖНО ПРО ДЛИНУ ОТВЕТА: если запрос широкий (например, "проанализируй всё",
