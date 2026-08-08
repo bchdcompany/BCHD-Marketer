@@ -2030,6 +2030,9 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
         if action.get("budget_id"):
             ids_to_check.append(str(action["budget_id"]))
     elif a_type == "update_bid":
+        # Если есть keyword — не блокируем, _update_bid сам найдёт resource_name
+        if action.get("keyword") or action.get("text"):
+            return True
         if action.get("resource_name"):
             ids_to_check.append(str(action["resource_name"]))
     elif a_type == "update_final_url":
@@ -2419,7 +2422,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action.setdefault("requires_approval", True)
 
             if not _action_ids_verified(action, context_data):
-                log.warning(f"Действие заблокировано — ID не найдены в свежих данных: {action}")
+                log.warning(f"Действие заблокировано — ID не найдены в свежих данных: type={action.get('type')} keyword={action.get('keyword')} rn={action.get('resource_name','')[:50]}")
                 blocked_actions += 1
                 continue
 
