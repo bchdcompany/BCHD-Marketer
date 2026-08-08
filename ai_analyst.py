@@ -355,13 +355,49 @@ API, без ручной работы владельца в интерфейсе
         messages = list(history) if history else []
         messages.append({"role": "user", "content": prompt})
 
-        input_schema = {"type": "object"}
-        if required_keys:
-            # Явно требуем эти поля в структуре ответа — без этого модель
-            # иногда возвращает валидный JSON без ключевых полей (например,
-            # только "proposed_actions" без "reply"), и код падает на
-            # дефолтную заглушку "Не удалось получить ответ" без объяснения.
-            input_schema["required"] = required_keys
+        # Полная JSON Schema для chat_action — описывает структуру proposed_actions
+        # чтобы Claude знал точно что возвращать
+        if required_keys == ["reply", "proposed_actions"]:
+            input_schema = {
+                "type": "object",
+                "required": ["reply", "proposed_actions"],
+                "properties": {
+                    "reply": {
+                        "type": "string",
+                        "description": "Текстовый ответ для владельца на русском языке, Markdown для Telegram"
+                    },
+                    "proposed_actions": {
+                        "type": "array",
+                        "description": "Список конкретных действий для одобрения. ЗАПОЛНЯЙ если предлагаешь изменения в Google Ads, ставки, паузы, заголовки.",
+                        "items": {
+                            "type": "object",
+                            "required": ["type", "description", "reasoning"],
+                            "properties": {
+                                "type": {"type": "string", "description": "Тип действия: update_bid, pause_keywords, enable_keywords, add_negative_keywords, update_ad_headlines, budget_change, pause_campaign, enable_campaign, reply_to_review, create_gbp_post"},
+                                "account": {"type": "string", "description": "ads или lsa"},
+                                "description": {"type": "string", "description": "Краткое описание действия"},
+                                "reasoning": {"type": "string", "description": "Обоснование с цифрами"},
+                                "urgency": {"type": "string", "description": "high, medium или low"},
+                                "urgency_label": {"type": "string", "description": "Высокая, Средняя или Низкая"},
+                                "confidence": {"type": "string", "description": "high, medium или low"},
+                                "requires_approval": {"type": "boolean", "description": "Всегда true"},
+                                "keyword": {"type": "string", "description": "Текст ключевого слова для update_bid и pause_keywords"},
+                                "current_bid": {"type": "number", "description": "Текущая ставка для update_bid"},
+                                "new_bid": {"type": "number", "description": "Новая ставка для update_bid"},
+                                "keywords": {"type": "array", "items": {"type": "string"}, "description": "Список ключей для pause_keywords"},
+                                "headlines": {"type": "array", "items": {"type": "string"}, "description": "Список заголовков для update_ad_headlines"},
+                                "ad_id": {"type": "integer", "description": "ID объявления для update_ad_headlines"},
+                                "ad_group": {"type": "string", "description": "Название группы объявлений"}
+                            }
+                        }
+                    }
+                }
+            }
+        else:
+            input_schema = {"type": "object"}
+            if required_keys:
+                # Явно требуем эти поля в структуре ответа
+                input_schema["required"] = required_keys
 
         tools = [{
             "name": "submit_result",
