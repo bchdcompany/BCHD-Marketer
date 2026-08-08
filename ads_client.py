@@ -1639,12 +1639,49 @@ class GoogleAdsClient:
         await asyncio.to_thread(svc.mutate_campaign_budgets, customer_id=customer_id, operations=[op])
         return {"summary": f"Бюджет изменён на ${action.get('proposed_budget'):.2f}/день"}
 
+    async def _resolve_keyword_resource_name(self, keyword_text: str, customer_id: str) -> str:
+        """Находит resource_name ключевого слова по тексту через API."""
+        try:
+            ga_service = self._get_client().get_service("GoogleAdsService")
+            query = (
+                "SELECT ad_group_criterion.resource_name, ad_group_criterion.keyword.text "
+                "FROM ad_group_criterion "
+                "WHERE ad_group_criterion.type = 'KEYWORD' "
+                "AND ad_group_criterion.negative = FALSE "
+                "AND ad_group_criterion.status != 'REMOVED' "
+                "AND campaign.status != 'REMOVED'"
+            )
+            response = await asyncio.to_thread(
+                ga_service.search, customer_id=customer_id, query=query
+            )
+            kw_lower = keyword_text.strip().lower()
+            for row in response:
+                if row.ad_group_criterion.keyword.text.strip().lower() == kw_lower:
+                    return row.ad_group_criterion.resource_name
+        except Exception as e:
+            log.warning(f"_resolve_keyword_resource_name error: {e}")
+        return ""
+
     async def _update_bid(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         client = self._get_client()
         svc = client.get_service("AdGroupCriterionService")
+
+        # Автоматически находим resource_name если не передан
+        rn = (action.get('resource_name') or '').strip()
+        if not rn:
+            keyword_text = action.get('keyword') or action.get('text') or ''
+            if keyword_text:
+                log.info(f"_update_bid: resource_name пустой, ищем по тексту '{keyword_text}'")
+                rn = await self._resolve_keyword_resource_name(keyword_text, customer_id)
+                if not rn:
+                    raise ValueError(f"Ключ '{keyword_text}' не найден в Google Ads")
+                log.info(f"_update_bid: найден resource_name={rn}")
+            else:
+                raise ValueError("Не передан ни resource_name, ни keyword для update_bid")
+
         op = client.get_type("AdGroupCriterionOperation")
-        op.update.resource_name = action.get('resource_name')
+        op.update.resource_name = rn
         op.update.cpc_bid_micros = int(action.get('new_bid', 0) * 1_000_000)
         op.update_mask.paths.append("cpc_bid_micros")
         await asyncio.to_thread(svc.mutate_ad_group_criteria, customer_id=customer_id, operations=[op])
