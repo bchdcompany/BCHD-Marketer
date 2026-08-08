@@ -2084,14 +2084,14 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 import concurrent.futures
                 loop = asyncio.get_event_loop()
-                pending = _email_agent._pending_campaign
+                email_pending_data = _email_agent._pending_campaign
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     sent = await loop.run_in_executor(
                         pool,
                         lambda: _email_agent._send_via_sendgrid(
-                            pending["html"],
-                            pending["subject"],
-                            pending.get("preview_text", ""),
+                            email_pending_data["html"],
+                            email_pending_data["subject"],
+                            email_pending_data.get("preview_text", ""),
                         )
                     )
                 _email_agent._pending_campaign = None
