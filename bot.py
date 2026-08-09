@@ -2772,7 +2772,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     atype = action.get("type")
                     if atype == "reply_to_review":
                         result = await _gbp_inst.reply_to_review(
-                            action.get("review_name") or f"accounts/114321652527408044999/locations/3876947509759665211/reviews/{action.get('review_id', '')}", action["reply_text"]
+                            action.get("review_name") or f"accounts/114321652527408044999/locations/3876947509759665211/reviews/{action.get('review_id', '')}", action.get("reply_text") or action.get("body_text", "")
                         )
                     elif atype == "update_gbp_description":
                         result = await _gbp_inst.update_description(action["description_text"])
