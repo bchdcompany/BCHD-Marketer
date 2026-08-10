@@ -2017,6 +2017,50 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
     return False, ""
 
 
+
+def _validate_action(action: dict) -> tuple[bool, str]:
+    """
+    Проверяет что карточка содержит необходимые поля.
+    Возвращает (valid, reason).
+    """
+    a_type = action.get("type", "")
+    
+    if a_type == "update_bid":
+        if not action.get("keyword") and not action.get("resource_name"):
+            return False, "update_bid требует keyword или resource_name"
+        if not action.get("new_bid"):
+            return False, "update_bid требует new_bid"
+    
+    elif a_type in ("pause_keywords", "enable_keywords"):
+        kws = action.get("keywords", [])
+        if not kws:
+            return False, f"{a_type} требует непустой список keywords"
+    
+    elif a_type == "add_negative_keywords":
+        if not action.get("keywords") and not action.get("negatives"):
+            return False, "add_negative_keywords требует keywords или negatives"
+    
+    elif a_type == "update_ad_headlines":
+        if not action.get("headlines"):
+            return False, "update_ad_headlines требует headlines"
+        if not action.get("ad_id") and not action.get("ad_group"):
+            return False, "update_ad_headlines требует ad_id или ad_group"
+    
+    elif a_type == "reply_to_review":
+        if not action.get("reply_text") and not action.get("body_text"):
+            return False, "reply_to_review требует reply_text или body_text"
+        if not action.get("review_name") and not action.get("review_id"):
+            return False, "reply_to_review требует review_name или review_id"
+    
+    elif a_type == "budget_change":
+        if not action.get("proposed_budget") and not action.get("new_budget"):
+            return False, "budget_change требует proposed_budget"
+    
+    if not action.get("description"):
+        return False, "Карточка без description"
+    
+    return True, ""
+
 def _action_ids_verified(action: dict, context_data: dict) -> bool:
     import json as _json
     context_str = _json.dumps(context_data, ensure_ascii=False)
@@ -2433,6 +2477,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 already_applied_count += 1
                 continue
 
+            valid, reason = _validate_action(action)
+            if not valid:
+                log.warning(f"Карточка отклонена валидацией: {reason} | type={action.get('type')}")
+                blocked_actions += 1
+                continue
             action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
