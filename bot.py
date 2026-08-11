@@ -2055,6 +2055,9 @@ def _validate_action(action: dict) -> tuple[bool, str]:
     elif a_type == "budget_change":
         if not action.get("proposed_budget") and not action.get("new_budget"):
             return False, "budget_change требует proposed_budget"
+        # Убеждаемся что current_budget есть
+        if not action.get("current_budget"):
+            return False, "budget_change требует current_budget"
     
     if not action.get("description"):
         return False, "Карточка без description"
