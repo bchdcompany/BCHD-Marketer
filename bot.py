@@ -2201,6 +2201,42 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error(f"Ошибка классификации запроса: {e}")
         classification = {"intent": "chat", "action_type": "none", "days": 0, "data_needed": ["campaigns"], "account": "both"}
 
+
+    # БЫСТРАЯ ПРОВЕРКА — показать журнал без загрузки данных
+    _q_low = question.lower()
+    if classification.get("action_type") == "show_changes_log" or any(w in _q_low for w in ["журнал изменений", "история изменений", "покажи журнал", "что меняли в рекламе"]):
+        await _safe_edit(thinking_msg, "Загружаю журнал...")
+        try:
+            import json as _jj
+            _pool = await _get_db_pool()
+            if _pool:
+                async with _pool.acquire() as _conn:
+                    _changes = await _conn.fetch("SELECT * FROM ads_changes_log ORDER BY applied_at DESC LIMIT 30")
+                if not _changes:
+                    await _safe_edit(thinking_msg, "Журнал пуст — изменения записываются при одобрении карточек.")
+                else:
+                    _out = "Журнал изменений рекламы:\n\n"
+                    for _ch in _changes:
+                        _applied = _ch["applied_at"].strftime("%d.%m %H:%M")
+                        _due = _ch["analysis_due_at"].strftime("%d.%m") if _ch["analysis_due_at"] else "-"
+                        _done = bool(_ch.get("analysis_result"))
+                        _st = "OK" if _done else f"анализ {_due}"
+                        _cf = _jj.loads(_ch["change_from"]) if _ch["change_from"] else {}
+                        _ct = _jj.loads(_ch["change_to"]) if _ch["change_to"] else {}
+                        _chg = ""
+                        if _cf and _ct:
+                            _fv = list(_cf.values())[0] if _cf else ""
+                            _tv = list(_ct.values())[0] if _ct else ""
+                            _chg = f" ({_fv} -> {_tv})"
+                        _desc = str(_ch["description"])[:60]
+                        _out += f"{_applied} [{_st}] {_ch['action_type']}{_chg}\n{_desc}\n\n"
+                    await thinking_msg.edit_text(_out)
+                await _append_history(ctx, chat_id, question, "Показал журнал изменений")
+            return
+        except Exception as _e:
+            await _safe_edit(thinking_msg, f"Ошибка: {_e}")
+            return
+
     data_needed = classification.get("data_needed", ["campaigns"])
     if isinstance(data_needed, str):
         data_needed = [data_needed] if data_needed != "none" else []
