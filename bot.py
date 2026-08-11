@@ -248,12 +248,15 @@ async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwar
             # короткое сообщение об ошибке, лишь бы не оставить владельца
             # без ответа вообще.
             log.error(f"Не удалось отправить сообщение даже без Markdown: {e2}")
-            fallback = text[:1000] + "\n\n⚠️ _Остальная часть ответа не поместилась и была потеряна._"
-            return await bot.send_message(chat_id=chat_id, text=fallback, **kwargs)
+            fallback = text[:1000] + "\n\n[остальная часть обрезана]"
+            return await bot.send_message(chat_id=chat_id, text=fallback)
 
 
 async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
     text = _truncate_for_telegram(text)
+    if text.startswith("❌"):
+        parse_mode = None
+        kwargs.pop("parse_mode", None)
     edit_fn = getattr(target, "edit_message_text", None) or getattr(target, "edit_text", None)
     if edit_fn is None:
         raise AttributeError(f"{type(target)} не поддерживает редактирование текста")
@@ -4576,6 +4579,8 @@ async def global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     log.error(f"Необработанное исключение: {ctx.error}", exc_info=ctx.error)
 
     error_str = str(ctx.error)
+    if "Can't parse entities" in error_str or "parse entities" in error_str.lower():
+        return
     is_conflict = "Conflict" in type(ctx.error).__name__ or "terminated by other getUpdates" in error_str
 
     if is_conflict:
