@@ -594,7 +594,7 @@ async def cmd_changes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         
         text = "\n".join(lines)
-        await _send_long_message(update.message.bot, config.OWNER_CHAT_ID, text)
+        await update.message.reply_text(text, parse_mode="Markdown")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
