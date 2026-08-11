@@ -3634,6 +3634,7 @@ async def scheduled_gbp_review_check(app):
 
         for review in reviews:
             review_id = review.get("reviewId", "")
+            review_name = review.get("name", "")  # полный resource_name для API
             author = review.get("reviewer", {}).get("displayName", "Клиент")
             rating = review.get("starRating", "")
             comment = review.get("comment", "")[:300]
@@ -3663,11 +3664,13 @@ async def scheduled_gbp_review_check(app):
             action = {
                 "type": "reply_to_review",
                 "review_id": review_id,
+                "review_name": review_name,
                 "review_author": author,
                 "review_rating": stars,
                 "review_comment": comment,
                 "review_date": create_time,
                 "suggested_reply": suggested_reply,
+                "reply_text": suggested_reply,
                 "description": f"Ответить на отзыв от {author} ({stars}, {create_time})",
                 "reasoning": f"Отзыв без ответа — отвечаем в течение 24 часов для GBP рейтинга",
                 "urgency": "low",
