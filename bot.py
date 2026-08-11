@@ -2398,7 +2398,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action_type = classification.get("action_type", "none")
 
     # Журнал изменений — без загрузки данных из API
-    if action_type == "show_changes_log":
+    # Также проверяем по тексту запроса если классификатор не распознал
+    _q_lower = question.lower()
+    if action_type == "show_changes_log" or any(w in _q_lower for w in ["журнал изменений", "история изменений", "что меняли", "какие правки", "покажи журнал"]):
         await _safe_edit(thinking_msg, "📋 Загружаю журнал изменений...")
         try:
             import json as _json
@@ -2465,8 +2467,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for action in proposed:
         if not isinstance(action, dict):
             log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
-            continue
-        if action.get("type") == "show_changes_log":
             continue
         try:
             action.setdefault("account", accounts[0])
