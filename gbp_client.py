@@ -546,7 +546,7 @@ class GBPClient:
         """Анализирует заполненность профиля и возвращает рекомендации."""
         profile = await self.get_profile()
         media = await self.get_media()
-        reviews_data = await self.get_reviews(days=365)
+        reviews_data = await self.get_reviews(days=3650)
 
         score = 0
         tips = []
@@ -593,7 +593,8 @@ class GBPClient:
             else: tips.append("Добавь логотип компании")
 
         # Отзывы из reviews_data
-        review_count = reviews_data.get("total", 0) or len(reviews_data.get("reviews", []))
+        _rev_raw = reviews_data.get("total", 0) or len(reviews_data.get("reviews", []))
+        review_count = f"{_rev_raw} (показаны последние 50, реальных может быть больше)" if _rev_raw >= 50 else _rev_raw
         # Считаем средний рейтинг из отзывов
         reviews_list = reviews_data.get("reviews", [])
         if reviews_list:
