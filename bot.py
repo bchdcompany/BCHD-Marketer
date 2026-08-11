@@ -2466,6 +2466,8 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not isinstance(action, dict):
             log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
             continue
+        if action.get("type") == "show_changes_log":
+            continue
         try:
             action.setdefault("account", accounts[0])
             action.setdefault("data_summary", action.get("reasoning", ""))
