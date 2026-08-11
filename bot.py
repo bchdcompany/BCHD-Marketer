@@ -3633,12 +3633,12 @@ async def scheduled_gbp_review_check(app):
         log.info(f"GBP: найдено {len(reviews)} отзывов без ответа")
 
         for review in reviews:
-            review_id = review.get("reviewId", "")
+            review_id = review.get("review_id") or review.get("reviewId", "")
             review_name = review.get("name", "")  # полный resource_name для API
-            author = review.get("reviewer", {}).get("displayName", "Клиент")
-            rating = review.get("starRating", "")
+            author = review.get("author") or review.get("reviewer", {}).get("displayName", "Клиент")
+            rating = review.get("rating") or review.get("starRating", "")
             comment = review.get("comment", "")[:300]
-            create_time = review.get("createTime", "")[:10]
+            create_time = review.get("update_time") or review.get("createTime", "")[:10]
 
             # Генерируем ответ через Claude
             stars = {"ONE": "1★", "TWO": "2★", "THREE": "3★", "FOUR": "4★", "FIVE": "5★"}.get(rating, rating)
