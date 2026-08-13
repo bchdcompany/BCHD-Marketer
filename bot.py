@@ -2877,7 +2877,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         )
                     elif atype == "create_gbp_post":
                         result = await _gbp_inst.create_post(
-                            action.get("post_text") or action.get("summary") or action.get("text", ""), action.get("topic_type", "STANDARD")
+                            text=action.get("post_text") or action.get("summary") or action.get("text", "")
                         )
                     else:
                         result = {"success": False, "error": "Неизвестный тип"}
@@ -3841,9 +3841,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             result = await gbp.create_offer_post(title=title, summary=summary)
         else:
             result = await gbp.create_post(
-                summary=args_text,
-                call_to_action_type="BOOK",
-                call_to_action_url="https://www.bchdcompany.com/#booking-form"
+                text=args_text
             )
 
         if result.get("name"):
