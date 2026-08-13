@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Устанавливаем браузер для Playwright
 RUN playwright install chromium --with-deps 2>/dev/null || true
 
-# Cache bust — инвалидирует кеш COPY . . при изменении
-ARG CACHE_BUST=2
+# Cache bust — меняй число чтобы инвалидировать кеш COPY
+ARG CACHE_BUST=3
 
 # Копируем код отдельным слоем
 COPY . .
