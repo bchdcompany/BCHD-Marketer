@@ -2877,7 +2877,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         )
                     elif atype == "create_gbp_post":
                         result = await _gbp_inst.create_post(
-                            action["post_text"], action.get("topic_type", "STANDARD")
+                            action.get("post_text") or action.get("summary") or action.get("text", ""), action.get("topic_type", "STANDARD")
                         )
                     else:
                         result = {"success": False, "error": "Неизвестный тип"}
