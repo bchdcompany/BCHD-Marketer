@@ -3816,8 +3816,8 @@ async def scheduled_gbp_weekly_audit(app):
 
 async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    /gbppost <текст> — публикует пост в GBP.
-    /gbppost offer <заголовок> | <текст> — публикует акцию.
+    /gbppost <текст> — создаёт карточку на согласование поста в GBP.
+    /gbppost offer <заголовок> | <текст> — карточка для акции.
     """
     if not _is_owner(update):
         return
@@ -3831,23 +3831,30 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        gbp = init_gbp_client(config)
-        msg = await update.message.reply_text("\u23f3 Публикую пост...")
-
         if args_text.startswith("offer "):
             parts = args_text[6:].split("|", 1)
             title = parts[0].strip()
-            summary = parts[1].strip() if len(parts) > 1 else title
-            result = await gbp.create_offer_post(title=title, summary=summary)
+            post_text = parts[1].strip() if len(parts) > 1 else title
+            action_type = "create_gbp_post"
+            topic_type = "OFFER"
         else:
-            result = await gbp.create_post(
-                text=args_text
-            )
+            post_text = args_text
+            action_type = "create_gbp_post"
+            topic_type = "STANDARD"
 
-        if result.get("name") or result.get("post_name") or result.get("success"):
-            await _safe_edit(msg, "\u2705 Пост опубликован в Google Business Profile!")
-        else:
-            await _safe_edit(msg, f"\u274c Ошибка: {result}")
+        action = {
+            "type": action_type,
+            "post_text": post_text,
+            "topic_type": topic_type,
+            "description": f"Опубликовать пост в GBP: {post_text[:60]}",
+            "reasoning": "Владелец запросил публикацию поста в Google Business Profile",
+            "urgency": "low",
+            "urgency_label": "Низкая",
+            "confidence": "high",
+            "requires_approval": True
+        }
+        action_id = await pending.add(action)
+        await _send_approval_card(update.message.bot, config.OWNER_CHAT_ID, action_id, action)
 
     except Exception as e:
         log.error(f"GBP post error: {e}", exc_info=True)
