@@ -3854,7 +3854,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "requires_approval": True
         }
         action_id = await pending.add(action)
-        await _send_approval_card(update.message.bot, config.OWNER_CHAT_ID, action_id, action)
+        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
 
     except Exception as e:
         log.error(f"GBP post error: {e}", exc_info=True)
