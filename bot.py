@@ -3844,7 +3844,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text=args_text
             )
 
-        if result.get("name"):
+        if result.get("name") or result.get("post_name") or result.get("success"):
             await _safe_edit(msg, "\u2705 Пост опубликован в Google Business Profile!")
         else:
             await _safe_edit(msg, f"\u274c Ошибка: {result}")
