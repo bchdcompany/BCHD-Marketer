@@ -2883,8 +2883,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         result = {"success": False, "error": "Неизвестный тип"}
                     if result.get("success"):
                         await _safe_edit(query,
-                            "Ответ опубликован: " + action.get("description", "") + "\n\n" +
-                            action.get("reply_text", ""),
+                            "✅ Пост опубликован в Google Business Profile!",
                         )
                     else:
                         await _safe_edit(query, "Ошибка публикации: " + str(result.get("error")))
@@ -3846,7 +3845,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "type": action_type,
             "post_text": post_text,
             "topic_type": topic_type,
-            "description": f"Опубликовать пост в GBP: {post_text[:60]}",
+            "description": f"Опубликовать пост в GBP",
             "reasoning": "Владелец запросил публикацию поста в Google Business Profile",
             "urgency": "low",
             "urgency_label": "Низкая",
@@ -3854,7 +3853,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "requires_approval": True
         }
         action_id = await pending.add(action)
-        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        await _send_approval_card(update.message.bot, config.OWNER_CHAT_ID, action_id, action)
 
     except Exception as e:
         log.error(f"GBP post error: {e}", exc_info=True)
