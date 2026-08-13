@@ -4780,13 +4780,15 @@ def main():
     app.add_handler(CommandHandler("emailtest", cmd_emailtest))
     app.add_handler(CommandHandler("sendemail", cmd_sendemail))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
+    app.add_error_handler(global_error_handler)
 
-    # Разовое напоминание — 16.08.2026 09:00
+    scheduler = AsyncIOScheduler(timezone=NY_TZ)
+    # Разовое напоминание — 16.08.2026 09:00 NY
     scheduler.add_job(
         lambda: asyncio.create_task(
             app.bot.send_message(
                 chat_id=config.OWNER_CHAT_ID,
-                text="📌 Напоминание: сегодня нужно поднять бюджет LSA с $35.71 до $45/день.\\n\\nGoogle Ads UI → Local Services Ads → Budget."
+                text="📌 Напоминание: сегодня нужно поднять бюджет LSA с $35.71 до $45/день.\nGoogle Ads UI → Local Services Ads → Budget."
             )
         ),
         "date",
@@ -4795,9 +4797,6 @@ def main():
         id="lsa_budget_reminder",
         replace_existing=True,
     )
-    app.add_error_handler(global_error_handler)
-
-    scheduler = AsyncIOScheduler(timezone=NY_TZ)
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
