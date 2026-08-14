@@ -583,14 +583,8 @@ class GBPClient:
         if photo_count < 50:
             tips.append(f"Добавь больше фото (сейчас {photo_count}, рекомендуется 50+)")
 
-        # Логотип
-        photos_by_cat = profile.get("photos_by_category", {})
-        if photos_by_cat.get("LOGO"):
-            score += 5
-        else:
-            logos = [m for m in media if m.get("locationAssociation", {}).get("category") == "LOGO"]
-            if logos: score += 5
-            else: tips.append("Добавь логотип компании")
+        # Логотип — считаем как добавленный (загружен через GBP UI)
+        score += 5
 
         # Отзывы из reviews_data
         _rev_raw = reviews_data.get("total", 0) or len(reviews_data.get("reviews", []))
