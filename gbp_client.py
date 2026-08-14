@@ -594,7 +594,7 @@ class GBPClient:
 
         # Отзывы из reviews_data
         _rev_raw = reviews_data.get("total", 0) or len(reviews_data.get("reviews", []))
-        review_count = f"{_rev_raw} (показаны последние 50, реальных может быть больше)" if _rev_raw >= 50 else _rev_raw
+        review_count = f"{_rev_raw}+ (API показывает последние 50)" if _rev_raw >= 50 else _rev_raw
         # Считаем средний рейтинг из отзывов
         reviews_list = reviews_data.get("reviews", [])
         if reviews_list:
@@ -604,9 +604,9 @@ class GBPClient:
         else:
             rating = 0
 
-        if review_count >= 50: score += 10
-        elif review_count >= 20: score += 7
-        elif review_count > 0: score += 3
+        if _rev_raw >= 50: score += 10
+        elif _rev_raw >= 20: score += 7
+        elif _rev_raw > 0: score += 3
         if rating >= 4.5: score += 5
 
         return {
