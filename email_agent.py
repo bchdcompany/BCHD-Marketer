@@ -113,7 +113,11 @@ JSON structure:
   "cta_headline": "CTA block headline (punchy, max 8 words)",
   "cta_subtext": "Supporting line under headline (location, dates, conditions)",
   "cta_button": "Button text (max 5 words, includes offer)",
-  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match the exact campaign theme. Include: specific colors, visual elements, mood, lighting, style. Be creative and specific — avoid generic office/tech imagery. For water/health themes: crystal clear water, blue droplets, clean modern. For seasonal: specific seasonal elements. For partner recommendations: show partnership/trust. NO text in image. Photorealistic. Max 300 chars."
+  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match exact campaign theme. Be creative. NO text in image. Photorealistic. Max 300 chars.",
+  "partner_name": "Partner company name if recommendation email, else empty string",
+  "partner_phone": "Partner phone as XXX-XXX-XXXX, else empty string",
+  "partner_site": "Partner website domain only e.g. elite-aquacare.com, else empty string",
+  "partner_contact": "Partner contact person first name if mentioned, else empty string"
 }}
 Rules:
 - All content in English
@@ -190,6 +194,33 @@ def _svg_icon(name: str, color: str) -> str:
 
 def _build_html(data: dict, image_url: str) -> str:
     c = COLOR_SCHEMES.get(data.get("color_mood", "red_urgent"), COLOR_SCHEMES["red_urgent"])
+    # Partner data
+    p_name    = data.get("partner_name", "").strip()
+    p_phone   = data.get("partner_phone", "").strip()
+    p_digits  = p_phone.replace("-","").replace(" ","").replace("(","").replace(")","")
+    p_site    = data.get("partner_site", "").strip()
+    p_contact = data.get("partner_contact", "").strip()
+    has_partner = bool(p_name)
+    # CTA target
+    if has_partner and p_site:
+        cta_href = "https://" + p_site
+    elif has_partner and p_phone:
+        cta_href = "tel:" + p_digits
+    else:
+        cta_href = WORKIZ_BOOKING_URL
+    # Partner contact block HTML
+    if has_partner:
+        partner_block = (
+            '<div style="margin-bottom:24px;padding:16px;background:rgba(255,255,255,0.12);border-radius:10px;">'
+            + ('<div style="font-size:30px;font-weight:900;color:#fff;margin-bottom:6px;">&#128222; <a href="tel:' + p_digits + '" style="color:#fff;text-decoration:none;">' + p_phone + '</a></div>' if p_phone else '')
+            + ('<div style="font-size:18px;font-weight:700;color:rgba(255,255,255,0.9);margin-bottom:4px;">Contact: ' + (p_contact or p_name) + '</div>' if (p_contact or p_name) else '')
+            + ('<div style="font-size:17px;color:rgba(255,255,255,0.85);">&#127760; <a href="https://' + p_site + '" style="color:#fff;text-decoration:none;">' + p_site + '</a></div>' if p_site else '')
+            + '</div>'
+        )
+        bchd_note = '<p style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:8px;">Mention BCHD when booking to receive your discount</p>'
+    else:
+        partner_block = '<p style="font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:24px;">' + data.get("cta_subtext","") + '</p>'
+        bchd_note = ""
     section_title_html = data["section_title"].replace("[HIGHLIGHT]", f'<span style="color:{c["accent"]}">') + ("</span>" if "[HIGHLIGHT]" in data["section_title"] else "")
     cards_html = ""
     for card in data["cards"]:
@@ -261,16 +292,13 @@ def _build_html(data: dict, image_url: str) -> str:
   </div>
   <!-- CTA -->
   <div style="background:{c['cta_bg']};padding:36px 28px;text-align:center;">
-    <h2 style="font-size:26px;font-weight:900;color:#fff;margin-bottom:6px;">{data['cta_headline']}</h2>
-    <p style="font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:24px;">{data['cta_subtext']}</p>
-    <a href="{WORKIZ_BOOKING_URL}" target="_blank"
-       style="display:inline-block;background:{c['cta_btn_bg']};color:{c['cta_btn_color']};font-size:16px;font-weight:800;padding:15px 36px;border-radius:6px;text-decoration:none;margin-bottom:22px;">
+    <h2 style="font-size:26px;font-weight:900;color:#fff;margin-bottom:10px;">{data['cta_headline']}</h2>
+    {partner_block}
+    <a href="{cta_href}" target="_blank"
+       style="display:inline-block;background:{c['cta_btn_bg']};color:{c['cta_btn_color']};font-size:18px;font-weight:800;padding:16px 40px;border-radius:6px;text-decoration:none;margin-bottom:16px;">
       {data['cta_button']} →
     </a>
-    <div style="display:flex;justify-content:center;gap:32px;flex-wrap:wrap;">
-      <a href="tel:9179354553" style="color:rgba(255,255,255,0.9);font-size:15px;font-weight:600;text-decoration:none;">📞 (917) 935-4553</a>
-      <a href="https://www.bchdcompany.com" target="_blank" style="color:rgba(255,255,255,0.9);font-size:15px;font-weight:600;text-decoration:none;">🌐 bchdcompany.com</a>
-    </div>
+    {bchd_note}
   </div>
   <!-- SERVICES -->
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a1a;">
