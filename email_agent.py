@@ -113,14 +113,17 @@ JSON structure:
   "cta_headline": "CTA block headline (punchy, max 8 words)",
   "cta_subtext": "Supporting line under headline (location, dates, conditions)",
   "cta_button": "Button text (max 5 words, includes offer)",
-  "ideogram_prompt": "Detailed Ideogram image generation prompt for a professional email banner background. Describe: mood, colors, objects, lighting, style. NO text in image. Photorealistic or cinematic. Max 200 chars."
+  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match the exact campaign theme. Include: specific colors, visual elements, mood, lighting, style. Be creative and specific — avoid generic office/tech imagery. For water/health themes: crystal clear water, blue droplets, clean modern. For seasonal: specific seasonal elements. For partner recommendations: show partnership/trust. NO text in image. Photorealistic. Max 300 chars."
 }}
 Rules:
 - All content in English
 - Tone: energetic and professional, never pushy
 - For holidays/celebrations: warm and sincere, focus on gratitude not sales
 - For repair campaigns: urgency + reassurance
-- ideogram_prompt must match the color_mood and campaign theme
+- For partner recommendations: emphasize trust, quality, exclusive offer
+- ideogram_prompt must be UNIQUE to each campaign — no generic prompts
+- ideogram_prompt must match the color_mood and campaign theme exactly
+- If user mentions specific colors, visuals, or style — use them in ideogram_prompt
 """
 
 def _generate_campaign_content(user_input: str) -> dict:
