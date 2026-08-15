@@ -113,7 +113,13 @@ JSON structure:
   "cta_headline": "CTA block headline (punchy, max 8 words)",
   "cta_subtext": "Supporting line under headline (location, dates, conditions)",
   "cta_button": "Button text (max 5 words, includes offer)",
-  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match the exact campaign theme. Include: specific colors, visual elements, mood, lighting, style. Be creative and specific — avoid generic office/tech imagery. For water/health themes: crystal clear water, blue droplets, clean modern. For seasonal: specific seasonal elements. For partner recommendations: show partnership/trust. NO text in image. Photorealistic. Max 300 chars."
+  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match exact campaign theme. Be creative and specific. NO text in image. Photorealistic. Max 300 chars.",
+  "partner": {
+    "name": "Partner company name if this is a partner recommendation email, else empty string",
+    "phone": "Partner phone formatted as XXX-XXX-XXXX, else empty string",
+    "site": "Partner website domain only e.g. elite-aquacare.com, else empty string",
+    "contact_person": "Partner contact person first name if mentioned, else empty string"
+  } Match the exact campaign theme. Include: specific colors, visual elements, mood, lighting, style. Be creative and specific — avoid generic office/tech imagery. For water/health themes: crystal clear water, blue droplets, clean modern. For seasonal: specific seasonal elements. For partner recommendations: show partnership/trust. NO text in image. Photorealistic. Max 300 chars."
 }}
 Rules:
 - All content in English
@@ -121,6 +127,8 @@ Rules:
 - For holidays/celebrations: warm and sincere, focus on gratitude not sales
 - For repair campaigns: urgency + reassurance
 - For partner recommendations: emphasize trust, quality, exclusive offer
+- Extract partner name, phone, site, contact person into "partner" object exactly as provided
+- cta_button for partner emails: "Call Vadim — 10% OFF" or similar with contact name
 - ideogram_prompt must be UNIQUE to each campaign — no generic prompts
 - ideogram_prompt must match the color_mood and campaign theme exactly
 - If user mentions specific colors, visuals, or style — use them in ideogram_prompt
@@ -175,6 +183,13 @@ def _svg_icon(name: str, color: str) -> str:
 
 def _build_html(data: dict, image_url: str) -> str:
     c = COLOR_SCHEMES.get(data.get("color_mood", "red_urgent"), COLOR_SCHEMES["red_urgent"])
+    partner = data.get("partner", {})
+    partner_name = partner.get("name", "")
+    partner_phone = partner.get("phone", "")
+    partner_phone_digits = partner_phone.replace("-","").replace(" ","").replace("(","").replace(")","")
+    partner_site = partner.get("site", "")
+    partner_contact = partner.get("contact_person", "")
+    is_partner = bool(partner_name)
     section_title_html = data["section_title"].replace("[HIGHLIGHT]", f'<span style="color:{c["accent"]}">') + ("</span>" if "[HIGHLIGHT]" in data["section_title"] else "")
     cards_html = ""
     for card in data["cards"]:
@@ -248,14 +263,16 @@ def _build_html(data: dict, image_url: str) -> str:
   <div style="background:{c['cta_bg']};padding:36px 28px;text-align:center;">
     <h2 style="font-size:26px;font-weight:900;color:#fff;margin-bottom:6px;">{data['cta_headline']}</h2>
     <p style="font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:24px;">{data['cta_subtext']}</p>
-    <a href="{WORKIZ_BOOKING_URL}" target="_blank"
+    {f'''<div style="background:rgba(255,255,255,0.15);border-radius:10px;padding:20px 24px;margin-bottom:24px;">
+      <div style="font-size:22px;font-weight:900;color:#fff;margin-bottom:10px;">Contact {partner_contact or partner_name}</div>
+      {f'<div style="font-size:18px;color:#fff;margin-bottom:6px;">📞 <a href="tel:{partner_phone_digits}" style="color:#fff;text-decoration:none;font-weight:800;">{partner_phone}</a></div>' if partner_phone else ""}
+      {f'<div style="font-size:16px;color:rgba(255,255,255,0.9);">🌐 <a href="https://{partner_site}" target="_blank" style="color:#fff;text-decoration:none;font-weight:700;">{partner_site}</a></div>' if partner_site else ""}
+    </div>''' if is_partner else ""}
+    <a href="{f'tel:{partner_phone_digits}' if is_partner and partner_phone else WORKIZ_BOOKING_URL}" target="_blank"
        style="display:inline-block;background:{c['cta_btn_bg']};color:{c['cta_btn_color']};font-size:16px;font-weight:800;padding:15px 36px;border-radius:6px;text-decoration:none;margin-bottom:22px;">
       {data['cta_button']} →
     </a>
-    <div style="display:flex;justify-content:center;gap:32px;flex-wrap:wrap;">
-      <a href="tel:9179354553" style="color:rgba(255,255,255,0.9);font-size:15px;font-weight:600;text-decoration:none;">📞 (917) 935-4553</a>
-      <a href="https://www.bchdcompany.com" target="_blank" style="color:rgba(255,255,255,0.9);font-size:15px;font-weight:600;text-decoration:none;">🌐 bchdcompany.com</a>
-    </div>
+    {f'<p style="font-size:11px;color:rgba(255,255,255,0.6);margin-top:8px;">Mention BCHD when calling to receive your 10% discount</p>' if is_partner else ''}
   </div>
   <!-- SERVICES -->
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#1a1a1a;">
