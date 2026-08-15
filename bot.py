@@ -348,10 +348,10 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         def _generate():
             campaign_data = _email_agent._generate_campaign_content(theme)
-            img_url = await asyncio.to_thread(
-                _email_agent._generate_ideogram_image,
+            img_url = _email_agent._generate_ideogram_image(
                 campaign_data.get("ideogram_prompt", "Professional appliance repair NYC")
             )
+
             html = _email_agent._build_html(campaign_data, img_url)
             return campaign_data, html, img_url
 
