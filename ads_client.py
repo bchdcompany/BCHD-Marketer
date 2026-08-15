@@ -1851,6 +1851,30 @@ class GoogleAdsClient:
             raise ValueError(f"Объявление с ad_id={ad_id} не найдено")
         return rows[0].ad_group_ad.resource_name
 
+    async def _find_ad_resource_name_by_group(self, ad_group_name: str, customer_id: str) -> str:
+        """Находит resource_name первого активного RSA объявления в группе по её названию."""
+        try:
+            ga_service = self._get_client().get_service("GoogleAdsService")
+            where = f"AND ad_group.name LIKE '%{ad_group_name}%'" if ad_group_name else ""
+            query = f"""
+                SELECT ad_group_ad.resource_name, ad_group.name
+                FROM ad_group_ad
+                WHERE ad_group_ad.status != 'REMOVED'
+                AND ad_group_ad.ad.type = 'RESPONSIVE_SEARCH_AD'
+                AND ad_group.status != 'REMOVED'
+                AND campaign.status != 'REMOVED'
+                {where}
+                LIMIT 1
+            """
+            response = await asyncio.to_thread(ga_service.search, customer_id=customer_id, query=query)
+            for row in response:
+                rn = row.ad_group_ad.resource_name
+                log.info(f"_find_ad_resource_name_by_group: найдено {rn} в группе {row.ad_group.name}")
+                return rn
+        except Exception as e:
+            log.warning(f"_find_ad_resource_name_by_group error: {e}")
+        return ""
+
     async def _update_ad_headlines(self, action: dict, customer_id: str = None) -> dict:
         """
         Обновляет заголовки RSA объявления.
@@ -1869,7 +1893,12 @@ class GoogleAdsClient:
                 log.info(f"resource_name не указан, ищем по ad_id={ad_id}")
                 rn = await self._get_ad_resource_name_by_id(str(ad_id), customer_id)
             else:
-                raise ValueError("resource_name или ad_id объявления не указан")
+                # Ищем по названию группы объявлений
+                ad_group = action.get("ad_group", "")
+                log.info(f"ad_id не указан, ищем объявление по группе: '{ad_group}'")
+                rn = await self._find_ad_resource_name_by_group(ad_group, customer_id)
+                if not rn:
+                    raise ValueError(f"Не удалось найти объявление в группе '{ad_group}'. Укажи ad_id явно.")
         if not new_headlines:
             raise ValueError("Список заголовков (headlines) не указан")
         if len(new_headlines) > 15:
