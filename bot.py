@@ -4056,6 +4056,104 @@ async def scheduled_changes_analysis(app):
     except Exception as e:
         log.error(f"Ошибка анализа изменений: {e}", exc_info=True)
 
+
+async def scheduled_lsa_workiz_reconciliation(app):
+    """
+    Еженедельно в понедельник 09:30 NY — сверка LSA лидов с Workiz.
+    Находит LSA лиды которые стали джобами с неправильным источником.
+    Присылает отчёт с рекомендациями по исправлению.
+    """
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        log.info("Запуск LSA↔Workiz сверки")
+
+        # Берём LSA лиды за последние 14 дней
+        lsa_leads = await ads_client.get_lsa_leads(days=14)
+        if not lsa_leads:
+            return
+
+        # Берём джобы Workiz за последние 14 дней
+        import workiz_client as wz
+        date_from = (_dt.now() - _td(days=14)).strftime("%Y-%m-%d")
+        date_to = _dt.now().strftime("%Y-%m-%d")
+        wz_result = await wz.get_jobs_by_date_range(date_from=date_from, date_to=date_to, records=100)
+        wz_jobs = wz_result.get("jobs", [])
+
+        # Строим индекс Workiz джобов по номеру телефона
+        def _normalize_phone(p):
+            import re
+            return re.sub(r"\D", "", str(p or ""))[-10:]
+
+        wz_by_phone = {}
+        for job in wz_jobs:
+            phone = _normalize_phone(job.get("Phone") or job.get("ClientPhone") or "")
+            if phone:
+                wz_by_phone[phone] = job
+
+        # Сверяем
+        matched = []
+        unmatched = []
+        wrong_source = []
+
+        for lead in lsa_leads:
+            lead_phone = _normalize_phone(lead.get("phone_number") or lead.get("phone") or "")
+            if not lead_phone:
+                continue
+
+            if lead_phone in wz_by_phone:
+                job = wz_by_phone[lead_phone]
+                job_source = (job.get("JobSource") or "").strip()
+                job_id = job.get("UUID") or job.get("SerialId") or ""
+                client_name = f"{job.get('FirstName','')} {job.get('LastName','')}".strip()
+
+                if job_source.lower() not in ["lsa", "google lsa", "local services"]:
+                    wrong_source.append({
+                        "lead_id": lead.get("id"),
+                        "phone": lead_phone,
+                        "job_id": job_id,
+                        "client": client_name,
+                        "current_source": job_source or "не указан",
+                    })
+                else:
+                    matched.append(lead_phone)
+            else:
+                unmatched.append({
+                    "phone": lead_phone,
+                    "lead_id": lead.get("id"),
+                    "date": str(lead.get("creation_date_time", ""))[:10],
+                })
+
+        if not wrong_source and not unmatched:
+            log.info("LSA сверка: все лиды правильно атрибуированы")
+            return
+
+        # Формируем отчёт
+        lines = ["📊 *Еженедельная сверка LSA ↔ Workiz*\n"]
+
+        if wrong_source:
+            lines.append(f"⚠️ *Неправильный источник ({len(wrong_source)} джобов):*")
+            lines.append("Эти джобы пришли из LSA но в Workiz указан другой источник.\nИсправь вручную в Workiz:\n")
+            for item in wrong_source:
+                lines.append(
+                    f"• Джоб {item['job_id']} — {item['client']}\n"
+                    f"  📞 {item['phone']} | Источник: *{item['current_source']}* → нужно: LSA\n"
+                )
+
+        if unmatched:
+            lines.append(f"\n❓ *Не найдены в Workiz ({len(unmatched)} лидов):*")
+            lines.append("Эти LSA лиды не создали джоб в Workiz:\n")
+            for item in unmatched[:10]:
+                lines.append(f"• 📞 {item['phone']} (лид {item['lead_id']}, {item['date']})")
+
+        if matched:
+            lines.append(f"\n✅ Правильно атрибуированы: {len(matched)} лидов")
+
+        text = "\n".join(lines)
+        await _send_long_message(app.bot, config.OWNER_CHAT_ID, text)
+
+    except Exception as e:
+        log.error(f"Ошибка LSA сверки: {e}", exc_info=True)
+
 async def scheduled_campaign_audit(app):
     """
     Каждый понедельник в 09:55 — полный проактивный аудит кампании.
@@ -4785,6 +4883,13 @@ def main():
 
     scheduler = AsyncIOScheduler(timezone=NY_TZ)
     # Разовое напоминание — 16.08.2026 09:00 NY
+    # Понедельник 09:30 — сверка LSA с Workiz
+    scheduler.add_job(
+        scheduled_lsa_workiz_reconciliation, "cron",
+        day_of_week="mon", hour=9, minute=30,
+        timezone=NY_TZ, args=[app],
+        id="lsa_workiz_reconciliation", replace_existing=True,
+    )
     scheduler.add_job(
         lambda: asyncio.create_task(
             app.bot.send_message(
