@@ -2312,6 +2312,32 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    # Добавляем rejected_actions и changes_log в контекст
+    try:
+        pool = await _get_db_pool()
+        if pool:
+            from datetime import datetime as _dt2
+            async with pool.acquire() as conn:
+                # Отклонённые карточки (ещё в периоде retry_after)
+                rejected = await conn.fetch(
+                    "SELECT action_type, description, keyword, rejected_at, retry_after FROM rejected_actions WHERE retry_after > NOW() ORDER BY rejected_at DESC LIMIT 20"
+                )
+                context_data["rejected_actions"] = [
+                    {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                     "rejected_at": r["rejected_at"].strftime("%d.%m"), "retry_after": r["retry_after"].strftime("%d.%m")}
+                    for r in rejected
+                ]
+                # Последние изменения из журнала
+                changes = await conn.fetch(
+                    "SELECT action_type, description, keyword, applied_at FROM ads_changes_log ORDER BY applied_at DESC LIMIT 10"
+                )
+                context_data["recent_changes"] = [
+                    {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                     "applied_at": r["applied_at"].strftime("%d.%m")}
+                    for r in changes
+                ]
+    except Exception as _e:
+        log.warning(f"Ошибка загрузки rejected/changes: {_e}")
     # ВСЕГДА добавляем keywords в data_needed — реальные настройки из API.
     # Исключение: если запрос только про GBP отзывы — не нужны keywords/negatives
     _gbp_only = data_needed == ["gbp_reviews"]
