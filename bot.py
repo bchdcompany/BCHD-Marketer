@@ -2332,6 +2332,22 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     context_data = {}
     context_data["_period"] = {"date_from": period_from, "date_to": period_to}
+    # Загружаем долгосрочную память агента
+    try:
+        pool_mem = await _get_db_pool()
+        if pool_mem:
+            async with pool_mem.acquire() as conn_mem:
+                mem_rows = await conn_mem.fetch("SELECT category, key, value FROM agent_memory ORDER BY category, key")
+                if mem_rows:
+                    agent_mem = {}
+                    for r in mem_rows:
+                        cat = r["category"]
+                        if cat not in agent_mem:
+                            agent_mem[cat] = {}
+                        agent_mem[cat][r["key"]] = r["value"]
+                    context_data["agent_memory"] = agent_mem
+    except Exception as _me:
+        log.warning(f"Ошибка загрузки agent_memory: {_me}")
     # Добавляем rejected_actions и changes_log в контекст
     try:
         pool = await _get_db_pool()
