@@ -2195,6 +2195,26 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _append_history(ctx, chat_id, question, answer)
         return
 
+    # Журнал изменений — ДО classify, не нужен Claude
+    if any(w in question.lower() for w in ["журнал изменений", "покажи журнал", "история изменений", "что меняли"]):
+        _tm = await update.message.reply_text("📋 Загружаю...")
+        try:
+            _p = await _get_db_pool()
+            if _p:
+                async with _p.acquire() as _c:
+                    _chs = await _c.fetch("SELECT action_type, description, applied_at FROM ads_changes_log ORDER BY applied_at DESC LIMIT 5")
+                if _chs:
+                    _o = "📋 Последние изменения:\n\n"
+                    for _r in _chs:
+                        _d = _r["applied_at"].strftime("%d.%m")
+                        _t = _r["action_type"].replace("update_ad_headlines","заголовки").replace("add_negative_keywords","минус-слова").replace("update_bid","ставка")
+                        _o += f"{_d} {_t}: {str(_r['description'])[:45]}\n"
+                    await _tm.edit_text(_o)
+                else:
+                    await _tm.edit_text("Журнал пуст.")
+        except Exception as _ex:
+            await _tm.edit_text(f"Ошибка: {_ex}")
+        return
     thinking_msg = await update.message.reply_text("🧭 Определяю, что нужно...")
     try:
         classification = await ai_analyst.classify_request(question, history=history)
