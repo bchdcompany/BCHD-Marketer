@@ -2201,17 +2201,39 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             _p = await _get_db_pool()
             if _p:
+                from datetime import datetime as _dt2
+                _q_lower2 = question.lower()
+                _month_map = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "май": 5, "мая": 5, "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11, "декабр": 12}
+                _month_filter = None
+                for _m_name, _m_num in _month_map.items():
+                    if _m_name in _q_lower2:
+                        _month_filter = _m_num
+                        break
+                _year = _dt2.now().year
+                if _month_filter:
+                    _date_from2 = f"{_year}-{_month_filter:02d}-01"
+                    _date_to2 = f"{_year}-{_month_filter:02d}-31"
+                    _sql2 = "SELECT action_type, description, applied_at FROM ads_changes_log WHERE applied_at >= $1 AND applied_at <= $2 ORDER BY applied_at DESC"
+                    _args2 = [_date_from2, _date_to2]
+                else:
+                    _now2 = _dt2.now()
+                    _date_from2 = f"{_now2.year}-{_now2.month:02d}-01"
+                    _sql2 = "SELECT action_type, description, applied_at FROM ads_changes_log WHERE applied_at >= $1 ORDER BY applied_at DESC"
+                    _args2 = [_date_from2]
                 async with _p.acquire() as _c:
-                    _chs = await _c.fetch("SELECT action_type, description, applied_at FROM ads_changes_log ORDER BY applied_at DESC LIMIT 5")
+                    _chs = await _c.fetch(_sql2, *_args2)
                 if _chs:
-                    _o = "📋 Последние изменения:\n\n"
+                    _month_label = f"за {_month_filter}-й месяц" if _month_filter else "за август"
+                    _o = f"📋 Изменения {_month_label}:\n\n"
                     for _r in _chs:
                         _d = _r["applied_at"].strftime("%d.%m")
-                        _t = _r["action_type"].replace("update_ad_headlines","заголовки").replace("add_negative_keywords","минус-слова").replace("update_bid","ставка")
-                        _o += f"{_d} {_t}: {str(_r['description'])[:45]}\n"
+                        _t = _r["action_type"].replace("update_ad_headlines","заголовки").replace("add_negative_keywords","минус-слова").replace("update_bid","ставка").replace("enable_ad_group","вкл.группу").replace("pause_ad_group","пауза группы").replace("remove_negative_keyword","удалить минус")
+                        _o += f"{_d} {_t}: {str(_r['description'])[:50]}\n"
+                    if len(_o) > 3800:
+                        _o = _o[:3800] + "\n...запроси конкретный период"
                     await _tm.edit_text(_o)
                 else:
-                    await _tm.edit_text("Журнал пуст.")
+                    await _tm.edit_text("Журнал пуст за этот период.")
         except Exception as _ex:
             await _tm.edit_text(f"Ошибка: {_ex}")
         return
