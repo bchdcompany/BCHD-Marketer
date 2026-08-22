@@ -2091,9 +2091,10 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
             ids_to_check.append(str(action["resource_name"]))
     elif a_type in ("pause_keywords", "enable_keywords",
                     "remove_keywords", "removekeywords", "delete_keywords"):
-        # Для паузы/удаления ключей НЕ блокируем по ID — resource_name
-        # проверяется непосредственно перед мутацией в ads_client._validate_keyword_resource_names.
-        # Двойная проверка здесь только создаёт ложные блокировки.
+        # Для паузы/удаления/добавления ключей НЕ блокируем по ID — проверяется на уровне API
+        return True
+    elif a_type in ("add_keywords", "addkeywords", "enable_ad_group", "pause_ad_group",
+                    "create_gbp_post", "send_email_campaign"):
         return True
     elif a_type == "seasonal_adjustments":
         for adj in action.get("adjustments", []):
