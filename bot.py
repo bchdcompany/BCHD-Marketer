@@ -234,6 +234,26 @@ def _truncate_for_telegram(text: str) -> str:
     return text[:cutoff] + _TRUNCATION_SUFFIX
 
 
+async def _send_long_message(bot, chat_id: int, text: str, parse_mode=None):
+    """Разбивает длинное сообщение на части и отправляет последовательно."""
+    if len(text) <= 3800:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        return
+    parts = []
+    while text:
+        if len(text) <= 3800:
+            parts.append(text)
+            break
+        # Ищем последний перенос строки до 3800
+        cut = text.rfind("\n", 0, 3800)
+        if cut == -1:
+            cut = 3800
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    for i, part in enumerate(parts):
+        prefix = f"📄 Часть {i+1}/{len(parts)}:\n\n" if len(parts) > 1 else ""
+        await bot.send_message(chat_id=chat_id, text=prefix + part, parse_mode=parse_mode)
+
 async def _safe_send(bot, chat_id: int, text: str, parse_mode="Markdown", **kwargs):
     text = _truncate_for_telegram(text)
     try:
@@ -2567,7 +2587,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error(f"chat_action вернул результат без ключа 'reply': {result}")
     reply = result.get("reply", "⚠️ Ответ получен, но в неожиданном формате (без текста). Попробуй переформулировать вопрос.")
     reply = _guard_against_hallucinated_execution(reply)
-    await _safe_edit(thinking_msg, reply, parse_mode="Markdown")
+    if len(reply) > 3800:
+        await thinking_msg.delete()
+        await _send_long_message(ctx.bot, chat_id, reply, parse_mode=None)
+    else:
+        await _safe_edit(thinking_msg, reply, parse_mode=None)
     await _append_history(ctx, chat_id, question, reply)
 
     blocked_actions = 0
