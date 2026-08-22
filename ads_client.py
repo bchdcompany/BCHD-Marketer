@@ -226,6 +226,7 @@ class GoogleAdsClient:
                 ad_group_criterion.quality_info.quality_score,
                 ad_group_criterion.final_urls,
                 ad_group_criterion.cpc_bid_micros,
+                ad_group.status,
                 ad_group_criterion.effective_cpc_bid_micros,
                 campaign.name,
                 ad_group.id,
@@ -286,6 +287,7 @@ class GoogleAdsClient:
                     'campaign': row.campaign.name,
                     'ad_group': row.ad_group.name,
                     'ad_group_id': row.ad_group.id,
+                    'ad_group_status': row.ad_group.status.name,
                     'final_urls': list(crit.final_urls) if crit.final_urls else [],
                     'current_bid': current_bid,  # РЕАЛЬНАЯ текущая ставка
                     'effective_bid': effective_bid,
