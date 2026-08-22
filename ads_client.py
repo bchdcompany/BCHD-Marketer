@@ -1662,6 +1662,37 @@ class GoogleAdsClient:
             log.warning(f"_resolve_keyword_resource_name error: {e}")
         return ""
 
+    async def enable_ad_group(self, ad_group_id: str, customer_id: str = None) -> dict:
+        """Включает группу объявлений."""
+        return await self._set_ad_group_status(ad_group_id, "ENABLED", customer_id)
+
+    async def pause_ad_group(self, ad_group_id: str, customer_id: str = None) -> dict:
+        """Паузирует группу объявлений."""
+        return await self._set_ad_group_status(ad_group_id, "PAUSED", customer_id)
+
+    async def _set_ad_group_status(self, ad_group_id: str, status: str, customer_id: str = None) -> dict:
+        """Меняет статус группы объявлений."""
+        if not customer_id:
+            customer_id = self.customer_id
+        try:
+            ga = self._get_client()
+            ag_service = ga.get_service("AdGroupService")
+            ag_operation = ga.get_type("AdGroupOperation")
+            resource_name = f"customers/{customer_id}/adGroups/{ad_group_id}"
+            ag = ag_operation.update
+            ag.resource_name = resource_name
+            if status == "ENABLED":
+                ag.status = ga.enums.AdGroupStatusEnum.ENABLED
+            else:
+                ag.status = ga.enums.AdGroupStatusEnum.PAUSED
+            from google.protobuf import field_mask_pb2
+            ag_operation.update_mask.CopyFrom(field_mask_pb2.FieldMask(paths=["status"]))
+            response = await asyncio.to_thread(ag_service.mutate_ad_groups, customer_id=customer_id, operations=[ag_operation])
+            return {"success": True, "resource_name": response.results[0].resource_name, "status": status}
+        except Exception as e:
+            log.error(f"Ошибка _set_ad_group_status: {e}")
+            return {"success": False, "error": str(e)}
+
     async def _update_bid(self, action: dict, customer_id: str = None) -> dict:
         if not customer_id: customer_id = self.customer_id
         client = self._get_client()
