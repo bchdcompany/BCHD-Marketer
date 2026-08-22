@@ -1425,26 +1425,6 @@ async def scheduled_anomaly_check(app):
     except Exception as e:
         log.error(f"Ошибка anomaly_check: {e}")
 
-async def _send_long_message(bot_or_app, chat_id: int, text: str):
-    """Отправляет длинный текст разбивая на части по 3800 символов."""
-    bot = getattr(bot_or_app, 'bot', bot_or_app)
-    if len(text) <= 3800:
-        await _safe_send(bot, chat_id, text, parse_mode="Markdown")
-        return
-    parts = []
-    while text:
-        if len(text) <= 3800:
-            parts.append(text)
-            break
-        cut = text[:3800].rfind("\n")
-        if cut == -1:
-            cut = 3800
-        parts.append(text[:cut])
-        text = text[cut:].lstrip("\n")
-    for part in parts:
-        await _safe_send(bot, chat_id, part, parse_mode="Markdown")
-
-
 async def scheduled_purge_pending(app):
     """Раз в сутки чистит очень старые записи в очереди одобрения (>72ч),
     чтобы память процесса не росла бесконечно при долгой работе."""
@@ -2589,7 +2569,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reply = _guard_against_hallucinated_execution(reply)
     if len(reply) > 3800:
         await thinking_msg.delete()
-        await _send_long_message(ctx.bot, chat_id, reply, parse_mode=None)
+        await _send_long_message(ctx.bot, chat_id, reply)
     else:
         await _safe_edit(thinking_msg, reply, parse_mode=None)
     await _append_history(ctx, chat_id, question, reply)
