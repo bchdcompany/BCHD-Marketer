@@ -2211,13 +2211,13 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         break
                 _year = _dt2.now().year
                 if _month_filter:
-                    _date_from2 = f"{_year}-{_month_filter:02d}-01"
-                    _date_to2 = f"{_year}-{_month_filter:02d}-31"
+                    _date_from2 = _dt2(_year, _month_filter, 1)
+                    _date_to2 = _dt2(_year, _month_filter, 28, 23, 59, 59)
                     _sql2 = "SELECT action_type, description, applied_at FROM ads_changes_log WHERE applied_at >= $1 AND applied_at <= $2 ORDER BY applied_at DESC"
                     _args2 = [_date_from2, _date_to2]
                 else:
                     _now2 = _dt2.now()
-                    _date_from2 = f"{_now2.year}-{_now2.month:02d}-01"
+                    _date_from2 = _dt2(_now2.year, _now2.month, 1)
                     _sql2 = "SELECT action_type, description, applied_at FROM ads_changes_log WHERE applied_at >= $1 ORDER BY applied_at DESC"
                     _args2 = [_date_from2]
                 async with _p.acquire() as _c:
