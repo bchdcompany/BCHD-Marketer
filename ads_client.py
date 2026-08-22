@@ -1100,6 +1100,10 @@ class GoogleAdsClient:
             'updateadheadlines': self._update_ad_headlines,
             'set_ad_schedule': self.set_ad_schedule,
             'setadschedule': self.set_ad_schedule,
+            'add_keywords': self._add_keywords,
+            'addkeywords': self._add_keywords,
+            'enable_ad_group': lambda action, customer_id=None: self.enable_ad_group(str(action.get('ad_group_id', '')), customer_id),
+            'pause_ad_group': lambda action, customer_id=None: self.pause_ad_group(str(action.get('ad_group_id', '')), customer_id),
         }
         handler = handlers.get(action_type)
         if not handler:
@@ -1329,6 +1333,50 @@ class GoogleAdsClient:
         except Exception as e:
             log.error(f"verify_action({action_type}) error: {e}")
             return {'verified': False, 'error': str(e)}
+
+    async def _add_keywords(self, action: dict, customer_id: str = None) -> dict:
+        """Добавляет новые ключевые слова в группу объявлений."""
+        if not customer_id:
+            customer_id = self.customer_id
+        ad_group_id = str(action.get("ad_group_id", ""))
+        keywords = action.get("keywords", [])
+        if not ad_group_id or not keywords:
+            return {"success": False, "error": "Не указан ad_group_id или keywords"}
+        try:
+            ga = self._get_client()
+            ag_criterion_service = ga.get_service("AdGroupCriterionService")
+            operations = []
+            for kw in keywords:
+                if isinstance(kw, dict):
+                    kw_text = kw.get("text", "")
+                    match_type = kw.get("match_type", "PHRASE").upper()
+                    bid = kw.get("bid", 10.0)
+                else:
+                    kw_text = str(kw)
+                    match_type = "PHRASE"
+                    bid = 10.0
+                if not kw_text:
+                    continue
+                op = ga.get_type("AdGroupCriterionOperation")
+                criterion = op.create
+                criterion.ad_group = f"customers/{customer_id}/adGroups/{ad_group_id}"
+                criterion.status = ga.enums.AdGroupCriterionStatusEnum.ENABLED
+                criterion.keyword.text = kw_text
+                criterion.keyword.match_type = getattr(ga.enums.KeywordMatchTypeEnum, match_type)
+                criterion.cpc_bid_micros = int(bid * 1_000_000)
+                operations.append(op)
+            if not operations:
+                return {"success": False, "error": "Нет валидных ключей"}
+            response = await asyncio.to_thread(
+                ag_criterion_service.mutate_ad_group_criteria,
+                customer_id=customer_id,
+                operations=operations
+            )
+            added = [r.resource_name for r in response.results]
+            return {"success": True, "added": len(added), "resource_names": added}
+        except Exception as e:
+            log.error(f"Ошибка _add_keywords: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _validate_keyword_resource_names(self, customer_id: str, keywords: list) -> tuple:
         # Если resource_name не найден — ищем по тексту ключа и берём актуальный rn.
