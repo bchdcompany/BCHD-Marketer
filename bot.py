@@ -2938,6 +2938,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             action.get("primary_category_id", ""),
                             action.get("additional_category_ids", [])
                         )
+                    elif atype in ("enable_ad_group", "pause_ad_group"):
+                        ag_id = action.get("ad_group_id", "")
+                        ag_name = action.get("ad_group_name", ag_id)
+                        if atype == "enable_ad_group":
+                            result = await ads_client.enable_ad_group(ag_id)
+                        else:
+                            result = await ads_client.pause_ad_group(ag_id)
+                        if result.get("success"):
+                            status_word = "включена" if atype == "enable_ad_group" else "приостановлена"
+                            await _safe_edit(query, f"✅ Группа '{ag_name}' {status_word}")
+                        else:
+                            await _safe_edit(query, f"❌ Ошибка: {result.get('error')}")
                     elif atype == "create_gbp_post":
                         result = await _gbp_inst.create_post(
                             text=action.get("post_text") or action.get("summary") or action.get("text", "")
