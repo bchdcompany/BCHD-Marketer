@@ -1394,6 +1394,33 @@ async def scheduled_anomaly_check(app):
         try:
             period_from = (today - timedelta(days=7)).strftime("%Y-%m-%d")
             context_data = {"_period": {"date_from": period_from, "date_to": date_today}}
+            # Загружаем agent_memory и rejected_actions в проактивный анализ
+            try:
+                _pool_am = await _get_db_pool()
+                if _pool_am:
+                    async with _pool_am.acquire() as _conn_am:
+                        _mem = await _conn_am.fetch("SELECT category, key, value FROM agent_memory ORDER BY category, key")
+                        _rej = await _conn_am.fetch("SELECT action_type, description, keyword, rejected_at, retry_after FROM rejected_actions WHERE retry_after > NOW() ORDER BY rejected_at DESC LIMIT 20")
+                        _chg = await _conn_am.fetch("SELECT action_type, description, keyword, applied_at FROM ads_changes_log ORDER BY applied_at DESC LIMIT 15")
+                    if _mem:
+                        _am = {}
+                        for _r in _mem:
+                            if _r["category"] not in _am:
+                                _am[_r["category"]] = {}
+                            _am[_r["category"]][_r["key"]] = _r["value"]
+                        context_data["agent_memory"] = _am
+                    context_data["rejected_actions"] = [
+                        {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                         "rejected_at": r["rejected_at"].strftime("%d.%m"), "retry_after": r["retry_after"].strftime("%d.%m")}
+                        for r in _rej
+                    ]
+                    context_data["recent_changes"] = [
+                        {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                         "applied_at": r["applied_at"].strftime("%d.%m")}
+                        for r in _chg
+                    ]
+            except Exception as _e_am:
+                log.warning(f"anomaly_check: ошибка загрузки agent_memory: {_e_am}")
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
                 date_from=period_from, date_to=date_today
             )
