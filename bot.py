@@ -3982,10 +3982,24 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action_type = "create_gbp_post"
             topic_type = "STANDARD"
 
+        # Генерируем Ideogram промпт для изображения
+        _service = "appliance repair"
+        if "refrigerator" in post_text.lower() or "fridge" in post_text.lower():
+            _service = "refrigerator repair"
+        elif "washer" in post_text.lower() or "dryer" in post_text.lower():
+            _service = "washer dryer repair"
+        elif "dishwasher" in post_text.lower():
+            _service = "dishwasher repair"
+        elif "stove" in post_text.lower() or "oven" in post_text.lower():
+            _service = "stove oven repair"
+        elif "ac" in post_text.lower() or "hvac" in post_text.lower():
+            _service = "AC HVAC repair"
+        _ideogram_prompt = f"Professional {_service} technician working in Brooklyn NYC kitchen, modern appliance, clean and bright, photorealistic, trust and reliability"
         action = {
             "type": action_type,
             "post_text": post_text,
             "topic_type": topic_type,
+            "ideogram_prompt": _ideogram_prompt,
             "description": f"Опубликовать пост в GBP",
             "reasoning": "Владелец запросил публикацию поста в Google Business Profile",
             "urgency": "low",
