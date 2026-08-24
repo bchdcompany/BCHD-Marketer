@@ -3023,9 +3023,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     else:
                         result = {"success": False, "error": "Неизвестный тип"}
                     if result.get("success"):
-                        await _safe_edit(query,
-                            "✅ Пост опубликован в Google Business Profile!",
-                        )
+                        _state = result.get("state", "")
+                        _state_label = " (LIVE ✅)" if _state == "LIVE" else f" ({_state})" if _state else ""
+                        await _safe_edit(query, f"✅ Пост опубликован в Google Business Profile{_state_label}")
                     else:
                         await _safe_edit(query, "Ошибка публикации: " + str(result.get("error")))
                     return
