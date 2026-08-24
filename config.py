@@ -55,6 +55,7 @@ class Config:
     # (client_id, client_secret, refresh_token)
     GBP_ACCOUNT_NAME: str = os.environ.get("GBP_ACCOUNT_NAME", "")
     GBP_REFRESH_TOKEN: str = os.environ.get("GBP_REFRESH_TOKEN", "")
+    IMGBB_API_KEY: str = os.environ.get("IMGBB_API_KEY", "")
     # Формат: accounts/123456789 (найти в GBP API или Google My Business)
 
     @property
