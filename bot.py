@@ -2847,19 +2847,25 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 # Получаем текст поста
                 post_text = pending_gbp_data.get("post_text", "")
                 # Публикуем с фото через Telegram file URL
-                # Загружаем фото на tmpfiles.org для получения публичного URL
-                import httpx as _hx
+                # Скачиваем фото из Telegram и загружаем на ImgBB
+                import httpx as _hx, base64 as _b64
                 tg_dl_url = f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{tg_file.file_path}"
                 async with _hx.AsyncClient(timeout=30) as _hxc:
                     _img_resp = await _hxc.get(tg_dl_url)
                     _img_bytes = _img_resp.content
-                    # Загружаем на tmpfiles.org
-                    _up = await _hxc.post("https://tmpfiles.org/api/v1/upload", 
-                        files={"file": ("photo.jpg", _img_bytes, "image/jpeg")})
-                    _up_data = _up.json()
-                    _pub_url = _up_data.get("data", {}).get("url", "").replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                _imgbb_key = getattr(config, "IMGBB_API_KEY", "")
+                if not _imgbb_key:
+                    raise ValueError("IMGBB_API_KEY не настроен")
+                _img_b64 = _b64.b64encode(_img_bytes).decode()
+                async with _hx.AsyncClient(timeout=30) as _hxc2:
+                    _ib_resp = await _hxc2.post(
+                        "https://api.imgbb.com/1/upload",
+                        data={"key": _imgbb_key, "image": _img_b64, "expiration": 600}
+                    )
+                    _ib_data = _ib_resp.json()
+                _pub_url = _ib_data.get("data", {}).get("url", "")
                 if not _pub_url:
-                    raise ValueError("Не удалось загрузить фото")
+                    raise ValueError(f"ImgBB upload failed: {_ib_data}")
                 result = await _gbp.create_post(text=post_text, image_url=_pub_url)
                 _os.unlink(tmp_path)
                 _GBP_PHOTO_PENDING.pop(update.effective_chat.id, None)
