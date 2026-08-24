@@ -2825,6 +2825,55 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     photo = update.message.photo[-1]  # наибольшее разрешение
 
+    # Проверяем — ждём ли фото для GBP поста
+    pending_gbp = ctx.user_data.get("pending_gbp_post")
+    if pending_gbp:
+        status_msg = await update.message.reply_text("📸 Загружаю фото в GBP...")
+        try:
+            tg_file = await ctx.bot.get_file(photo.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            # Загружаем фото напрямую в GBP
+            _gbp = globals().get("gbp_client_inst")
+            if _gbp:
+                import tempfile, os as _os
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp.write(bytes(file_bytes))
+                    tmp_path = tmp.name
+                # Загружаем через upload_media с file_path
+                import httpx as _httpx
+                token = await _gbp._get_access_token()
+                loc_id = _gbp.LOCATION_NAME.split("/locations/")[-1] if hasattr(_gbp, "LOCATION_NAME") else ""
+                # Получаем текст поста
+                post_text = ctx.user_data.get("pending_gbp_text", "")
+                # Публикуем с фото через Telegram file URL
+                # Загружаем фото на tmpfiles.org для получения публичного URL
+                import httpx as _hx
+                tg_dl_url = f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{tg_file.file_path}"
+                async with _hx.AsyncClient(timeout=30) as _hxc:
+                    _img_resp = await _hxc.get(tg_dl_url)
+                    _img_bytes = _img_resp.content
+                    # Загружаем на tmpfiles.org
+                    _up = await _hxc.post("https://tmpfiles.org/api/v1/upload", 
+                        files={"file": ("photo.jpg", _img_bytes, "image/jpeg")})
+                    _up_data = _up.json()
+                    _pub_url = _up_data.get("data", {}).get("url", "").replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                if not _pub_url:
+                    raise ValueError("Не удалось загрузить фото")
+                result = await _gbp.create_post(text=post_text, image_url=_pub_url)
+                _os.unlink(tmp_path)
+                ctx.user_data.pop("pending_gbp_post", None)
+                ctx.user_data.pop("pending_gbp_text", None)
+                if result.get("success"):
+                    await status_msg.edit_text(f"✅ Пост с фото опубликован в GBP!")
+                else:
+                    await status_msg.edit_text(f"❌ Ошибка: {result.get('error')}")
+            else:
+                await status_msg.edit_text("❌ GBP не подключён")
+        except Exception as _pe:
+            log.error(f"GBP photo post error: {_pe}")
+            await status_msg.edit_text(f"❌ Ошибка загрузки фото: {_pe}")
+        return
+
     status_msg = await update.message.reply_text("🖼 Анализирую скриншот...")
     try:
         tg_file = await ctx.bot.get_file(photo.file_id)
@@ -4008,7 +4057,12 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "requires_approval": True
         }
         action_id = await pending.add(action)
-        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+        # Сохраняем состояние — ждём фото от пользователя
+        ctx.user_data["pending_gbp_post"] = action_id
+        ctx.user_data["pending_gbp_text"] = post_text
+        await update.message.reply_text(
+            f"📝 Текст поста готов.\n\n📸 Пришли фото для публикации в GBP — или напиши \"без фото\" чтобы опубликовать без изображения."
+        )
 
     except Exception as e:
         log.error(f"GBP post error: {e}", exc_info=True)
