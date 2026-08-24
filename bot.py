@@ -5124,6 +5124,22 @@ async def _on_startup(app):
     await init_db()
 
 
+async def scheduled_gbp_post_reminder(app):
+    """Напоминание о публикации GBP поста каждые 3 дня."""
+    if not config.OWNER_CHAT_ID:
+        return
+    try:
+        import random
+        services = ["refrigerator", "washer dryer", "dishwasher", "stove oven", "AC HVAC"]
+        service = random.choice(services)
+        await app.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=f"\U0001f4dd Время для GBP поста!\n\nРасскажи о последнем интересном заказе по ремонту {service} — составлю текст и опубликую с твоим фото. Или напиши: \"сделай пост про [тему]\"",
+        )
+    except Exception as e:
+        log.error(f"GBP reminder error: {e}")
+
+
 def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_on_startup).build()
 
@@ -5202,6 +5218,7 @@ def main():
         replace_existing=True,
     )
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
+    scheduler.add_job(scheduled_gbp_post_reminder, "interval", days=3, args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
     scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="mon", hour=9,  minute=0,  args=[app])
