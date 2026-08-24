@@ -344,10 +344,11 @@ class GBPClient:
             return {"success": False, "error": result["error"]}
         return {"success": True, "categories_updated": True}
 
-    async def create_post(self, text: str, topic_type: str = "STANDARD") -> dict:
+    async def create_post(self, text: str, topic_type: str = "STANDARD", image_url: str = None) -> dict:
         """
         Публикует пост в GBP (Google Business Profile Posts).
         topic_type: STANDARD (обычный пост), EVENT (событие), OFFER (акция)
+        image_url: URL изображения для прикрепления к посту
         """
         url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/localPosts"
         data = {
@@ -355,6 +356,16 @@ class GBPClient:
             "summary": text,
             "topicType": topic_type,
         }
+        # Добавляем фото если передан URL
+        if image_url:
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=30) as _client:
+                    _img = await _client.get(image_url)
+                    _img.raise_for_status()
+                data["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": image_url}]
+            except Exception as _e:
+                log.warning(f"Не удалось прикрепить фото к посту: {_e}")
         result = await self._post(url, data)
         if "error" in result:
             return {"success": False, "error": result["error"]}
