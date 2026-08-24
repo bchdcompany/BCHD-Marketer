@@ -3004,8 +3004,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         else:
                             await _safe_edit(query, f"❌ Ошибка: {result.get('error')}")
                     elif atype == "create_gbp_post":
+                        _post_text = action.get("post_text") or action.get("summary") or action.get("text", "")
+                        _image_url = None
+                        # Генерируем изображение через Ideogram если есть промпт
+                        _img_prompt = action.get("ideogram_prompt") or action.get("image_prompt")
+                        if _img_prompt:
+                            try:
+                                from email_agent import generate_ideogram_image
+                                await _safe_edit(query, "🎨 Генерирую изображение для поста...")
+                                _image_url = await generate_ideogram_image(_img_prompt)
+                                log.info(f"GBP пост: изображение сгенерировано {_image_url}")
+                            except Exception as _ie:
+                                log.warning(f"Ошибка генерации изображения для GBP: {_ie}")
                         result = await _gbp_inst.create_post(
-                            text=action.get("post_text") or action.get("summary") or action.get("text", "")
+                            text=_post_text,
+                            image_url=_image_url
                         )
                     else:
                         result = {"success": False, "error": "Неизвестный тип"}
