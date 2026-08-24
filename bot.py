@@ -2706,7 +2706,12 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🎙 Транскрибирую голосовое...")
     try:
         tg_file = await ctx.bot.get_file(voice.file_id)
-        file_bytes = await tg_file.download_as_bytearray()
+        import httpx as _hx_dl
+        _tg_fp = tg_file.file_path
+        _tg_full_url = f'https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_tg_fp}' if not _tg_fp.startswith('http') else _tg_fp
+        async with _hx_dl.AsyncClient(timeout=30) as _hx_dl_c:
+            _tg_dl_r = await _hx_dl_c.get(_tg_full_url)
+            file_bytes = _tg_dl_r.content
         question = await _transcribe_voice(bytes(file_bytes))
     except Exception as e:
         log.error(f"Ошибка транскрипции голоса: {e}")
@@ -2832,7 +2837,12 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("📸 Загружаю фото в GBP...")
         try:
             tg_file = await ctx.bot.get_file(photo.file_id)
-            file_bytes = await tg_file.download_as_bytearray()
+            import httpx as _hx_dl
+            _tg_fp = tg_file.file_path
+            _tg_full_url = f'https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_tg_fp}' if not _tg_fp.startswith('http') else _tg_fp
+            async with _hx_dl.AsyncClient(timeout=30) as _hx_dl_c:
+                _tg_dl_r = await _hx_dl_c.get(_tg_full_url)
+                file_bytes = _tg_dl_r.content
             # Загружаем фото напрямую в GBP
             _gbp = globals().get("gbp_client_inst")
             if _gbp:
@@ -2849,7 +2859,8 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 # Публикуем с фото через Telegram file URL
                 # Скачиваем фото из Telegram и загружаем на ImgBB
                 import httpx as _hx, base64 as _b64
-                tg_dl_url = f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{tg_file.file_path}"
+                _fp2 = tg_file.file_path
+                tg_dl_url = _fp2 if _fp2.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp2}"
                 async with _hx.AsyncClient(timeout=30) as _hxc:
                     _img_resp = await _hxc.get(tg_dl_url)
                     _img_bytes = _img_resp.content
@@ -2883,7 +2894,12 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🖼 Анализирую скриншот...")
     try:
         tg_file = await ctx.bot.get_file(photo.file_id)
-        file_bytes = await tg_file.download_as_bytearray()
+        import httpx as _hx_dl
+        _tg_fp = tg_file.file_path
+        _tg_full_url = f'https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_tg_fp}' if not _tg_fp.startswith('http') else _tg_fp
+        async with _hx_dl.AsyncClient(timeout=30) as _hx_dl_c:
+            _tg_dl_r = await _hx_dl_c.get(_tg_full_url)
+            file_bytes = _tg_dl_r.content
         image_b64 = base64.b64encode(bytes(file_bytes)).decode()
     except Exception as e:
         log.error(f"Ошибка загрузки фото: {e}")
