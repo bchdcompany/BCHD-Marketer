@@ -3994,7 +3994,7 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _service = "stove oven repair"
         elif "ac" in post_text.lower() or "hvac" in post_text.lower():
             _service = "AC HVAC repair"
-        _ideogram_prompt = f"Professional {_service} technician working in Brooklyn NYC kitchen, modern appliance, clean and bright, photorealistic, trust and reliability"
+        _ideogram_prompt = f"Real photo of a professional appliance repair technician fixing a {_service} in a New York City home kitchen, candid documentary style, natural lighting, high resolution DSLR photo, 35mm lens, authentic and realistic, no cartoon, no illustration"
         action = {
             "type": action_type,
             "post_text": post_text,
