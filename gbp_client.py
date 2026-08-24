@@ -328,10 +328,15 @@ class GBPClient:
         MBIZ_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
         loc_id = LOCATION_NAME.split("/locations/")[-1]
         url = f"{MBIZ_BASE}/locations/{loc_id}"
+        # Google API принимает категории в формате gcid: или displayName
+        def _cat(cid):
+            if cid.startswith("gcid:"):
+                return {"name": cid}
+            return {"displayName": cid}
         data = {
             "categories": {
-                "primaryCategory": {"name": primary_category_id},
-                "additionalCategories": [{"name": cid} for cid in additional_category_ids]
+                "primaryCategory": _cat(primary_category_id),
+                "additionalCategories": [_cat(cid) for cid in additional_category_ids if cid]
             }
         }
         result = await self._patch(url, data, "categories")
