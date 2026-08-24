@@ -2986,12 +2986,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             action.get("review_name") or f"accounts/114321652527408044999/locations/3876947509759665211/reviews/{action.get('review_id', '')}", action.get("reply_text") or action.get("body_text", "")
                         )
                     elif atype == "update_gbp_description":
-                        result = await _gbp_inst.update_description(action["description_text"])
+                        result = await _gbp_inst.update_description(action.get("description_text") or action.get("description") or action.get("text", ""))
                     elif atype == "update_gbp_categories":
-                        result = await _gbp_inst.update_categories(
-                            action.get("primary_category_id", ""),
-                            action.get("additional_category_ids", [])
-                        )
+                        _primary = action.get("primary_category_id") or action.get("primary_category") or ""
+                        _additional = action.get("additional_category_ids") or action.get("additional_categories") or []
+                        result = await _gbp_inst.update_categories(_primary, _additional)
                     elif atype in ("enable_ad_group", "pause_ad_group"):
                         ag_id = action.get("ad_group_id", "")
                         ag_name = action.get("ad_group_name", ag_id)
