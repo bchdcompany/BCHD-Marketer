@@ -69,6 +69,7 @@ report_gen = ReportGenerator()
 pending = PendingActions()
 strategy_memory = StrategyMemory() if _strategy_available else None
 gbp_client_inst = init_gbp_client(config) if _gbp_available else None
+_GBP_PHOTO_PENDING: dict = {}  # chat_id -> {action_id, post_text}
 
 NY_TZ = pytz.timezone(config.TIMEZONE)
 
@@ -2826,8 +2827,8 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]  # наибольшее разрешение
 
     # Проверяем — ждём ли фото для GBP поста
-    pending_gbp = ctx.user_data.get("pending_gbp_post")
-    if pending_gbp:
+    pending_gbp_data = _GBP_PHOTO_PENDING.get(update.effective_chat.id)
+    if pending_gbp_data:
         status_msg = await update.message.reply_text("📸 Загружаю фото в GBP...")
         try:
             tg_file = await ctx.bot.get_file(photo.file_id)
@@ -2844,7 +2845,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 token = await _gbp._get_access_token()
                 loc_id = _gbp.LOCATION_NAME.split("/locations/")[-1] if hasattr(_gbp, "LOCATION_NAME") else ""
                 # Получаем текст поста
-                post_text = ctx.user_data.get("pending_gbp_text", "")
+                post_text = pending_gbp_data.get("post_text", "")
                 # Публикуем с фото через Telegram file URL
                 # Загружаем фото на tmpfiles.org для получения публичного URL
                 import httpx as _hx
@@ -2861,8 +2862,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     raise ValueError("Не удалось загрузить фото")
                 result = await _gbp.create_post(text=post_text, image_url=_pub_url)
                 _os.unlink(tmp_path)
-                ctx.user_data.pop("pending_gbp_post", None)
-                ctx.user_data.pop("pending_gbp_text", None)
+                _GBP_PHOTO_PENDING.pop(update.effective_chat.id, None)
                 if result.get("success"):
                     await status_msg.edit_text(f"✅ Пост с фото опубликован в GBP!")
                 else:
@@ -4058,10 +4058,9 @@ async def cmd_gbp_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         }
         action_id = await pending.add(action)
         # Сохраняем состояние — ждём фото от пользователя
-        ctx.user_data["pending_gbp_post"] = action_id
-        ctx.user_data["pending_gbp_text"] = post_text
+        _GBP_PHOTO_PENDING[config.OWNER_CHAT_ID] = {"action_id": action_id, "post_text": post_text}
         await update.message.reply_text(
-            f"📝 Текст поста готов.\n\n📸 Пришли фото для публикации в GBP — или напиши \"без фото\" чтобы опубликовать без изображения."
+            f"📝 Текст поста готов:\n\n_{post_text[:100]}_\n\n📸 Пришли фото для публикации в GBP — или напиши \"без фото\" чтобы опубликовать без изображения."
         )
 
     except Exception as e:
