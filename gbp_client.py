@@ -356,24 +356,35 @@ class GBPClient:
             "summary": text,
             "topicType": topic_type,
         }
-        # Добавляем фото если передан URL
+        # Добавляем фото через upload_media + автоудаление из профиля
+        _media_name_to_delete = None
         if image_url:
             try:
-                import httpx as _httpx
-                async with _httpx.AsyncClient(timeout=30) as _client:
-                    _img = await _client.get(image_url)
-                    _img.raise_for_status()
-                data["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": image_url}]
+                _media_result = await self.upload_media(image_url, category="ADDITIONAL")
+                if _media_result.get("success") and _media_result.get("media_name"):
+                    _media_name_to_delete = _media_result["media_name"]
+                    _google_url = _media_result.get("result", {}).get("googleUrl", image_url)
+                    data["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": _google_url}]
+                    log.info(f"GBP пост: фото загружено")
+                else:
+                    data["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": image_url}]
             except Exception as _e:
                 log.warning(f"Не удалось прикрепить фото к посту: {_e}")
         result = await self._post(url, data)
         if "error" in result:
             return {"success": False, "error": result["error"]}
-        return {
-            "success": True,
-            "post_name": result.get("name", ""),
-            "text": text[:100],
-        }
+        post_name = result.get("name", "")
+        # Удаляем фото из профиля после прикрепления к посту
+        if _media_name_to_delete and post_name:
+            try:
+                await self._delete(f"https://mybusiness.googleapis.com/v4/{_media_name_to_delete}")
+                log.info(f"GBP: фото удалено из профиля")
+            except Exception as _de:
+                log.warning(f"Не удалось удалить фото из профиля: {_de}")
+        state = result.get("state", "")
+        if state == "REJECTED":
+            return {"success": False, "error": "Пост отклонён Google. Убери номер телефона и ссылки из текста.", "post_name": post_name}
+        return {"success": True, "post_name": post_name, "state": state, "text": text[:100]}
 
     async def get_posts(self, page_size: int = 10) -> dict:
         """Получает последние посты GBP."""
