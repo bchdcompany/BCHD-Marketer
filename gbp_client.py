@@ -369,28 +369,9 @@ class GBPClient:
         result = await self._post(url, data)
         if "error" in result:
             return {"success": False, "error": result["error"]}
-        post_name = result.get("name", "")
-        state = result.get("state", "")
-        # Проверяем статус поста через get_posts
-        if post_name:
-            try:
-                import asyncio as _asyncio
-                await _asyncio.sleep(3)  # ждём обработки Google
-                posts = await self.get_posts(page_size=1)
-                latest = posts.get("posts", [{}])[0] if posts.get("posts") else {}
-                state = latest.get("state", state)
-            except Exception:
-                pass
-        if state == "REJECTED":
-            return {
-                "success": False,
-                "error": f"Пост отклонён Google (REJECTED). Причина: телефон/URL в тексте запрещены. Убери номер телефона и ссылки из текста.",
-                "post_name": post_name,
-            }
         return {
             "success": True,
-            "post_name": post_name,
-            "state": state,
+            "post_name": result.get("name", ""),
             "text": text[:100],
         }
 
@@ -516,7 +497,9 @@ class GBPClient:
             "sourceUrl": image_url
         }
         result = await self._post(url, payload)
-        return result
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "media_name": result.get("name", ""), "result": result}
 
     async def get_media(self, page_size: int = 20) -> list:
         """Получает список медиафайлов профиля."""
