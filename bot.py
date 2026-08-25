@@ -2254,11 +2254,19 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             _pt = _resp.content[0].text.strip()
             if _pt:
-                # Сохраняем текст и ждём фото — карточку создадим после
-                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"post_text": _pt, "action_id": None}
+                try:
+                    _db_pool = await _get_db_pool()
+                    async with _db_pool.acquire() as _conn:
+                        await _conn.execute(
+                            "INSERT INTO gbp_pending_post (chat_id, post_text) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET post_text=$2, created_at=NOW()",
+                            int(config.OWNER_CHAT_ID), _pt
+                        )
+                except Exception as _dbe:
+                    log.warning(f"GBP pending save error: {_dbe}")
+                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"post_text": _pt}
                 await update.message.reply_text(
                     f"\U0001f4dd Текст поста готов:\n\n{_pt[:500]}\n\n"
-                    f"\U0001f4f8 Пришли фото с заказа для публикации.\n"
+                    f"\U0001f4f8 Пришли фото с заказа.\n"
                     f"Или напиши \"без фото\" чтобы опубликовать без изображения."
                 )
             else:
@@ -2875,73 +2883,55 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]  # наибольшее разрешение
 
     # Проверяем — ждём ли фото для GBP поста
+    # Читаем из PostgreSQL если dict пустой
     pending_gbp_data = _GBP_PHOTO_PENDING.get(update.effective_chat.id)
+    if not pending_gbp_data:
+        try:
+            _db_pool2 = await _get_db_pool()
+            async with _db_pool2.acquire() as _conn2:
+                _row = await _conn2.fetchrow("SELECT post_text FROM gbp_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                if _row:
+                    pending_gbp_data = {"post_text": _row["post_text"]}
+        except Exception as _dbe2:
+            log.warning(f"GBP pending read error: {_dbe2}")
     if pending_gbp_data:
-        status_msg = await update.message.reply_text("📸 Загружаю фото в GBP...")
+        status_msg = await update.message.reply_text("\U0001f4f8 Загружаю фото...")
         try:
             tg_file = await ctx.bot.get_file(photo.file_id)
             import httpx as _hx_dl
             _tg_fp = tg_file.file_path
-            _tg_full_url = f'https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_tg_fp}' if not _tg_fp.startswith('http') else _tg_fp
-            async with _hx_dl.AsyncClient(timeout=30) as _hx_dl_c:
-                _tg_dl_r = await _hx_dl_c.get(_tg_full_url)
-                file_bytes = _tg_dl_r.content
-            # Загружаем фото напрямую в GBP
-            _gbp = globals().get("gbp_client_inst")
-            if _gbp:
-                import tempfile, os as _os
-                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                    tmp.write(bytes(file_bytes))
-                    tmp_path = tmp.name
-                # Загружаем через upload_media с file_path
-                import httpx as _httpx
-                token = await _gbp._get_access_token()
-                loc_id = _gbp.LOCATION_NAME.split("/locations/")[-1] if hasattr(_gbp, "LOCATION_NAME") else ""
-                # Получаем текст поста
-                post_text = pending_gbp_data.get("post_text", "")
-                # Публикуем с фото через Telegram file URL
-                # Скачиваем фото из Telegram и загружаем на ImgBB
-                import httpx as _hx, base64 as _b64
-                _fp2 = tg_file.file_path
-                tg_dl_url = _fp2 if _fp2.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp2}"
-                async with _hx.AsyncClient(timeout=30) as _hxc:
-                    _img_resp = await _hxc.get(tg_dl_url)
-                    _img_bytes = _img_resp.content
-                _imgbb_key = getattr(config, "IMGBB_API_KEY", "")
-                if not _imgbb_key:
-                    raise ValueError("IMGBB_API_KEY не настроен")
-                _img_b64 = _b64.b64encode(_img_bytes).decode()
-                async with _hx.AsyncClient(timeout=30) as _hxc2:
-                    _ib_resp = await _hxc2.post(
-                        "https://api.imgbb.com/1/upload",
-                        data={"key": _imgbb_key, "image": _img_b64, "expiration": 600}
-                    )
-                    _ib_data = _ib_resp.json()
-                _pub_url = _ib_data.get("data", {}).get("url", "")
-                if not _pub_url:
-                    raise ValueError(f"ImgBB upload failed: {_ib_data}")
-                # Создаём карточку с фото вместо прямой публикации
-                _ac3 = {"type": "create_gbp_post", "post_text": post_text, "topic_type": "STANDARD",
-                        "ideogram_prompt": None, "image_url": _pub_url,
-                        "description": "Опубликовать пост в GBP с фото", "reasoning": "Владелец прислал фото для поста",
-                        "urgency": "low", "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
-                _aid3 = await pending.add(_ac3)
-                await update.message.reply_text(f"\U0001f4f8 Фото загружено! Создана карточка для публикации.")
-                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid3, _ac3)
-                result = {"success": True}  # заглушка
-                _os.unlink(tmp_path)
-                _GBP_PHOTO_PENDING.pop(update.effective_chat.id, None)
-                if result.get("success"):
-                    await status_msg.edit_text(f"✅ Пост с фото опубликован в GBP!")
-                else:
-                    await status_msg.edit_text(f"❌ Ошибка: {result.get('error')}")
-            else:
-                await status_msg.edit_text("❌ GBP не подключён")
+            _tg_url = _tg_fp if _tg_fp.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_tg_fp}"
+            async with _hx_dl.AsyncClient(timeout=30) as _hc:
+                file_bytes = (await _hc.get(_tg_url)).content
+            post_text = pending_gbp_data.get("post_text", "")
+            import base64 as _b64
+            _imgbb_key = __import__("os").environ.get("IMGBB_API_KEY", "")
+            _img_b64 = _b64.b64encode(bytes(file_bytes)).decode()
+            import httpx as _hx2
+            async with _hx2.AsyncClient(timeout=30) as _hxc2:
+                _ib = await _hxc2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key, "image": _img_b64, "expiration": 600})
+                _ib_data = _ib.json()
+            _pub_url = _ib_data.get("data", {}).get("url", "")
+            if not _pub_url:
+                raise ValueError(f"ImgBB failed: {_ib_data}")
+            _ac3 = {"type": "create_gbp_post", "post_text": post_text, "topic_type": "STANDARD",
+                    "image_url": _pub_url, "description": "Опубликовать пост в GBP с фото",
+                    "reasoning": "Владелец прислал фото", "urgency": "low",
+                    "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
+            _aid3 = await pending.add(_ac3)
+            _GBP_PHOTO_PENDING.pop(update.effective_chat.id, None)
+            try:
+                _db_pool3 = await _get_db_pool()
+                async with _db_pool3.acquire() as _conn3:
+                    await _conn3.execute("DELETE FROM gbp_pending_post WHERE chat_id=$1", update.effective_chat.id)
+            except Exception:
+                pass
+            await update.message.reply_text("\U0001f4f8 Фото загружено! Одобри карточку для публикации.")
+            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid3, _ac3)
         except Exception as _pe:
-            log.error(f"GBP photo post error: {_pe}")
-            await status_msg.edit_text(f"❌ Ошибка загрузки фото: {_pe}")
+            log.error(f"GBP photo error: {_pe}", exc_info=True)
+            await status_msg.edit_text(f"\u274c Ошибка загрузки фото: {_pe}")
         return
-
     status_msg = await update.message.reply_text("🖼 Анализирую скриншот...")
     try:
         tg_file = await ctx.bot.get_file(photo.file_id)
