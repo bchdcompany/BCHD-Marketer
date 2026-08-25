@@ -2224,6 +2224,22 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _append_history(ctx, chat_id, question, answer)
         return
 
+    # Публикация GBP поста без фото
+    if question.lower().strip() in ["без фото", "no photo", "без фотографии", "опубликуй без фото"]:
+        _pending_data = _GBP_PHOTO_PENDING.get(int(config.OWNER_CHAT_ID))
+        if _pending_data and _pending_data.get("post_text"):
+            _pt2 = _pending_data["post_text"]
+            try:
+                _ac2 = {"type": "create_gbp_post", "post_text": _pt2, "topic_type": "STANDARD",
+                        "description": "Опубликовать пост в GBP (без фото)", "reasoning": "Владелец запросил публикацию без фото",
+                        "urgency": "low", "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
+                _aid2 = await pending.add(_ac2)
+                _GBP_PHOTO_PENDING.pop(int(config.OWNER_CHAT_ID), None)
+                await update.message.reply_text("✅ Публикую пост без фото...")
+                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid2, _ac2)
+            except Exception as _e2:
+                await update.message.reply_text(f"❌ Ошибка: {_e2}")
+            return
     # Перехват запросов на GBP пост — до Claude
     _q_post = question.lower()
     if any(w in _q_post for w in ["сделай пост", "опубликуй пост", "напиши пост", "пост про", "пост на тему", "пост о том", "gbp пост", "пост в gbp"]):
@@ -2234,13 +2250,13 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             _pt = _pr.get("reply", "").strip()
             if _pt:
-                _ac = {"type": "create_gbp_post", "post_text": _pt, "topic_type": "STANDARD",
-                       "description": "Опубликовать пост в GBP", "reasoning": "Владелец запросил пост",
-                       "urgency": "low", "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
-                _aid = await pending.add(_ac)
-                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"action_id": _aid, "post_text": _pt}
-                await update.message.reply_text(f"\U0001f4dd Текст поста:\n\n{_pt[:400]}\n\n\U0001f4f8 Пришли фото или одобри без фото.")
-                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid, _ac)
+                # Сохраняем текст и ждём фото — карточку создадим после
+                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"post_text": _pt, "action_id": None}
+                await update.message.reply_text(
+                    f"\U0001f4dd Текст поста готов:\n\n{_pt[:500]}\n\n"
+                    f"\U0001f4f8 Пришли фото с заказа для публикации.\n"
+                    f"Или напиши \"без фото\" чтобы опубликовать без изображения."
+                )
             else:
                 await update.message.reply_text("\u274c Не удалось составить текст")
         except Exception as _pe:
@@ -2900,7 +2916,15 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 _pub_url = _ib_data.get("data", {}).get("url", "")
                 if not _pub_url:
                     raise ValueError(f"ImgBB upload failed: {_ib_data}")
-                result = await _gbp.create_post(text=post_text, image_url=_pub_url)
+                # Создаём карточку с фото вместо прямой публикации
+                _ac3 = {"type": "create_gbp_post", "post_text": post_text, "topic_type": "STANDARD",
+                        "ideogram_prompt": None, "image_url": _pub_url,
+                        "description": "Опубликовать пост в GBP с фото", "reasoning": "Владелец прислал фото для поста",
+                        "urgency": "low", "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
+                _aid3 = await pending.add(_ac3)
+                await update.message.reply_text(f"\U0001f4f8 Фото загружено! Создана карточка для публикации.")
+                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid3, _ac3)
+                result = {"success": True}  # заглушка
                 _os.unlink(tmp_path)
                 _GBP_PHOTO_PENDING.pop(update.effective_chat.id, None)
                 if result.get("success"):
