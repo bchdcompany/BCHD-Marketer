@@ -2235,8 +2235,6 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             _post_text = _post_result.get("reply", "").strip()
             if _post_text:
-                from pending import PendingActions as _PA
-                _pa = _PA()
                 _action = {
                     "type": "create_gbp_post",
                     "post_text": _post_text,
@@ -2248,7 +2246,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "confidence": "high",
                     "requires_approval": True
                 }
-                _action_id = await _pa.add(_action)
+                _action_id = await pending.add(_action)
                 _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"action_id": _action_id, "post_text": _post_text}
                 await _thinking.edit_text(f"📝 Текст поста готов:\n\n{_post_text[:400]}\n\n📸 Пришли фото или одобри без фото.")
                 await _send_approval_card(update.message.bot, config.OWNER_CHAT_ID, _action_id, _action)
