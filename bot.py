@@ -2227,34 +2227,25 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Перехват запросов на GBP пост — до Claude
     _q_post = question.lower()
     if any(w in _q_post for w in ["сделай пост", "опубликуй пост", "напиши пост", "пост про", "пост на тему", "пост о том", "gbp пост", "пост в gbp"]):
-        _thinking = await update.message.reply_text("✍️ Составляю пост для GBP...")
         try:
-            _post_result = await ai_analyst.chat_action(
-                f"Составь GBP пост по запросу: {question}. Шаблон: проблема→решение→признаки→закрытие. Без телефона и URL. На английском до 1000 символов. Верни только текст поста.",
-                {}, "chat"
+            _pr = await ai_analyst.chat_action(
+                f"Write a GBP post about: {question}. Format: [problem NYC borough] → [fix done] → [3-4 warning signs] → [Same-day service Brooklyn Queens Manhattan.] No phone/URL. English. Max 800 chars. ONLY post text.",
+                {}, "action"
             )
-            _post_text = _post_result.get("reply", "").strip()
-            if _post_text:
-                _action = {
-                    "type": "create_gbp_post",
-                    "post_text": _post_text,
-                    "topic_type": "STANDARD",
-                    "description": "Опубликовать пост в GBP",
-                    "reasoning": "Владелец запросил публикацию поста в GBP",
-                    "urgency": "low",
-                    "urgency_label": "Низкая",
-                    "confidence": "high",
-                    "requires_approval": True
-                }
-                _action_id = await pending.add(_action)
-                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"action_id": _action_id, "post_text": _post_text}
-                await _thinking.edit_text(f"📝 Текст поста готов:\n\n{_post_text[:400]}\n\n📸 Пришли фото или одобри без фото.")
-                await _send_approval_card(update.message.bot, config.OWNER_CHAT_ID, _action_id, _action)
+            _pt = _pr.get("reply", "").strip()
+            if _pt:
+                _ac = {"type": "create_gbp_post", "post_text": _pt, "topic_type": "STANDARD",
+                       "description": "Опубликовать пост в GBP", "reasoning": "Владелец запросил пост",
+                       "urgency": "low", "urgency_label": "Низкая", "confidence": "high", "requires_approval": True}
+                _aid = await pending.add(_ac)
+                _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"action_id": _aid, "post_text": _pt}
+                await update.message.reply_text(f"\U0001f4dd Текст поста:\n\n{_pt[:400]}\n\n\U0001f4f8 Пришли фото или одобри без фото.")
+                await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid, _ac)
             else:
-                await _thinking.edit_text("❌ Не удалось составить текст")
+                await update.message.reply_text("\u274c Не удалось составить текст")
         except Exception as _pe:
-            log.error(f"GBP post intercept error: {_pe}")
-            await _thinking.edit_text(f"❌ Ошибка: {_pe}")
+            log.error(f"GBP post error: {_pe}", exc_info=True)
+            await update.message.reply_text(f"\u274c Ошибка: {_pe}")
         return
     # Журнал изменений — ДО classify, не нужен Claude
     if any(w in question.lower() for w in ["журнал изменений", "покажи журнал", "история изменений", "что меняли"]):
