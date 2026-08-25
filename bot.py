@@ -3117,7 +3117,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             await _safe_edit(query, f"❌ Ошибка: {result.get('error')}")
                     elif atype == "create_gbp_post":
                         _post_text = action.get("post_text") or action.get("summary") or action.get("text", "")
-                        _image_url = None
+                        _image_url = action.get("image_url")  # реальное фото от пользователя
                         # Генерируем изображение через Ideogram если есть промпт
                         _img_prompt = action.get("ideogram_prompt") or action.get("image_prompt")
                         if _img_prompt:
