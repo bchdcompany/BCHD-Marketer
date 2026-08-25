@@ -2245,7 +2245,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if any(w in _q_post for w in ["сделай пост", "опубликуй пост", "напиши пост", "пост про", "пост на тему", "пост о том", "gbp пост", "пост в gbp"]):
         try:
             _pr = await ai_analyst.chat_action(
-                f"Write a GBP post about: {question}. Format: [problem NYC borough] → [fix done] → [3-4 warning signs] → [Same-day service Brooklyn Queens Manhattan.] No phone/URL. English. Max 800 chars. ONLY post text.",
+                f"Write a Google Business Profile post about: {question}. Rules: start directly with the case (no intro like 'Here is the post'), no markdown formatting (no ** or ##), no phone numbers, no URLs, plain text only, max 800 chars. Format: opening sentence about the job → what was found/done → 3-4 warning signs → closing with Same-day service in Brooklyn, Queens and Manhattan.",
                 {}, "action"
             )
             _pt = _pr.get("reply", "").strip()
