@@ -2229,9 +2229,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if any(w in _q_post for w in ["сделай пост", "опубликуй пост", "напиши пост", "пост про", "пост на тему", "пост о том", "gbp пост", "пост в gbp"]):
         _thinking = await update.message.reply_text("✍️ Составляю пост для GBP...")
         try:
-            from ai_analyst import AIAnalyst as _AI
-            _ai = _AI()
-            _post_result = await _ai.chat_action(
+            _post_result = await ai_analyst.chat_action(
                 f"Составь GBP пост по запросу: {question}. Шаблон: проблема→решение→признаки→закрытие. Без телефона и URL. На английском до 1000 символов. Верни только текст поста.",
                 {}, "chat"
             )
