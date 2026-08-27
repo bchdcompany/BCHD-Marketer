@@ -3220,6 +3220,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await _safe_edit(query, "Ошибка GBP: " + str(e))
                     return
 
+            # Обрабатываем pause_ad/enable_ad напрямую
+            if action.get("type") in ("pause_ad", "enable_ad"):
+                try:
+                    _ad_id2 = action.get("ad_id") or action.get("advertisement_id", "")
+                    _new_st = "PAUSED" if action.get("type") == "pause_ad" else "ENABLED"
+                    _res_ad = await ads_client.mutate_ad_status(str(_ad_id2), _new_st)
+                    if _res_ad.get("success"):
+                        _sw = "приостановлено" if _new_st == "PAUSED" else "включено"
+                        await _safe_edit(query, f"\u2705 Объявление {_ad_id2} {_sw}")
+                    else:
+                        await _safe_edit(query, f"\u274c Ошибка: {_res_ad.get('error')}")
+                except Exception as _e_ad:
+                    await _safe_edit(query, f"\u274c Ошибка: {_e_ad}")
+                return
             try:
                 result = await ads_client.execute_action(action)
             except Exception as e:
