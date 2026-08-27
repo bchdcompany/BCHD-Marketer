@@ -3149,6 +3149,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         _primary = action.get("primary_category_id") or action.get("primary_category") or ""
                         _additional = action.get("additional_category_ids") or action.get("additional_categories") or []
                         result = await _gbp_inst.update_categories(_primary, _additional)
+                    elif atype in ("pause_ad", "enable_ad"):
+                        _ad_id = action.get("ad_id") or action.get("advertisement_id") or action.get("resource_name", "")
+                        _account = action.get("account", "ads")
+                        if not _ad_id:
+                            result = {"success": False, "error": "Не указан ad_id объявления"}
+                        else:
+                            _new_status = "PAUSED" if atype == "pause_ad" else "ENABLED"
+                            result = await ads_client.mutate_ad_status(str(_ad_id), _new_status, account=_account)
                     elif atype in ("enable_ad_group", "pause_ad_group"):
                         ag_id = action.get("ad_group_id", "")
                         ag_name = action.get("ad_group_name", ag_id)
