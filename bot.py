@@ -2122,7 +2122,10 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
         # Для паузы/удаления/добавления ключей НЕ блокируем по ID — проверяется на уровне API
         return True
     elif a_type in ("add_keywords", "addkeywords", "enable_ad_group", "pause_ad_group",
-                    "create_gbp_post", "send_email_campaign"):
+                    "create_gbp_post", "send_email_campaign",
+                    "pause_ad", "enable_ad", "update_ad_headlines",
+                    "add_negative_keywords", "reply_to_review",
+                    "update_gbp_description", "update_gbp_categories"):
         return True
     elif a_type == "seasonal_adjustments":
         for adj in action.get("adjustments", []):
@@ -2157,7 +2160,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]
         campaign_kw = ["рассылк", "баннер для рассылки", "письмо клиент", "email кампани"]
 
-        is_confirm = (any(kw in text_lower for kw in confirm_kw) or "✅" in question)
+        is_confirm = any(kw in text_lower for kw in confirm_kw)  # убрали "✅" — триггерил при одобрении карточек
 
         if is_confirm and _email_agent.has_pending_campaign():
             msg = await update.message.reply_text("📤 Отправляю рассылку...")
@@ -2224,6 +2227,30 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _append_history(ctx, chat_id, question, answer)
         return
 
+    # Перехват ответов на отзывы
+    if any(w in question.lower() for w in ["ответь на отзыв", "reply to review", "ответить на отзыв", "напиши ответ на отзыв"]):
+        try:
+            _pr_rev = await ai_analyst.chat_action(
+                f"Владелец просит ответить на отзыв Google. Запрос: {question}. "
+                f"Составь профессиональный ответ на отзыв от имени BCHD Appliance Repair. "
+                f"Если в запросе есть текст отзыва — учти его содержание. "
+                f"Ответ должен быть благодарным, профессиональным, на английском, до 200 символов. "
+                f"Создай карточку reply_to_review с готовым текстом ответа.",
+                {}, "action"
+            )
+            _actions = _pr_rev.get("proposed_actions", [])
+            if _actions:
+                for _a in _actions:
+                    if _a.get("type") == "reply_to_review":
+                        _aid_rev = await pending.add(_a)
+                        await update.message.reply_text(f"\U0001f4ac Ответ готов:\n\n{_a.get('reply_text', '')}\n\nОдобри карточку для публикации.")
+                        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid_rev, _a)
+                        return
+            await update.message.reply_text(_pr_rev.get("reply", "❌ Не удалось составить ответ"))
+        except Exception as _pe_rev:
+            log.error(f"Review reply error: {_pe_rev}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {_pe_rev}")
+        return
     # Публикация GBP поста без фото
     if question.lower().strip() in ["без фото", "no photo", "без фотографии", "опубликуй без фото"]:
         _pending_data = _GBP_PHOTO_PENDING.get(int(config.OWNER_CHAT_ID))
