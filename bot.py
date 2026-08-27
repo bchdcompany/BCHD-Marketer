@@ -2230,26 +2230,45 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Перехват ответов на отзывы
     if any(w in question.lower() for w in ["ответь на отзыв", "reply to review", "ответить на отзыв", "напиши ответ на отзыв"]):
         try:
-            _pr_rev = await ai_analyst.chat_action(
-                f"Владелец просит ответить на отзыв Google. Запрос: {question}. "
-                f"Составь профессиональный ответ на отзыв от имени BCHD Appliance Repair. "
-                f"Если в запросе есть текст отзыва — учти его содержание. "
-                f"Ответ должен быть благодарным, профессиональным, на английском, до 200 символов. "
-                f"Создай карточку reply_to_review с готовым текстом ответа.",
-                {}, "action"
+            _gbp_r = globals().get("gbp_client_inst")
+            _reviews_data = {}
+            if _gbp_r:
+                _reviews_data = await _gbp_r.get_unanswered_reviews(days=30)
+            import anthropic as _a_rev
+            _a_rev_client = _a_rev.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            _rev_ctx = f"Отзывы без ответа: {str(_reviews_data.get('unanswered', []))[:1000]}"
+            _resp_rev = await asyncio.to_thread(
+                _a_rev_client.messages.create,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system="You write professional Google review replies for BCHD Appliance Repair NYC. Output ONLY the reply text. Max 200 chars. Warm, professional, English.",
+                messages=[{"role": "user", "content": f"Write a reply for this review request: {question}\n\n{_rev_ctx}"}]
             )
-            _actions = _pr_rev.get("proposed_actions", [])
-            if _actions:
-                for _a in _actions:
-                    if _a.get("type") == "reply_to_review":
-                        _aid_rev = await pending.add(_a)
-                        await update.message.reply_text(f"\U0001f4ac Ответ готов:\n\n{_a.get('reply_text', '')}\n\nОдобри карточку для публикации.")
-                        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid_rev, _a)
-                        return
-            await update.message.reply_text(_pr_rev.get("reply", "❌ Не удалось составить ответ"))
+            _reply_text = _resp_rev.content[0].text.strip()
+            _review_name = ""
+            _q_lower = question.lower()
+            for _rev in _reviews_data.get("unanswered", []):
+                _author = _rev.get("author", "").lower()
+                if any(part in _q_lower for part in _author.split() if len(part) > 2):
+                    _review_name = _rev.get("name", "")
+                    break
+            _ac_rev = {
+                "type": "reply_to_review",
+                "review_name": _review_name,
+                "reply_text": _reply_text,
+                "description": "Ответить на отзыв в GBP",
+                "reasoning": "Владелец запросил ответ на отзыв",
+                "urgency": "low", "urgency_label": "Низкая",
+                "confidence": "high", "requires_approval": True
+            }
+            _aid_rev = await pending.add(_ac_rev)
+            await update.message.reply_text(
+                f"\U0001f4ac Ответ готов:\n\n{_reply_text}\n\nОдобри карточку для публикации."
+            )
+            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid_rev, _ac_rev)
         except Exception as _pe_rev:
             log.error(f"Review reply error: {_pe_rev}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка: {_pe_rev}")
+            await update.message.reply_text(f"\u274c Ошибка: {_pe_rev}")
         return
     # Публикация GBP поста без фото
     if question.lower().strip() in ["без фото", "no photo", "без фотографии", "опубликуй без фото"]:
