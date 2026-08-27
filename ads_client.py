@@ -1720,6 +1720,49 @@ class GoogleAdsClient:
         """Паузирует группу объявлений."""
         return await self._set_ad_group_status(ad_group_id, "PAUSED", customer_id)
 
+    async def mutate_ad_status(self, ad_id: str, status: str, account: str = "ads", customer_id: str = None) -> dict:
+        """Меняет статус объявления (ENABLED/PAUSED)."""
+        if not customer_id:
+            customer_id = self.customer_id
+        try:
+            ga = self._get_client()
+            ad_service = ga.get_service("AdGroupAdService")
+            operation = ga.get_type("AdGroupAdOperation")
+            if "/" in str(ad_id):
+                resource_name = ad_id
+            else:
+                query = f"""
+                    SELECT ad_group_ad.resource_name, ad_group_ad.ad.id
+                    FROM ad_group_ad
+                    WHERE ad_group_ad.ad.id = {ad_id}
+                """
+                response = await asyncio.to_thread(
+                    ga.get_service("GoogleAdsService").search,
+                    customer_id=customer_id, query=query
+                )
+                resource_name = None
+                for row in response:
+                    resource_name = row.ad_group_ad.resource_name
+                    break
+                if not resource_name:
+                    return {"success": False, "error": f"Объявление {ad_id} не найдено"}
+            ad = operation.update
+            ad.resource_name = resource_name
+            if status == "ENABLED":
+                ad.status = ga.enums.AdGroupAdStatusEnum.ENABLED
+            else:
+                ad.status = ga.enums.AdGroupAdStatusEnum.PAUSED
+            from google.protobuf import field_mask_pb2
+            operation.update_mask.CopyFrom(field_mask_pb2.FieldMask(paths=["status"]))
+            result = await asyncio.to_thread(
+                ad_service.mutate_ad_group_ads,
+                customer_id=customer_id, operations=[operation]
+            )
+            return {"success": True, "resource_name": result.results[0].resource_name, "status": status}
+        except Exception as e:
+            log.error(f"Ошибка mutate_ad_status: {e}")
+            return {"success": False, "error": str(e)}
+
     async def _set_ad_group_status(self, ad_group_id: str, status: str, customer_id: str = None) -> dict:
         """Меняет статус группы объявлений."""
         if not customer_id:
