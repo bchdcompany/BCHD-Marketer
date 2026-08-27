@@ -1726,26 +1726,19 @@ class GoogleAdsClient:
             customer_id = self.customer_id
         try:
             ga = self._get_client()
+            query = f"SELECT ad_group_ad.resource_name FROM ad_group_ad WHERE ad_group_ad.ad.id = {ad_id}"
+            response = await asyncio.to_thread(
+                ga.get_service("GoogleAdsService").search,
+                customer_id=customer_id, query=query
+            )
+            resource_name = None
+            for row in response:
+                resource_name = row.ad_group_ad.resource_name
+                break
+            if not resource_name:
+                return {"success": False, "error": f"Объявление {ad_id} не найдено"}
             ad_service = ga.get_service("AdGroupAdService")
             operation = ga.get_type("AdGroupAdOperation")
-            if "/" in str(ad_id):
-                resource_name = ad_id
-            else:
-                query = f"""
-                    SELECT ad_group_ad.resource_name, ad_group_ad.ad.id
-                    FROM ad_group_ad
-                    WHERE ad_group_ad.ad.id = {ad_id}
-                """
-                response = await asyncio.to_thread(
-                    ga.get_service("GoogleAdsService").search,
-                    customer_id=customer_id, query=query
-                )
-                resource_name = None
-                for row in response:
-                    resource_name = row.ad_group_ad.resource_name
-                    break
-                if not resource_name:
-                    return {"success": False, "error": f"Объявление {ad_id} не найдено"}
             ad = operation.update
             ad.resource_name = resource_name
             if status == "ENABLED":
