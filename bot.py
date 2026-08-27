@@ -2227,6 +2227,27 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _append_history(ctx, chat_id, question, answer)
         return
 
+    # Перехват паузы/включения объявлений
+    import re as _re
+    _ad_pause_match = _re.search(r'(?:поставь на паузу|pause|паузу).*?(?:объявление|ad)[^0-9]*(\d{9,})', question.lower())
+    _ad_enable_match = _re.search(r'(?:включи|enable|активируй).*?(?:объявление|ad)[^0-9]*(\d{9,})', question.lower())
+    if _ad_pause_match or _ad_enable_match:
+        _ad_id_match = _ad_pause_match or _ad_enable_match
+        _ad_id_val = _ad_id_match.group(1)
+        _ad_action_type = "pause_ad" if _ad_pause_match else "enable_ad"
+        _ad_action_label = "паузу" if _ad_pause_match else "включение"
+        _ac_ad = {
+            "type": _ad_action_type,
+            "ad_id": _ad_id_val,
+            "description": f"Поставить объявление {_ad_id_val} на {_ad_action_label}",
+            "reasoning": f"Владелец запросил {_ad_action_label} объявления {_ad_id_val}",
+            "urgency": "medium", "urgency_label": "Средняя",
+            "confidence": "high", "requires_approval": True
+        }
+        _aid_ad = await pending.add(_ac_ad)
+        await update.message.reply_text(f"\u23f8 Создана карточка на {_ad_action_label} объявления {_ad_id_val}.")
+        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, _aid_ad, _ac_ad)
+        return
     # Перехват ответов на отзывы
     if any(w in question.lower() for w in ["ответь на отзыв", "reply to review", "ответить на отзыв", "напиши ответ на отзыв"]):
         try:
