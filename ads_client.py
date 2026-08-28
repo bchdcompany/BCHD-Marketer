@@ -908,6 +908,7 @@ class GoogleAdsClient:
                 metrics.conversions
             FROM campaign
             WHERE campaign.status = 'ENABLED'
+              AND segments.date DURING TODAY
             ORDER BY campaign_budget.amount_micros DESC
         """
 
