@@ -2268,11 +2268,17 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _reply_text = _resp_rev.content[0].text.strip()
             _review_name = ""
             _q_lower = question.lower()
-            for _rev in _reviews_data.get("unanswered", []):
+            all_revs = _reviews_data.get("reviews", []) or _reviews_data.get("unanswered", [])
+            for _rev in all_revs:
                 _author = _rev.get("author", "").lower()
                 if any(part in _q_lower for part in _author.split() if len(part) > 2):
                     _review_name = _rev.get("name", "")
                     break
+            if not _review_name:
+                for _rev in all_revs:
+                    if not _rev.get("has_reply", False):
+                        _review_name = _rev.get("name", "")
+                        break
             _ac_rev = {
                 "type": "reply_to_review",
                 "review_name": _review_name,
@@ -2332,7 +2338,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     log.warning(f"GBP pending save error: {_dbe}")
                 _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"post_text": _pt}
                 await update.message.reply_text(
-                    f"\U0001f4dd Текст поста готов:\n\n{_pt[:500]}\n\n"
+                    f"\U0001f4dd Текст поста готов:\n\n{_pt[:1500]}\n\n"
                     f"\U0001f4f8 Пришли фото с заказа.\n"
                     f"Или напиши \"без фото\" чтобы опубликовать без изображения."
                 )
