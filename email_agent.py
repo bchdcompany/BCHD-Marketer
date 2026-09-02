@@ -113,7 +113,7 @@ JSON structure:
   "cta_headline": "CTA block headline (punchy, max 8 words)",
   "cta_subtext": "Supporting line under headline (location, dates, conditions)",
   "cta_button": "Button text (max 5 words, includes offer)",
-  "ideogram_prompt": "Highly detailed Ideogram prompt for a UNIQUE email banner image. Match exact campaign theme. Be creative. NO text in image. Photorealistic. Max 300 chars.",
+  "ideogram_prompt": "Ideogram prompt for email banner. RULES: (1) Focus on RESULT and ATMOSPHERE, never the process or equipment. (2) Use interior/lifestyle scenes: bright modern home, kitchen, living room. (3) NEVER mention: water, faucet, pipe, drain, filter, wrench, tools, repair process. (4) Always end with: photorealistic, commercial photography style, soft natural lighting, no text, no logos, high quality. (5) For AC/cooling: cozy bright room, summer light. (6) For water: glass of water on countertop, clean kitchen. (7) For appliance repair: modern kitchen interior, professional atmosphere. Max 300 chars.",
   "partner_name": "Partner company name if recommendation email, else empty string",
   "partner_phone": "Partner phone as XXX-XXX-XXXX, else empty string",
   "partner_site": "Partner website domain only e.g. elite-aquacare.com, else empty string",
