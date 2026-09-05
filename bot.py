@@ -2322,8 +2322,8 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _resp = await asyncio.to_thread(_ac_tmp.messages.create,
                 model="claude-haiku-4-5-20251001",
                 max_tokens=600,
-                system="You write Google Business Profile posts. Output ONLY the post text. No intro, no explanation, no markdown formatting, no asterisks, no phone numbers, no URLs.",
-                messages=[{"role": "user", "content": f"Write a GBP post about: {question}. Start directly with the job case. Format: what happened → what we did → 3-4 warning signs as plain lines → Same-day service in Brooklyn, Queens and Manhattan. Plain text, max 700 chars."}]
+                system="You are a Google Business Profile copywriter for BCHD Appliance Repair NYC. ALWAYS write in ENGLISH only, regardless of the language of the request. Output ONLY the post text. No intro, no explanation, no markdown, no asterisks, no phone numbers, no URLs.",
+                messages=[{"role": "user", "content": f"Write an English GBP post about this topic: {question}. Format: start with a real job case → what was done → 3-4 warning signs as plain text lines → end with 'Same-day service in Brooklyn, Queens and Manhattan.' Plain text only, max 700 chars. ENGLISH ONLY."}]
             )
             _pt = _resp.content[0].text.strip()
             if _pt:
