@@ -384,34 +384,15 @@ def _mark_emails_sent(emails: list) -> None:
         logger.warning(f"Ошибка пометки отправленных: {e}")
 
 def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> int:
-    """Отправляет только тем кто ещё не получал рассылку."""
-    # Сначала всегда добавляем владельца
-    all_emails = _get_client_emails(unsent_only=False)
-    unsent = _get_client_emails(unsent_only=True)
-
-    # Владелец всегда первым если не в unsent
+    """Отправляет рассылку всем клиентам с email (список берётся один раз из Workiz V2)."""
+    emails = _get_client_emails(unsent_only=False)
     owner = "you@bchdcompany.com"
-    if owner not in unsent and owner in all_emails:
-        unsent = [owner] + [e for e in unsent if e != owner]
+    if owner not in emails:
+        emails = [owner] + emails
+    else:
+        emails = [owner] + [e for e in emails if e != owner]
 
-    if not unsent:
-        # Все уже получили — сбрасываем и начинаем заново
-        logger.info("Все клиенты получили рассылку — сбрасываем историю")
-        try:
-            import asyncpg, asyncio
-            DATABASE_URL = os.environ.get("DATABASE_URL", "")
-            async def _reset():
-                pool = await asyncpg.create_pool(DATABASE_URL)
-                await pool.execute("UPDATE email_clients SET last_sent_at = NULL")
-                await pool.close()
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(_reset())
-            loop.close()
-        except Exception as e:
-            logger.warning(f"Ошибка сброса: {e}")
-        unsent = all_emails
-
-    if not unsent:
+    if not emails:
         raise RuntimeError("Список клиентов пуст")
 
     headers = {"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"}
@@ -419,7 +400,7 @@ def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> in
     failed = 0
     sent_emails = []
 
-    for email in unsent:
+    for email in emails:
         payload = {
             "personalizations": [{"to": [{"email": email}]}],
             "from": {"email": SENDGRID_FROM_EMAIL, "name": SENDGRID_FROM_NAME},
@@ -437,12 +418,6 @@ def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> in
                 logger.error(f"SendGrid {email}: {resp.status_code}")
         except Exception as e:
             failed += 1
-            logger.error(f"SendGrid error {email}: {e}")
-
-    # Помечаем отправленных
-    if sent_emails:
-        _mark_emails_sent(sent_emails)
-
-    remaining = len(unsent) - sent
-    logger.info(f"Рассылка: отправлено {sent}, ошибок {failed}, осталось {remaining}")
+            logger.error(f"SendGrid {email}: {e}")
+    logger.info(f"Рассылка завершена: sent={sent}, failed={failed}")
     return sent
