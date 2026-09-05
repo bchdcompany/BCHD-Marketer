@@ -5286,6 +5286,99 @@ async def scheduled_gbp_post_reminder(app):
         log.error(f"GBP reminder error: {e}")
 
 
+async def scheduled_email_reminder(app):
+    """Еженедельное напоминание о email-рассылке — каждую среду в 11:00."""
+    if not config.OWNER_CHAT_ID:
+        return
+    try:
+        await app.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                "\U0001f4e7 Время для еженедельной рассылки клиентам!\n\n"
+                "Напиши тему письма — например: \"сделай рассылку про скидку на ремонт AC\" "
+                "или просто \"подготовь баннер для рассылки [тема]\"."
+            ),
+        )
+    except Exception as e:
+        log.error(f"Email reminder error: {e}")
+
+
+def _get_upcoming_us_holiday(days_ahead: int = 5):
+    """Проверяет, есть ли федеральный праздник США в ближайшие days_ahead дней."""
+    from datetime import date
+    today = datetime.now(NY_TZ).date()
+    year = today.year
+    # Федеральные праздники США (даты для текущего и следующего года, включая переходящие)
+    def _nth_weekday(year, month, weekday, n):
+        d = date(year, month, 1)
+        offset = (weekday - d.weekday()) % 7
+        d = date(year, month, 1 + offset + 7 * (n - 1))
+        return d
+    def _last_weekday(year, month, weekday):
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+        d = next_month - timedelta(days=1)
+        while d.weekday() != weekday:
+            d -= timedelta(days=1)
+        return d
+    holidays = {}
+    for y in (year, year + 1):
+        holidays[date(y, 1, 1)] = "New Year's Day"
+        holidays[_nth_weekday(y, 1, 0, 3)] = "Martin Luther King Jr. Day"
+        holidays[_nth_weekday(y, 2, 0, 3)] = "Presidents' Day"
+        holidays[_last_weekday(y, 5, 0)] = "Memorial Day"
+        holidays[date(y, 6, 19)] = "Juneteenth"
+        holidays[date(y, 7, 4)] = "Independence Day"
+        holidays[_nth_weekday(y, 9, 0, 1)] = "Labor Day"
+        holidays[_nth_weekday(y, 10, 0, 2)] = "Columbus Day"
+        holidays[date(y, 11, 11)] = "Veterans Day"
+        holidays[_nth_weekday(y, 11, 3, 4)] = "Thanksgiving"
+        holidays[date(y, 12, 25)] = "Christmas"
+    for d, name in holidays.items():
+        delta = (d - today).days
+        if 0 <= delta <= days_ahead:
+            return name, d
+    return None, None
+
+
+async def scheduled_holiday_banner_reminder(app):
+    """Проверяет федеральные праздники США каждый день и напоминает за 5 дней."""
+    if not config.OWNER_CHAT_ID:
+        return
+    try:
+        holiday_name, holiday_date = _get_upcoming_us_holiday(days_ahead=5)
+        if not holiday_name:
+            return
+        # Проверяем, не отправляли ли уже напоминание об этом празднике
+        _pool_h = await _get_db_pool()
+        if _pool_h:
+            async with _pool_h.acquire() as _conn_h:
+                await _conn_h.execute(
+                    "CREATE TABLE IF NOT EXISTS holiday_reminders_sent (holiday_key TEXT PRIMARY KEY, sent_at TIMESTAMPTZ DEFAULT NOW())"
+                )
+                _key = f"{holiday_name}_{holiday_date.year}"
+                _exists = await _conn_h.fetchval(
+                    "SELECT 1 FROM holiday_reminders_sent WHERE holiday_key = $1", _key
+                )
+                if _exists:
+                    return
+                await _conn_h.execute(
+                    "INSERT INTO holiday_reminders_sent (holiday_key) VALUES ($1) ON CONFLICT DO NOTHING", _key
+                )
+        await app.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                f"\U0001f389 {holiday_name} уже {holiday_date.strftime('%d.%m')}!\n\n"
+                f"Хочешь сделать праздничный баннер для рассылки клиентам? "
+                f"Напиши: \"сделай праздничную рассылку про {holiday_name}\""
+            ),
+        )
+    except Exception as e:
+        log.error(f"Holiday reminder error: {e}")
+
+
 def main():
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(_on_startup).build()
 
@@ -5365,6 +5458,8 @@ def main():
     )
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_gbp_post_reminder, "interval", days=3, args=[app])
+    scheduler.add_job(scheduled_email_reminder, "cron", day_of_week="wed", hour=11, minute=0, args=[app])
+    scheduler.add_job(scheduled_holiday_banner_reminder, "cron", hour=9, minute=30, args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
     scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="mon", hour=9,  minute=0,  args=[app])
