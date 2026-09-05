@@ -314,7 +314,9 @@ class GBPClient:
             return {"error": str(e)}
 
     async def update_description(self, description: str) -> dict:
-        """Обновляет описание бизнеса в GBP."""
+        """Обновляет описание бизнеса в GBP. Максимум 750 символов."""
+        if len(description) > 750:
+            description = description[:747] + "..."
         MBIZ_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
         loc_id = LOCATION_NAME.split("/locations/")[-1]
         url = f"{MBIZ_BASE}/locations/{loc_id}"
