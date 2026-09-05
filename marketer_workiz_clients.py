@@ -55,15 +55,26 @@ async def get_all_clients(
 async def get_all_clients_paginated(max_pages: int = 40, page_size: int = 100) -> list:
     """
     Постранично собрать ВСЕХ клиентов компании.
-    При ~1500+ клиентах и page_size=100 это до 15 запросов.
+    При ~1500+ клиентах и page_size=100 это до 15-20 запросов.
+    Задержка между запросами защищает от rate limit Workiz API.
     """
+    import asyncio
     all_clients = []
     page = 1
     while page <= max_pages:
         result = await get_all_clients(page_size=page_size, page=page)
         if "error" in result:
-            logger.error(f"get_all_clients_paginated error на странице {page}: {result['error']}")
-            break
+            # Rate limit — ждём и повторяем эту же страницу один раз
+            if "Rate limit" in str(result.get("error", "")) or "429" in str(result):
+                logger.warning(f"Rate limit на странице {page} — жду 3 сек и повторяю")
+                await asyncio.sleep(3)
+                result = await get_all_clients(page_size=page_size, page=page)
+                if "error" in result:
+                    logger.error(f"Повторная попытка страницы {page} тоже failed: {result['error']}")
+                    break
+            else:
+                logger.error(f"get_all_clients_paginated error на странице {page}: {result['error']}")
+                break
         data = result.get("data", [])
         if not data:
             break
@@ -71,6 +82,7 @@ async def get_all_clients_paginated(max_pages: int = 40, page_size: int = 100) -
         if not result.get("hasMore"):
             break
         page += 1
+        await asyncio.sleep(0.3)  # защита от rate limit между запросами
     logger.info(f"get_all_clients_paginated: собрано {len(all_clients)} клиентов за {page} страниц")
     return all_clients
 
