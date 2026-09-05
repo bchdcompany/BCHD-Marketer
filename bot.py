@@ -3789,13 +3789,13 @@ async def scheduled_gbp_weekly_post(app):
         }
 
         question = (
-            f"Напиши новый пост для Google Business Profile на тему: {theme}. "
-            f"Подсказка: {hint}. "
-            f"Последние посты были про: {last_topics}. "
-            f"НЕ повторяй те же темы. "
-            f"Пост должен быть на английском, 150-250 слов, "
-            f"с призывом позвонить (917) 935-4553 или зайти на bchdcompany.com. "
-            f"Создай карточку create_gbp_post."
+            f"Write a new Google Business Profile post about: {theme}. "
+            f"Hint: {hint}. "
+            f"Recent posts were about: {last_topics}. "
+            f"Do NOT repeat the same topics. "
+            f"Rules: English only, 150-200 words, NO phone numbers, NO URLs (Google blocks them), "
+            f"start with a real job case or problem, end with 'Same-day service in Brooklyn, Queens and Manhattan.' "
+            f"Create a create_gbp_post card with the post text."
         )
 
         result = await ai_analyst.chat_action(question, context_data, "create_gbp_post")
