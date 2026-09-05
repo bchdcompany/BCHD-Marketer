@@ -327,27 +327,34 @@ def _build_html(data: dict, image_url: str) -> str:
 </html>"""
 
 def _get_client_emails(unsent_only: bool = False) -> list:
-    """Получает список email клиентов из Postgres."""
+    """Получает список email клиентов из Workiz V2 (приоритет) или Postgres (fallback)."""
+    try:
+        import asyncio as _asyncio
+        from marketer_workiz_clients import get_client_emails_for_campaign
+        loop = _asyncio.new_event_loop()
+        clients = loop.run_until_complete(get_client_emails_for_campaign())
+        loop.close()
+        if clients:
+            emails = [c["email"] for c in clients if c.get("email")]
+            logger.info(f"Workiz V2: {len(emails)} клиентов с email")
+            return emails
+    except Exception as e:
+        logger.warning(f"Workiz V2 недоступен: {e}")
     try:
         import asyncpg, asyncio
         DATABASE_URL = os.environ.get("DATABASE_URL", "")
         if DATABASE_URL:
             async def _fetch():
                 pool = await asyncpg.create_pool(DATABASE_URL)
-                if unsent_only:
-                    rows = await pool.fetch(
-                        "SELECT email FROM email_clients WHERE unsubscribed = FALSE AND last_sent_at IS NULL ORDER BY id"
-                    )
-                else:
-                    rows = await pool.fetch(
-                        "SELECT email FROM email_clients WHERE unsubscribed = FALSE ORDER BY id"
-                    )
+                rows = await pool.fetch(
+                    "SELECT email FROM email_clients WHERE unsubscribed = FALSE ORDER BY id"
+                )
                 await pool.close()
                 return [r["email"] for r in rows]
             loop = asyncio.new_event_loop()
             emails = loop.run_until_complete(_fetch())
             loop.close()
-            logger.info(f"Клиентов{'(не получали)' if unsent_only else ''}: {len(emails)}")
+            logger.info(f"Postgres fallback: {len(emails)} клиентов")
             return emails
     except Exception as e:
         logger.warning(f"Postgres недоступен: {e}")
