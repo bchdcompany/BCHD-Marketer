@@ -2150,6 +2150,16 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    # Перехват запроса на рассылку — ДО всего остального
+    _q_email = question.lower()
+    if any(w in _q_email for w in ["подготовь баннер для рассылки", "сделай рассылку клиентам", "создай рассылку", "баннер для рассылки"]):
+        _theme_words = question
+        for _sw in ["подготовь баннер для рассылки", "сделай рассылку клиентам", "создай рассылку", "баннер для рассылки"]:
+            _theme_words = _theme_words.replace(_sw, "").strip()
+        ctx.args = _theme_words.split() if _theme_words else [question]
+        await cmd_email(update, ctx)
+        return
+
     # Email agent: подтверждение или запрос рассылки — ПРИОРИТЕТ над обычным чатом
     if _email_agent_available:
         text_lower = question.lower().strip()
