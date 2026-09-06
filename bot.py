@@ -360,6 +360,19 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ email_agent не установлен")
         return
 
+    # Если тема короткая — вероятно ответ на предыдущий вопрос агента,
+    # добавляем контекст из истории чата
+    if len(theme.split()) <= 4:
+        try:
+            chat_id = update.effective_chat.id
+            recent_history = await _get_history(ctx, chat_id)
+            if recent_history:
+                last_exchanges = recent_history[-4:]
+                context_str = " | ".join(f"{m.get('role','')}: {m.get('content','')[:200]}" for m in last_exchanges)
+                theme = f"{theme} (recent conversation context: {context_str})"
+        except Exception as _he:
+            log.warning(f"cmd_email history context error: {_he}")
+
     try:
         _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
         msg = await update.message.reply_text("⏳ Генерирую баннер через AI, подожди 30–60 секунд...")
