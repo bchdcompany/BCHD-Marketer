@@ -2181,9 +2181,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "send it", "go ahead", "да отправляй", "отправь",
             "отправить рассылку", "запускай рассылку", "запускай"
         ]
+        negation_kw = ["не отправляй", "не отправлять", "не надо отправлять", "don't send", "not yet", "не сейчас", "не отправь", "стоп", "отмени", "не надо"]
         campaign_kw = ["рассылк", "баннер для рассылки", "письмо клиент", "email кампани"]
 
-        is_confirm = any(kw in text_lower for kw in confirm_kw)  # убрали "✅" — триггерил при одобрении карточек
+        _has_negation = any(neg in text_lower for neg in negation_kw)
+        is_confirm = any(kw in text_lower for kw in confirm_kw) and not _has_negation
 
         if is_confirm and _email_agent.has_pending_campaign():
             msg = await update.message.reply_text("📤 Отправляю рассылку...")
