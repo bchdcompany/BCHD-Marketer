@@ -2264,7 +2264,9 @@ class GoogleAdsClient:
             request.resource_name = f"customers/{customer_id}/localServicesLeads/{lead_id}"
             request.survey_answer = client.enums.LocalServicesLeadSurveyAnswerEnum.DISSATISFIED
             request.survey_dissatisfied.survey_dissatisfied_reason = dissatisfied_reason
-            request.survey_dissatisfied.other_reason_comment = reason_text
+            # other_reason_comment разрешён ТОЛЬКО для OTHER_DISSATISFIED_REASON
+            if dissatisfied_reason == enum_type.OTHER_DISSATISFIED_REASON:
+                request.survey_dissatisfied.other_reason_comment = reason_text
             return svc.provide_lead_feedback(request=request)
         response = await asyncio.to_thread(_do)
         decision = response.credit_issuance_decision.name if hasattr(response.credit_issuance_decision, 'name') else str(response.credit_issuance_decision)
