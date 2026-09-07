@@ -2243,20 +2243,29 @@ class GoogleAdsClient:
             customer_id = self.lsa_customer_id
         client = self._get_client()
         lead_id = action.get('lead_id')
+        description = (str(action.get('description', '')) + ' ' + str(action.get('reasoning', ''))).lower()
         reason_text = (action.get('reason') or action.get('reasoning') or
                         'Service category not offered by our business')[:500]
+        enum_type = client.enums.LocalServicesLeadSurveyDissatisfiedReasonEnum
+        if 'не найден джоб' in description or 'no job' in description or 'нет записи звонка' in description:
+            dissatisfied_reason = enum_type.SPAM
+        elif 'услуга не по профилю' in description or 'not offered' in description or 'not our service' in description:
+            dissatisfied_reason = enum_type.JOB_TYPE_MISMATCH
+        elif 'дубл' in description or 'duplicate' in description:
+            dissatisfied_reason = enum_type.DUPLICATE
+        elif 'geo' in description or 'район' in description or 'локац' in description:
+            dissatisfied_reason = enum_type.GEO_MISMATCH
+        else:
+            dissatisfied_reason = enum_type.OTHER_DISSATISFIED_REASON
 
         def _do():
             svc = client.get_service("LocalServicesLeadService")
             request = client.get_type("ProvideLeadFeedbackRequest")
             request.resource_name = f"customers/{customer_id}/localServicesLeads/{lead_id}"
             request.survey_answer = client.enums.LocalServicesLeadSurveyAnswerEnum.DISSATISFIED
-            request.survey_dissatisfied.survey_dissatisfied_reason = (
-                client.enums.LocalServicesLeadSurveyDissatisfiedReasonEnum.OTHER_DISSATISFIED_REASON
-            )
+            request.survey_dissatisfied.survey_dissatisfied_reason = dissatisfied_reason
             request.survey_dissatisfied.other_reason_comment = reason_text
             return svc.provide_lead_feedback(request=request)
-
         response = await asyncio.to_thread(_do)
         decision = response.credit_issuance_decision.name if hasattr(response.credit_issuance_decision, 'name') else str(response.credit_issuance_decision)
-        return {'summary': f"Фидбэк отправлен по лиду {lead_id}. Решение Google по кредиту: {decision}"}
+        return {'summary': f"Фидбэк отправлен по лиду {lead_id} (причина: {dissatisfied_reason.name}). Решение Google по кредиту: {decision}"}
