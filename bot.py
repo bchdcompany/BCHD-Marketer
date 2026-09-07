@@ -4989,6 +4989,20 @@ async def scheduled_morning_report(app):
         text += _format_both_summary(data)
         thumbtack_days = (today - today.replace(day=1)).days + 1
         text += await _get_thumbtack_summary_line(days=thumbtack_days)
+        # Реальная выручка по источникам из Workiz V2 (ROAS)
+        try:
+            from marketer_revenue_by_source import get_revenue_by_source
+            rev_data = await get_revenue_by_source(month_from, month_to)
+            _ads_rev = rev_data.get("Google Ads", {}).get("collected_revenue", 0)
+            _lsa_rev = rev_data.get("Google LSA", {}).get("collected_revenue", 0)
+            _tt_rev = rev_data.get("Thumbtack", {}).get("collected_revenue", 0)
+            if _ads_rev or _lsa_rev or _tt_rev:
+                text += f"\n\n💵 *Реально собрано (Workiz), за месяц:*\n"
+                text += f"• Google Ads: ${_ads_rev:.2f}\n"
+                text += f"• LSA: ${_lsa_rev:.2f}\n"
+                text += f"• Thumbtack: ${_tt_rev:.2f}\n"
+        except Exception as _re:
+            log.warning(f"Ошибка получения revenue_by_source: {_re}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
     except Exception as e:
         log.error(f"Ошибка утреннего отчёта: {e}")
