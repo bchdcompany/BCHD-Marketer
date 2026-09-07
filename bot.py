@@ -921,13 +921,20 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     if total_jobs > 0 and total_ad_spend > 0:
         text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
 
-    overdue = [j for j in g.get("jobs", []) if j.get("amount_due", 0) > 0]
-    overdue_t = [j for j in t.get("jobs", []) if j.get("amount_due", 0) > 0]
-    all_overdue = overdue + overdue_t
+    # Проверяем долги по ВСЕМ джобам за период, не только по рекламным источникам
+    try:
+        _all_jobs_result = await workiz_client.get_jobs_by_date_range(date_from, date_to)
+        _all_jobs = _all_jobs_result.get("jobs", [])
+        all_overdue = [j for j in _all_jobs if float(j.get("JobAmountDue", 0) or 0) > 0]
+        all_overdue.sort(key=lambda j: float(j.get("JobAmountDue", 0) or 0), reverse=True)
+    except Exception as _oe:
+        log.warning(f"Ошибка получения всех долгов: {_oe}")
+        all_overdue = []
     if all_overdue:
-        text += f"\n⚠️ *Неоплаченные джобы ({len(all_overdue)}):*\n"
+        _total_due_all = sum(float(j.get("JobAmountDue", 0) or 0) for j in all_overdue)
+        text += f"\n⚠️ *Неоплаченные джобы, все источники ({len(all_overdue)}, всего ${_total_due_all:.0f}):*\n"
         for j in all_overdue[:5]:
-            text += f"• #{j['serial_id']}: ${j['total_price']:.0f} (долг ${j['amount_due']:.0f}, {j['status']})\n"
+            text += f"• #{j.get('SerialId')}: ${float(j.get('JobTotalPrice', 0) or 0):.0f} (долг ${float(j.get('JobAmountDue', 0) or 0):.0f}, {j.get('Status')}, {j.get('JobSource', '?')})\n"
 
     return text
 
