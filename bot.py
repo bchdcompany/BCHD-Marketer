@@ -5365,6 +5365,31 @@ def _get_upcoming_us_holiday(days_ahead: int = 5):
     return None, None
 
 
+async def scheduled_lsa_daily_numbers(app):
+    """
+    Ежедневно в 20:30 — присылает список номеров телефонов LSA-клиентов
+    за прошедшие сутки, чтобы владелец мог переслать техагенту (bchd-agent)
+    для проверки/коррекции источника (Ad Group) заявок в Workiz.
+    Приурочено к недельному отчёту bchd-agent по пятницам в 21:00.
+    """
+    if not config.OWNER_CHAT_ID or not config.lsa_configured:
+        return
+    try:
+        leads_data = await ads_client.get_lsa_leads(days=1, account="lsa")
+        leads = leads_data.get("leads", [])
+        if not leads:
+            return
+        lines = [f"\U0001f4de LSA-обращения за сутки ({leads_data.get('date_from')} — {leads_data.get('date_to')}):\n"]
+        for l in leads:
+            phone = l.get("phone_number") or l.get("phone") or "?"
+            charged = "\U0001f4b0" if l.get("charged") else ""
+            lines.append(f"• {phone} {charged}")
+        lines.append("\n\U0001f4cb Перешли этот список техагенту для проверки источника заявок в Workiz.")
+        await _send_long_message(app.bot, config.OWNER_CHAT_ID, "\n".join(lines))
+    except Exception as e:
+        log.error(f"LSA daily numbers error: {e}")
+
+
 async def scheduled_holiday_banner_reminder(app):
     """Проверяет федеральные праздники США каждый день и напоминает за 5 дней."""
     if not config.OWNER_CHAT_ID:
@@ -5482,6 +5507,7 @@ def main():
     scheduler.add_job(scheduled_gbp_post_reminder, "interval", days=3, args=[app])
     scheduler.add_job(scheduled_email_reminder, "cron", day_of_week="wed", hour=11, minute=0, args=[app])
     scheduler.add_job(scheduled_holiday_banner_reminder, "cron", hour=9, minute=30, args=[app])
+    scheduler.add_job(scheduled_lsa_daily_numbers, "cron", hour=20, minute=30, args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
     scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="mon", hour=9,  minute=0,  args=[app])
