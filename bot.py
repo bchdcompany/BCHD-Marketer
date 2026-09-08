@@ -2170,6 +2170,48 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    # Перехват запроса на напоминание
+    if any(w in question.lower() for w in ["напомни мне", "напомни ", "поставь напоминание", "запланируй напоминание"]):
+        try:
+            import anthropic as _a_rem
+            _a_rem_client = _a_rem.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            _today_str = datetime.now(NY_TZ).strftime("%Y-%m-%d")
+            _resp_rem = await asyncio.to_thread(
+                _a_rem_client.messages.create,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                system=(
+                    f"Today's date is {_today_str}. Extract a reminder date and message from the user's request. "
+                    "Output ONLY valid JSON: {\"date\": \"YYYY-MM-DD\", \"message\": \"reminder text in Russian\"}. "
+                    "If no specific date is given, use a reasonable default (e.g. +7 days). No explanation, ONLY JSON."
+                ),
+                messages=[{"role": "user", "content": question}]
+            )
+            import json as _json_rem
+            _rem_text = _resp_rem.content[0].text.strip()
+            _rem_text = _rem_text.replace("```json", "").replace("```", "").strip()
+            _rem_data = _json_rem.loads(_rem_text)
+            _rem_date = _rem_data.get("date")
+            _rem_msg = _rem_data.get("message", question)
+            from datetime import date as _date_cls
+            _y, _m, _d = map(int, _rem_date.split("-"))
+            _pool_rem = await _get_db_pool()
+            if _pool_rem:
+                async with _pool_rem.acquire() as _conn_rem:
+                    await _conn_rem.execute(
+                        "CREATE TABLE IF NOT EXISTS scheduled_reminders (id SERIAL PRIMARY KEY, remind_date DATE NOT NULL, message TEXT NOT NULL, sent BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW())"
+                    )
+                    await _conn_rem.execute(
+                        "INSERT INTO scheduled_reminders (remind_date, message) VALUES ($1, $2)",
+                        _date_cls(_y, _m, _d), f"\U0001f514 Напоминание:\n\n{_rem_msg}"
+                    )
+                await update.message.reply_text(f"\u2705 Напоминание запланировано на {_rem_date}:\n\n{_rem_msg}")
+            else:
+                await update.message.reply_text("\u274c База данных недоступна")
+        except Exception as _re_err:
+            log.error(f"Reminder intercept error: {_re_err}", exc_info=True)
+            await update.message.reply_text(f"\u274c Не удалось разобрать напоминание: {_re_err}")
+        return
     # Перехват запроса на рассылку — ДО всего остального
     _q_email = question.lower()
     if any(w in _q_email for w in ["подготовь баннер для рассылки", "сделай рассылку клиентам", "создай рассылку", "баннер для рассылки"]):
