@@ -5344,8 +5344,60 @@ async def cmd_unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# Уникальный числовой ID для advisory lock — произвольное число,
+# главное чтобы не совпадало с другими использованиями pg_advisory_lock
+# в этом проекте (сейчас таких больше нет).
+_SINGLE_INSTANCE_LOCK_ID = 917935445
+
+_singleton_lock_conn = None  # держим соединение открытым на всё время жизни процесса
+
+
+async def _acquire_single_instance_lock(max_wait_seconds: int = 30) -> bool:
+    """
+    Гарантирует что только ОДИН процесс бота реально начинает polling Telegram.
+    Использует Postgres pg_advisory_lock — блокировка держится, пока открыто
+    это конкретное соединение, и автоматически освобождается, если процесс
+    падает или его убивают (в отличие от записи-флага в таблице, которую
+    пришлось бы вручную снимать). Если во время Railway redeploy старый
+    и новый контейнер on короткое время работают одновременно, новый будет
+    ждать (до max_wait_seconds) пока старый не отпустит лок и не завершится,
+    вместо того чтобы оба сразу дрались за Telegram getUpdates.
+    """
+    global _singleton_lock_conn
+    if not DATABASE_URL:
+        log.warning("DATABASE_URL не задан — advisory lock пропущен, single-instance защита отключена")
+        return True
+    import asyncpg
+    try:
+        _singleton_lock_conn = await asyncpg.connect(DATABASE_URL)
+    except Exception as e:
+        log.error(f"Не удалось подключиться к БД для advisory lock: {e}")
+        return True  # не блокируем запуск бота из-за проблем с локом
+    waited = 0
+    poll_interval = 2
+    while waited < max_wait_seconds:
+        got_lock = await _singleton_lock_conn.fetchval(
+            "SELECT pg_try_advisory_lock($1)", _SINGLE_INSTANCE_LOCK_ID
+        )
+        if got_lock:
+            log.info("Single-instance lock получен — этот процесс будет обрабатывать сообщения")
+            return True
+        log.warning(
+            f"Другой инстанс бота уже держит lock — жду {poll_interval}с "
+            f"({waited}/{max_wait_seconds}с, обычно это старый контейнер при redeploy)"
+        )
+        await asyncio.sleep(poll_interval)
+        waited += poll_interval
+    log.error(
+        f"Не удалось получить single-instance lock за {max_wait_seconds}с — "
+        f"запускаюсь без лока (fail-open, чтобы не потерять доступность бота)"
+    )
+    return True
+
+
 async def _on_startup(app):
     await init_db()
+    await _acquire_single_instance_lock()
 
 
 async def scheduled_gbp_post_reminder(app):
