@@ -487,27 +487,21 @@ class GBPClient:
         """Удаляет ответ на отзыв."""
         url = f"https://mybusiness.googleapis.com/v4/{review_name}/reply"
         return await self._delete(url)
-    async def upload_media(self, image_url: str, category: str = "ADDITIONAL") -> dict:
+    async def upload_media(self, media_url: str, category: str = "ADDITIONAL", media_format: str = "PHOTO") -> dict:
         """
-        Загружает фото в GBP профиль.
+        Загружает фото ИЛИ видео в GBP профиль (в общую галерею, не привязано к посту —
+        Local Posts API принимает в media только PHOTO, для видео используется только
+        отдельная общая галерея профиля).
         category: ADDITIONAL, COVER, PROFILE, LOGO, EXTERIOR, INTERIOR, PRODUCT, AT_WORK, FOOD_AND_DRINK, MENU, COMMON_AREA, ROOMS, TEAMS, VIRTUAL_TOUR
+        media_format: PHOTO или VIDEO
         """
-        import httpx as _httpx
-        # Скачиваем изображение
-        async with _httpx.AsyncClient(timeout=30) as client:
-            img_resp = await client.get(image_url)
-            image_data = img_resp.content
-            content_type = img_resp.headers.get("content-type", "image/jpeg")
-
-        # Загружаем через multipart
         token = await self._get_access_token()
         url = f"https://mybusiness.googleapis.com/v4/{LOCATION_NAME}/media"
-        
-        import base64
+
         payload = {
-            "mediaFormat": "PHOTO",
+            "mediaFormat": media_format,
             "locationAssociation": {"category": category},
-            "sourceUrl": image_url
+            "sourceUrl": media_url
         }
         result = await self._post(url, payload)
         if "error" in result:
