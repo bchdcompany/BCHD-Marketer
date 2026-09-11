@@ -363,26 +363,6 @@ def _get_client_emails(unsent_only: bool = False) -> list:
         return [line.strip() for line in clients_file.read_text().splitlines() if "@" in line]
     return []
 
-def _mark_emails_sent(emails: list) -> None:
-    """Помечает клиентов как получивших рассылку."""
-    try:
-        import asyncpg, asyncio
-        DATABASE_URL = os.environ.get("DATABASE_URL", "")
-        if not DATABASE_URL:
-            return
-        async def _update():
-            pool = await asyncpg.create_pool(DATABASE_URL)
-            await pool.execute(
-                "UPDATE email_clients SET last_sent_at = NOW() WHERE email = ANY($1::text[])",
-                emails
-            )
-            await pool.close()
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(_update())
-        loop.close()
-    except Exception as e:
-        logger.warning(f"Ошибка пометки отправленных: {e}")
-
 def _send_via_sendgrid(html_content: str, subject: str, preview_text: str) -> int:
     """Отправляет рассылку всем клиентам с email (список берётся один раз из Workiz V2)."""
     emails = _get_client_emails(unsent_only=False)
