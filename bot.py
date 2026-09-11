@@ -3872,18 +3872,37 @@ async def scheduled_gbp_weekly_post(app):
             f"Create a create_gbp_post card with the post text."
         )
 
-        result = await ai_analyst.chat_action(question, context_data, "create_gbp_post")
-        reply = result.get("reply", "")
-        if reply:
-            await _safe_send(app.bot, config.OWNER_CHAT_ID,
-                f"📝 *Еженедельный пост GBP*\n\n{reply}", parse_mode="Markdown")
-
-        for action in result.get("proposed_actions", []):
-            if action.get("type") == "create_gbp_post":
-                action.setdefault("requires_approval", True)
-                action_id = await pending.add(action)
-                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
-
+        # Генерируем ТОЛЬКО текст поста через Haiku (без создания готовой
+        # карточки) — так же, как в ручном потоке "сделай пост про...",
+        # чтобы владелец всегда мог прислать своё реальное фото перед публикацией
+        import anthropic as _a_weekly
+        _a_weekly_client = _a_weekly.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        _resp_weekly = await asyncio.to_thread(
+            _a_weekly_client.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            system="You are a Google Business Profile copywriter for BCHD Appliance Repair NYC. Output ONLY the post text. No intro, no markdown, no asterisks, no phone numbers, no URLs.",
+            messages=[{"role": "user", "content": question}]
+        )
+        _pt_weekly = _resp_weekly.content[0].text.strip()
+        if _pt_weekly:
+            try:
+                _db_pool_w = await _get_db_pool()
+                async with _db_pool_w.acquire() as _conn_w:
+                    await _conn_w.execute(
+                        "INSERT INTO gbp_pending_post (chat_id, post_text) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET post_text=$2, created_at=NOW()",
+                        int(config.OWNER_CHAT_ID), _pt_weekly
+                    )
+            except Exception as _dbe_w:
+                log.warning(f"GBP weekly pending save error: {_dbe_w}")
+            _GBP_PHOTO_PENDING[int(config.OWNER_CHAT_ID)] = {"post_text": _pt_weekly}
+            await _safe_send(
+                app.bot, config.OWNER_CHAT_ID,
+                f"📝 *Еженедельный пост GBP готов:*\n\n{_pt_weekly}\n\n"
+                f"📸 Пришли фото с реального заказа для публикации.\n"
+                f"Или напиши \"без фото\" чтобы опубликовать без изображения.",
+                parse_mode="Markdown"
+            )
     except Exception as e:
         log.error(f"Ошибка еженедельного GBP поста: {e}")
 
