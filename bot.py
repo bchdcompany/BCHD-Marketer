@@ -3018,6 +3018,67 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.error(f"Ошибка карточки из голосового: {e}")
 
 
+async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Google Local Posts API не поддерживает видео в самом посте (только PHOTO) —
+    это ограничение самого Google, не наше. Видео можно загрузить только
+    в общую фото/видео-галерею профиля (раздел "Фото" в GBP), не привязано
+    к конкретному посту.
+    """
+    if not _is_owner(update):
+        return
+    pending_gbp_data = _GBP_PHOTO_PENDING.get(update.effective_chat.id)
+    if not pending_gbp_data:
+        try:
+            _db_pool_v = await _get_db_pool()
+            if _db_pool_v:
+                async with _db_pool_v.acquire() as _conn_v:
+                    _row_v = await _conn_v.fetchrow(
+                        "SELECT post_text FROM gbp_pending_post WHERE chat_id=$1", update.effective_chat.id
+                    )
+                    if _row_v:
+                        pending_gbp_data = {"post_text": _row_v["post_text"]}
+        except Exception:
+            pass
+    if pending_gbp_data:
+        # Ждали фото для поста, а прислали видео — объясняем ограничение Google
+        await update.message.reply_text(
+            "\U0001f4f9 К самому посту видео прикрепить нельзя — Google Local Posts API "
+            "принимает только фото. Могу опубликовать видео отдельно в общую фото/видео-галерею "
+            "профиля (не привязано к посту) — напиши \"загрузи видео в галерею\", или пришли "
+            "фото для этого поста."
+        )
+        return
+    if any(w in (update.message.caption or "").lower() for w in ["загрузи видео", "видео в галерею", "добавь видео"]) or \
+       (ctx.chat_data.get("awaiting_gallery_video")):
+        status_msg = await update.message.reply_text("\U0001f4f9 Загружаю видео в галерею GBP...")
+        try:
+            video = update.message.video
+            tg_file = await ctx.bot.get_file(video.file_id)
+            _fp = tg_file.file_path
+            _tg_url = _fp if _fp.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp}"
+            _gbp = globals().get("gbp_client_inst")
+            if not _gbp:
+                await status_msg.edit_text("\u274c GBP не подключён")
+                return
+            result = await _gbp.upload_media(_tg_url, category="ADDITIONAL", media_format="VIDEO")
+            ctx.chat_data.pop("awaiting_gallery_video", None)
+            if result.get("success"):
+                await status_msg.edit_text("\u2705 Видео загружено в галерею GBP!")
+            else:
+                await status_msg.edit_text(f"\u274c Ошибка: {result.get('error')}")
+        except Exception as _ve:
+            log.error(f"Video upload error: {_ve}", exc_info=True)
+            await status_msg.edit_text(f"\u274c Ошибка загрузки видео: {_ve}")
+        return
+    # Видео без явного запроса на галерею и без ожидания фото для поста —
+    # просто подтверждаем что видео получено, но не знаем что с ним делать
+    await update.message.reply_text(
+        "\U0001f4f9 Вижу видео. Хочешь загрузить его в галерею профиля GBP? "
+        "Напиши \"загрузи видео в галерею\" и пришли видео ещё раз."
+    )
+
+
 async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Принимает фото/скриншот, отправляет в Claude Vision для анализа,
@@ -5598,6 +5659,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video_message))
     # Fallback ПОСЛЕДНИМ: ловит любую команду, для которой нет обработчика
     # выше (например, ИИ иногда упоминает в тексте слаги вроде "/hvac",
     # "/washer" как название страницы сайта — Telegram автоматически
