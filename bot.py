@@ -3431,6 +3431,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"_Проверено по текущим настройкам Google Ads (не по метрикам). "
                     f"В отчётах изменение отразится через 3-24 часа._"
                 )
+            elif verified is False and action_type == 'dispute_lsa_lead':
+                # Для LSA-диспутов задержка Google перед обновлением lead_feedback_submitted —
+                # нормальный, ожидаемый процесс (наблюдали >24ч), а не ошибка.
+                text = (
+                    f"✅ *Запрос отправлен:* {action['description']}\n\n"
+                    f"{result.get('summary', str(result))}\n\n"
+                    f"_Google обрабатывает споры не мгновенно — через сутки перепроверю "
+                    f"и сообщу принято ли решение._"
+                )
             elif verified is False:
                 text = (
                     f"⚠️ *Расхождение после выполнения:* {action['description']}\n\n"
