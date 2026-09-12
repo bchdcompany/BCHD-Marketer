@@ -4980,6 +4980,7 @@ async def scheduled_morning_report(app):
                 text += f"• Google Ads: ${_ads_rev:.2f}\n"
                 text += f"• LSA: ${_lsa_rev:.2f}\n"
                 text += f"• Thumbtack: ${_tt_rev:.2f}\n"
+                text += f"_⚠️ Только закрытые в Workiz инвойсы — наличные без инвойса не учтены_\n"
         except Exception as _re:
             log.warning(f"Ошибка получения revenue_by_source: {_re}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
@@ -5042,6 +5043,7 @@ async def scheduled_evening_summary(app):
                 text += f"• Google Ads: ${_ads_rev:.2f}\n"
                 text += f"• LSA: ${_lsa_rev:.2f}\n"
                 text += f"• Thumbtack: ${_tt_rev:.2f}\n"
+                text += f"_⚠️ Только закрытые в Workiz инвойсы — наличные без инвойса не учтены_\n"
         except Exception as _re:
             log.warning(f"Ошибка получения revenue_by_source: {_re}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
