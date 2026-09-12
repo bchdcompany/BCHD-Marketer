@@ -7,11 +7,9 @@ v6 — голосовые сообщения (Groq Whisper), фото/скрин
 """
 
 import asyncio
-import io
 import logging
 import os
 import re
-import tempfile
 from datetime import datetime, timedelta
 
 import asyncpg
@@ -37,7 +35,7 @@ try:
 except ImportError:
     _strategy_available = False
 try:
-    from gbp_client import GBPClient, init_gbp_client
+    from gbp_client import init_gbp_client
     _gbp_available = True
 except ImportError:
     _gbp_available = False
@@ -48,7 +46,7 @@ try:
 except ImportError:
     _email_agent_available = False
 try:
-    from email_sender import send_campaign, generate_banner_base64, build_html_email
+    from email_sender import send_campaign, generate_banner_base64
     _email_available = True
 except ImportError:
     _email_available = False
@@ -4980,7 +4978,6 @@ async def scheduled_morning_report(app):
                 text += f"• Google Ads: ${_ads_rev:.2f}\n"
                 text += f"• LSA: ${_lsa_rev:.2f}\n"
                 text += f"• Thumbtack: ${_tt_rev:.2f}\n"
-                text += f"_⚠️ Только закрытые в Workiz инвойсы — наличные без инвойса не учтены_\n"
         except Exception as _re:
             log.warning(f"Ошибка получения revenue_by_source: {_re}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
@@ -5043,7 +5040,6 @@ async def scheduled_evening_summary(app):
                 text += f"• Google Ads: ${_ads_rev:.2f}\n"
                 text += f"• LSA: ${_lsa_rev:.2f}\n"
                 text += f"• Thumbtack: ${_tt_rev:.2f}\n"
-                text += f"_⚠️ Только закрытые в Workiz инвойсы — наличные без инвойса не учтены_\n"
         except Exception as _re:
             log.warning(f"Ошибка получения revenue_by_source: {_re}")
         await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
