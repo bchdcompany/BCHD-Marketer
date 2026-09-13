@@ -87,6 +87,96 @@ async def create_video_post(message: str, video_url: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+META_INSTAGRAM_ID = os.environ.get("META_INSTAGRAM_ID", "")
+
+
+async def create_instagram_post(caption: str, image_url: str) -> dict:
+    """
+    Публикует фото-пост в Instagram через двухшаговый процесс Graph API:
+    1. Создаём media container (загружаем фото + caption)
+    2. Публикуем контейнер (media_publish)
+    Instagram Graph API требует фото по прямой публичной ссылке (не Telegram URL).
+    """
+    if not META_INSTAGRAM_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_INSTAGRAM_ID/META_PAGE_TOKEN не настроены"}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            # Шаг 1 — создаём container
+            resp1 = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
+                data={"image_url": image_url, "caption": caption, "access_token": META_PAGE_TOKEN},
+            )
+            data1 = resp1.json()
+            if "error" in data1:
+                logger.error(f"Instagram container error: {data1['error']}")
+                return {"success": False, "error": data1["error"].get("message", str(data1["error"]))}
+            container_id = data1.get("id", "")
+
+            # Шаг 2 — публикуем container
+            resp2 = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media_publish",
+                data={"creation_id": container_id, "access_token": META_PAGE_TOKEN},
+            )
+            data2 = resp2.json()
+            if "error" in data2:
+                logger.error(f"Instagram publish error: {data2['error']}")
+                return {"success": False, "error": data2["error"].get("message", str(data2["error"]))}
+            return {"success": True, "post_id": data2.get("id", ""), "result": data2}
+    except Exception as e:
+        logger.error(f"Instagram post exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def create_instagram_video_post(caption: str, video_url: str) -> dict:
+    """
+    Публикует видео (Reel) в Instagram через тот же двухшаговый процесс,
+    но с media_type=REELS.
+    """
+    if not META_INSTAGRAM_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_INSTAGRAM_ID/META_PAGE_TOKEN не настроены"}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp1 = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
+                data={
+                    "video_url": video_url,
+                    "caption": caption,
+                    "media_type": "REELS",
+                    "access_token": META_PAGE_TOKEN,
+                },
+            )
+            data1 = resp1.json()
+            if "error" in data1:
+                logger.error(f"Instagram video container error: {data1['error']}")
+                return {"success": False, "error": data1["error"].get("message", str(data1["error"]))}
+            container_id = data1.get("id", "")
+
+            # Видео требует времени на обработку — ждём готовности контейнера
+            import asyncio as _asyncio
+            for _ in range(15):  # до ~45 секунд ожидания
+                status_resp = await client.get(
+                    f"{GRAPH_API_BASE}/{container_id}",
+                    params={"fields": "status_code", "access_token": META_PAGE_TOKEN},
+                )
+                status_data = status_resp.json()
+                if status_data.get("status_code") == "FINISHED":
+                    break
+                await _asyncio.sleep(3)
+
+            resp2 = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media_publish",
+                data={"creation_id": container_id, "access_token": META_PAGE_TOKEN},
+            )
+            data2 = resp2.json()
+            if "error" in data2:
+                logger.error(f"Instagram video publish error: {data2['error']}")
+                return {"success": False, "error": data2["error"].get("message", str(data2["error"]))}
+            return {"success": True, "post_id": data2.get("id", ""), "result": data2}
+    except Exception as e:
+        logger.error(f"Instagram video post exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def get_page_info() -> dict:
     """Проверка токена и доступа к странице — имя, id, категория."""
     if not META_PAGE_ID or not META_PAGE_TOKEN:
