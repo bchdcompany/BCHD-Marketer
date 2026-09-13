@@ -5472,6 +5472,31 @@ async def scheduled_gbp_post_reminder(app):
         log.error(f"GBP reminder error: {e}")
 
 
+async def scheduled_social_media_reminder(app):
+    """
+    Понедельник/среда/пятница в 15:00 — напоминание сделать пост в Facebook
+    и/или Instagram (аналогично GBP-напоминанию, но для соцсетей).
+    """
+    if not config.OWNER_CHAT_ID:
+        return
+    try:
+        import random
+        services = ["refrigerator", "washer dryer", "dishwasher", "stove oven", "AC HVAC"]
+        service = random.choice(services)
+        await app.bot.send_message(
+            chat_id=config.OWNER_CHAT_ID,
+            text=(
+                f"\U0001f4f1 Время для поста в соцсетях!\n\n"
+                f"Расскажи о заказе по ремонту {service} — я составлю текст и опубликую "
+                f"с твоим фото или видео (Reels отлично работают для роста охвата).\n\n"
+                f"Напиши: \"пост в фейсбук про [тема]\" или \"пост в инстаграм про [тема]\", "
+                f"или сразу пришли видео/фото с такой подписью."
+            ),
+        )
+    except Exception as e:
+        log.error(f"Social media reminder error: {e}")
+
+
 async def scheduled_email_reminder(app):
     """Еженедельное напоминание о email-рассылке — каждую среду в 11:00."""
     if not config.OWNER_CHAT_ID:
@@ -5671,6 +5696,7 @@ def main():
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_gbp_post_reminder, "interval", days=3, args=[app])
     scheduler.add_job(scheduled_email_reminder, "cron", day_of_week="wed", hour=11, minute=0, args=[app])
+    scheduler.add_job(scheduled_social_media_reminder, "cron", day_of_week="mon,wed,fri", hour=15, minute=0, args=[app])
     scheduler.add_job(scheduled_holiday_banner_reminder, "cron", hour=9, minute=30, args=[app])
     scheduler.add_job(scheduled_lsa_daily_numbers, "cron", hour=20, minute=30, args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
