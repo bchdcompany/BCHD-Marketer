@@ -3089,6 +3089,67 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     if not _is_owner(update):
         return
+
+    # Если видео пришло СРАЗУ с подписью типа "пост в инстаграм про..." —
+    # это новый запрос, а не ответ на уже заданный текст. Генерируем caption
+    # прямо сейчас и публикуем видео сразу, одним шагом.
+    _caption_text = update.message.caption or ""
+    if _caption_text:
+        _cl = _caption_text.lower()
+        if any(w in _cl for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+            _status_igc = await update.message.reply_text("\U0001f4dd Составляю текст и публикую Reel в Instagram...")
+            try:
+                import anthropic as _a_igc
+                _a_igc_client = _a_igc.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+                _resp_igc = await asyncio.to_thread(
+                    _a_igc_client.messages.create,
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=500,
+                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+                    messages=[{"role": "user", "content": _caption_text}]
+                )
+                _pt_igc = _resp_igc.content[0].text.strip()
+                video_c = update.message.video
+                tg_file_igc = await ctx.bot.get_file(video_c.file_id)
+                _fp_igc = tg_file_igc.file_path
+                _tg_url_igc = _fp_igc if _fp_igc.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_igc}"
+                from facebook_client import create_instagram_video_post as _ig_create_video_c
+                _result_igc = await _ig_create_video_c(_pt_igc, video_url=_tg_url_igc)
+                if _result_igc.get("success"):
+                    await _status_igc.edit_text(f"\u2705 Reel опубликован в Instagram!\n\nТекст: {_pt_igc[:200]}")
+                else:
+                    await _status_igc.edit_text(f"\u274c Ошибка: {_result_igc.get('error')}")
+            except Exception as _igce:
+                log.error(f"Instagram video+caption error: {_igce}", exc_info=True)
+                await _status_igc.edit_text(f"\u274c Ошибка: {_igce}")
+            return
+        if any(w in _cl for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+            _status_fbc = await update.message.reply_text("\U0001f4dd Составляю текст и публикую видео в Facebook...")
+            try:
+                import anthropic as _a_fbc
+                _a_fbc_client = _a_fbc.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+                _resp_fbc = await asyncio.to_thread(
+                    _a_fbc_client.messages.create,
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=500,
+                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+                    messages=[{"role": "user", "content": _caption_text}]
+                )
+                _pt_fbc = _resp_fbc.content[0].text.strip()
+                video_fc = update.message.video
+                tg_file_fbc = await ctx.bot.get_file(video_fc.file_id)
+                _fp_fbc = tg_file_fbc.file_path
+                _tg_url_fbc = _fp_fbc if _fp_fbc.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_fbc}"
+                from facebook_client import create_video_post as _fb_create_video_c
+                _result_fbc = await _fb_create_video_c(_pt_fbc, video_url=_tg_url_fbc)
+                if _result_fbc.get("success"):
+                    await _status_fbc.edit_text(f"\u2705 Видео опубликовано в Facebook!\n\nТекст: {_pt_fbc[:200]}")
+                else:
+                    await _status_fbc.edit_text(f"\u274c Ошибка: {_result_fbc.get('error')}")
+            except Exception as _fbce:
+                log.error(f"Facebook video+caption error: {_fbce}", exc_info=True)
+                await _status_fbc.edit_text(f"\u274c Ошибка: {_fbce}")
+            return
     # Проверяем — ждём ли видео для Instagram поста (ДО Facebook)
     _pool_ig_vid = await _get_db_pool()
     if _pool_ig_vid:
