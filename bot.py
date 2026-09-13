@@ -3018,13 +3018,41 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
-    Google Local Posts API не поддерживает видео в самом посте (только PHOTO) —
-    это ограничение самого Google, не наше. Видео можно загрузить только
-    в общую фото/видео-галерею профиля (раздел "Фото" в GBP), не привязано
-    к конкретному посту.
+    Facebook поддерживает видео прямо в постах (в отличие от Google Business
+    Profile, где видео разрешено только в общей галерее, не в самом посте).
+    Проверяем сначала — ждём ли видео для Facebook поста.
     """
     if not _is_owner(update):
         return
+    # Проверяем — ждём ли видео для Facebook поста
+    _pool_fb_vid = await _get_db_pool()
+    if _pool_fb_vid:
+        try:
+            async with _pool_fb_vid.acquire() as _conn_fbv:
+                _row_fbv = await _conn_fbv.fetchrow(
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id
+                )
+            if _row_fbv:
+                _status_fbv = await update.message.reply_text("\U0001f4f9 Загружаю видео и публикую в Facebook...")
+                try:
+                    video = update.message.video
+                    tg_file_fbv = await ctx.bot.get_file(video.file_id)
+                    _fp_fbv = tg_file_fbv.file_path
+                    _tg_url_fbv = _fp_fbv if _fp_fbv.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_fbv}"
+                    from facebook_client import create_video_post as _fb_create_video
+                    _result_fbv = await _fb_create_video(_row_fbv["post_text"], video_url=_tg_url_fbv)
+                    async with _pool_fb_vid.acquire() as _conn_fbv2:
+                        await _conn_fbv2.execute("DELETE FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                    if _result_fbv.get("success"):
+                        await _status_fbv.edit_text(f"\u2705 Видео опубликовано в Facebook!")
+                    else:
+                        await _status_fbv.edit_text(f"\u274c Ошибка: {_result_fbv.get('error')}")
+                except Exception as _fbve:
+                    log.error(f"Facebook video post error: {_fbve}", exc_info=True)
+                    await _status_fbv.edit_text(f"\u274c Ошибка: {_fbve}")
+                return
+        except Exception as _fb_vid_check_e:
+            log.warning(f"FB video pending check error: {_fb_vid_check_e}")
     pending_gbp_data = _GBP_PHOTO_PENDING.get(update.effective_chat.id)
     if not pending_gbp_data:
         try:
