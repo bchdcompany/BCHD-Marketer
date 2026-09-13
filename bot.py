@@ -2421,7 +2421,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if _pool_fb2:
             async with _pool_fb2.acquire() as _conn_fb2:
                 _row_fb = await _conn_fb2.fetchrow(
-                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", int(config.OWNER_CHAT_ID)
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", int(config.OWNER_CHAT_ID)
                 )
             if _row_fb:
                 from facebook_client import create_post as _fb_create_post
@@ -3156,7 +3156,7 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             async with _pool_ig_vid.acquire() as _conn_igv:
                 _row_igv = await _conn_igv.fetchrow(
-                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id
+                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id
                 )
             if _row_igv:
                 _status_igv = await update.message.reply_text("\U0001f4f9 Загружаю видео и публикую Reel в Instagram (может занять до минуты)...")
@@ -3185,7 +3185,7 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             async with _pool_fb_vid.acquire() as _conn_fbv:
                 _row_fbv = await _conn_fbv.fetchrow(
-                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id
                 )
             if _row_fbv:
                 _status_fbv = await update.message.reply_text("\U0001f4f9 Загружаю видео и публикую в Facebook...")
@@ -3215,7 +3215,7 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if _db_pool_v:
                 async with _db_pool_v.acquire() as _conn_v:
                     _row_v = await _conn_v.fetchrow(
-                        "SELECT post_text FROM gbp_pending_post WHERE chat_id=$1", update.effective_chat.id
+                        "SELECT post_text FROM gbp_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id
                     )
                     if _row_v:
                         pending_gbp_data = {"post_text": _row_v["post_text"]}
@@ -3365,7 +3365,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "CREATE TABLE IF NOT EXISTS ig_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
                 )
                 _row_igp = await _conn_igp.fetchrow(
-                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id
+                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id
                 )
             if _row_igp:
                 _status_igp = await update.message.reply_text("\U0001f4f8 Загружаю фото и публикую в Instagram...")
@@ -3408,7 +3408,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "CREATE TABLE IF NOT EXISTS fb_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
                 )
                 _row_fbp = await _conn_fbp.fetchrow(
-                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id
                 )
             if _row_fbp:
                 _status_fbp = await update.message.reply_text("\U0001f4f8 Загружаю фото и публикую в Facebook...")
@@ -3449,7 +3449,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             _db_pool2 = await _get_db_pool()
             async with _db_pool2.acquire() as _conn2:
-                _row = await _conn2.fetchrow("SELECT post_text FROM gbp_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                _row = await _conn2.fetchrow("SELECT post_text FROM gbp_pending_post WHERE chat_id=$1 AND created_at > NOW() - INTERVAL '20 minutes'", update.effective_chat.id)
                 if _row:
                     pending_gbp_data = {"post_text": _row["post_text"]}
         except Exception as _dbe2:
