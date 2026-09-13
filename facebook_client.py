@@ -59,6 +59,34 @@ async def create_post(message: str, image_url: str = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+async def create_video_post(message: str, video_url: str) -> dict:
+    """
+    Публикует видео на странице Facebook с описанием (caption).
+    Facebook Graph API поддерживает видео напрямую в постах (в отличие от
+    Google Business Profile, где видео разрешено только в общей галерее).
+    """
+    if not META_PAGE_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_PAGE_ID/META_PAGE_TOKEN не настроены"}
+
+    url = f"{GRAPH_API_BASE}/{META_PAGE_ID}/videos"
+    payload = {
+        "file_url": video_url,
+        "description": message,
+        "access_token": META_PAGE_TOKEN,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, data=payload)
+            data = resp.json()
+        if "error" in data:
+            logger.error(f"Facebook video post error: {data['error']}")
+            return {"success": False, "error": data["error"].get("message", str(data["error"]))}
+        return {"success": True, "video_id": data.get("id", ""), "result": data}
+    except Exception as e:
+        logger.error(f"Facebook video post exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def get_page_info() -> dict:
     """Проверка токена и доступа к странице — имя, id, категория."""
     if not META_PAGE_ID or not META_PAGE_TOKEN:
