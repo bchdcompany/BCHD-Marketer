@@ -2138,6 +2138,44 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    # Перехват запроса на пост в Instagram
+    if any(w in question.lower() for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+        try:
+            import anthropic as _a_ig
+            _a_ig_client = _a_ig.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            _resp_ig = await asyncio.to_thread(
+                _a_ig_client.messages.create,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=500,
+                system=(
+                    "You write engaging Instagram captions for BCHD Appliance Repair NYC. "
+                    "Style: casual, warm, emojis and relevant hashtags encouraged. "
+                    "Output ONLY the caption text, no intro, no markdown. English."
+                ),
+                messages=[{"role": "user", "content": question}]
+            )
+            _pt_ig = _resp_ig.content[0].text.strip()
+            if _pt_ig:
+                _pool_ig = await _get_db_pool()
+                if _pool_ig:
+                    async with _pool_ig.acquire() as _conn_ig:
+                        await _conn_ig.execute(
+                            "CREATE TABLE IF NOT EXISTS ig_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+                        )
+                        await _conn_ig.execute(
+                            "INSERT INTO ig_pending_post (chat_id, post_text) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET post_text=$2, created_at=NOW()",
+                            int(config.OWNER_CHAT_ID), _pt_ig
+                        )
+                await update.message.reply_text(
+                    f"\U0001f4dd Текст для Instagram:\n\n{_pt_ig}\n\n"
+                    f"\U0001f4f8 Пришли фото или видео (обязательно — Instagram не публикует текст без медиа)."
+                )
+            else:
+                await update.message.reply_text("\u274c Не удалось составить текст")
+        except Exception as _ige:
+            log.error(f"Instagram post intercept error: {_ige}", exc_info=True)
+            await update.message.reply_text(f"\u274c Ошибка: {_ige}")
+        return
     # Перехват запроса на пост в Facebook
     if any(w in question.lower() for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
         try:
@@ -3051,6 +3089,35 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     if not _is_owner(update):
         return
+    # Проверяем — ждём ли видео для Instagram поста (ДО Facebook)
+    _pool_ig_vid = await _get_db_pool()
+    if _pool_ig_vid:
+        try:
+            async with _pool_ig_vid.acquire() as _conn_igv:
+                _row_igv = await _conn_igv.fetchrow(
+                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id
+                )
+            if _row_igv:
+                _status_igv = await update.message.reply_text("\U0001f4f9 Загружаю видео и публикую Reel в Instagram (может занять до минуты)...")
+                try:
+                    video = update.message.video
+                    tg_file_igv = await ctx.bot.get_file(video.file_id)
+                    _fp_igv = tg_file_igv.file_path
+                    _tg_url_igv = _fp_igv if _fp_igv.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_igv}"
+                    from facebook_client import create_instagram_video_post as _ig_create_video
+                    _result_igv = await _ig_create_video(_row_igv["post_text"], video_url=_tg_url_igv)
+                    async with _pool_ig_vid.acquire() as _conn_igv2:
+                        await _conn_igv2.execute("DELETE FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                    if _result_igv.get("success"):
+                        await _status_igv.edit_text(f"\u2705 Reel опубликован в Instagram!")
+                    else:
+                        await _status_igv.edit_text(f"\u274c Ошибка: {_result_igv.get('error')}")
+                except Exception as _igve:
+                    log.error(f"Instagram video post error: {_igve}", exc_info=True)
+                    await _status_igv.edit_text(f"\u274c Ошибка: {_igve}")
+                return
+        except Exception as _ig_vid_check_e:
+            log.warning(f"IG video pending check error: {_ig_vid_check_e}")
     # Проверяем — ждём ли видео для Facebook поста
     _pool_fb_vid = await _get_db_pool()
     if _pool_fb_vid:
@@ -3143,6 +3210,49 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     photo = update.message.photo[-1]  # наибольшее разрешение
 
+    # Проверяем — ждём ли фото для Instagram поста (ДО Facebook и GBP)
+    _pool_ig_photo = await _get_db_pool()
+    if _pool_ig_photo:
+        try:
+            async with _pool_ig_photo.acquire() as _conn_igp:
+                await _conn_igp.execute(
+                    "CREATE TABLE IF NOT EXISTS ig_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+                )
+                _row_igp = await _conn_igp.fetchrow(
+                    "SELECT post_text FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id
+                )
+            if _row_igp:
+                _status_igp = await update.message.reply_text("\U0001f4f8 Загружаю фото и публикую в Instagram...")
+                try:
+                    tg_file_ig = await ctx.bot.get_file(photo.file_id)
+                    import httpx as _hx_ig
+                    _fp_ig = tg_file_ig.file_path
+                    _tg_url_ig = _fp_ig if _fp_ig.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_ig}"
+                    async with _hx_ig.AsyncClient(timeout=30) as _hc_ig:
+                        _file_bytes_ig = (await _hc_ig.get(_tg_url_ig)).content
+                    import base64 as _b64_ig
+                    _imgbb_key_ig = __import__("os").environ.get("IMGBB_API_KEY", "")
+                    _img_b64_ig = _b64_ig.b64encode(bytes(_file_bytes_ig)).decode()
+                    async with _hx_ig.AsyncClient(timeout=30) as _hxc_ig:
+                        _ib_ig = await _hxc_ig.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_ig, "image": _img_b64_ig})
+                        _ib_data_ig = _ib_ig.json()
+                    _pub_url_ig = _ib_data_ig.get("data", {}).get("url", "")
+                    if not _pub_url_ig:
+                        raise ValueError(f"ImgBB failed: {_ib_data_ig}")
+                    from facebook_client import create_instagram_post as _ig_create_post
+                    _result_igp = await _ig_create_post(_row_igp["post_text"], image_url=_pub_url_ig)
+                    async with _pool_ig_photo.acquire() as _conn_igp2:
+                        await _conn_igp2.execute("DELETE FROM ig_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                    if _result_igp.get("success"):
+                        await _status_igp.edit_text(f"\u2705 Пост опубликован в Instagram!")
+                    else:
+                        await _status_igp.edit_text(f"\u274c Ошибка: {_result_igp.get('error')}")
+                except Exception as _igpe:
+                    log.error(f"Instagram photo post error: {_igpe}", exc_info=True)
+                    await _status_igp.edit_text(f"\u274c Ошибка: {_igpe}")
+                return
+        except Exception as _ig_check_e:
+            log.warning(f"IG pending check error: {_ig_check_e}")
     # Проверяем — ждём ли фото для Facebook поста (ДО GBP)
     _pool_fb_photo = await _get_db_pool()
     if _pool_fb_photo:
