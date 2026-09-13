@@ -2139,7 +2139,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Перехват запроса на пост в Instagram
-    if any(w in question.lower() for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+    if any(w in question.lower() for w in ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram", "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]):
         try:
             import anthropic as _a_ig
             _a_ig_client = _a_ig.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -2177,7 +2177,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"\u274c Ошибка: {_ige}")
         return
     # Перехват запроса на пост в Facebook
-    if any(w in question.lower() for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+    if any(w in question.lower() for w in ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook", "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook"]):
         try:
             import anthropic as _a_fb
             _a_fb_client = _a_fb.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -3096,7 +3096,7 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _caption_text = update.message.caption or ""
     if _caption_text:
         _cl = _caption_text.lower()
-        if any(w in _cl for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+        if any(w in _cl for w in ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram", "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]):
             _status_igc = await update.message.reply_text("\U0001f4dd Составляю текст и публикую Reel в Instagram...")
             try:
                 import anthropic as _a_igc
@@ -3123,7 +3123,7 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 log.error(f"Instagram video+caption error: {_igce}", exc_info=True)
                 await _status_igc.edit_text(f"\u274c Ошибка: {_igce}")
             return
-        if any(w in _cl for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+        if any(w in _cl for w in ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook", "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook"]):
             _status_fbc = await update.message.reply_text("\U0001f4dd Составляю текст и публикую видео в Facebook...")
             try:
                 import anthropic as _a_fbc
@@ -3274,7 +3274,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _photo_caption = update.message.caption or ""
     if _photo_caption:
         _pcl = _photo_caption.lower()
-        if any(w in _pcl for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+        if any(w in _pcl for w in ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram", "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]):
             _status_igp2 = await update.message.reply_text("\U0001f4dd Составляю текст и публикую в Instagram...")
             try:
                 import anthropic as _a_igp2
@@ -3313,7 +3313,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 log.error(f"Instagram photo+caption error: {_igp2e}", exc_info=True)
                 await _status_igp2.edit_text(f"\u274c Ошибка: {_igp2e}")
             return
-        if any(w in _pcl for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+        if any(w in _pcl for w in ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook", "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook"]):
             _status_fbp2 = await update.message.reply_text("\U0001f4dd Составляю текст и публикую в Facebook...")
             try:
                 import anthropic as _a_fbp2
