@@ -3268,6 +3268,91 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
 
+    # Если фото пришло СРАЗУ с подписью типа "пост в инстаграм про..." или
+    # "пост в фейсбук про..." — генерируем caption и публикуем сразу, одним шагом
+    # (аналогично тому же сценарию для видео в handle_video_message).
+    _photo_caption = update.message.caption or ""
+    if _photo_caption:
+        _pcl = _photo_caption.lower()
+        if any(w in _pcl for w in ["пост в инстаграм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в instagram"]):
+            _status_igp2 = await update.message.reply_text("\U0001f4dd Составляю текст и публикую в Instagram...")
+            try:
+                import anthropic as _a_igp2
+                _a_igp2_client = _a_igp2.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+                _resp_igp2 = await asyncio.to_thread(
+                    _a_igp2_client.messages.create,
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=500,
+                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+                    messages=[{"role": "user", "content": _photo_caption}]
+                )
+                _pt_igp2 = _resp_igp2.content[0].text.strip()
+                photo_p = update.message.photo[-1]
+                tg_file_igp2 = await ctx.bot.get_file(photo_p.file_id)
+                _fp_igp2 = tg_file_igp2.file_path
+                _tg_url_igp2 = _fp_igp2 if _fp_igp2.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_igp2}"
+                import httpx as _hx_igp2
+                async with _hx_igp2.AsyncClient(timeout=30) as _hc_igp2:
+                    _file_bytes_igp2 = (await _hc_igp2.get(_tg_url_igp2)).content
+                import base64 as _b64_igp2
+                _imgbb_key_igp2 = __import__("os").environ.get("IMGBB_API_KEY", "")
+                _img_b64_igp2 = _b64_igp2.b64encode(bytes(_file_bytes_igp2)).decode()
+                async with _hx_igp2.AsyncClient(timeout=30) as _hxc_igp2:
+                    _ib_igp2 = await _hxc_igp2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_igp2, "image": _img_b64_igp2})
+                    _ib_data_igp2 = _ib_igp2.json()
+                _pub_url_igp2 = _ib_data_igp2.get("data", {}).get("url", "")
+                if not _pub_url_igp2:
+                    raise ValueError(f"ImgBB failed: {_ib_data_igp2}")
+                from facebook_client import create_instagram_post as _ig_create_post2
+                _result_igp2 = await _ig_create_post2(_pt_igp2, image_url=_pub_url_igp2)
+                if _result_igp2.get("success"):
+                    await _status_igp2.edit_text(f"\u2705 Пост опубликован в Instagram!\n\nТекст: {_pt_igp2[:200]}")
+                else:
+                    await _status_igp2.edit_text(f"\u274c Ошибка: {_result_igp2.get('error')}")
+            except Exception as _igp2e:
+                log.error(f"Instagram photo+caption error: {_igp2e}", exc_info=True)
+                await _status_igp2.edit_text(f"\u274c Ошибка: {_igp2e}")
+            return
+        if any(w in _pcl for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+            _status_fbp2 = await update.message.reply_text("\U0001f4dd Составляю текст и публикую в Facebook...")
+            try:
+                import anthropic as _a_fbp2
+                _a_fbp2_client = _a_fbp2.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+                _resp_fbp2 = await asyncio.to_thread(
+                    _a_fbp2_client.messages.create,
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=500,
+                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+                    messages=[{"role": "user", "content": _photo_caption}]
+                )
+                _pt_fbp2 = _resp_fbp2.content[0].text.strip()
+                photo_fp = update.message.photo[-1]
+                tg_file_fbp2 = await ctx.bot.get_file(photo_fp.file_id)
+                _fp_fbp2 = tg_file_fbp2.file_path
+                _tg_url_fbp2 = _fp_fbp2 if _fp_fbp2.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_fbp2}"
+                import httpx as _hx_fbp2
+                async with _hx_fbp2.AsyncClient(timeout=30) as _hc_fbp2:
+                    _file_bytes_fbp2 = (await _hc_fbp2.get(_tg_url_fbp2)).content
+                import base64 as _b64_fbp2
+                _imgbb_key_fbp2 = __import__("os").environ.get("IMGBB_API_KEY", "")
+                _img_b64_fbp2 = _b64_fbp2.b64encode(bytes(_file_bytes_fbp2)).decode()
+                async with _hx_fbp2.AsyncClient(timeout=30) as _hxc_fbp2:
+                    _ib_fbp2 = await _hxc_fbp2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_fbp2, "image": _img_b64_fbp2})
+                    _ib_data_fbp2 = _ib_fbp2.json()
+                _pub_url_fbp2 = _ib_data_fbp2.get("data", {}).get("url", "")
+                if not _pub_url_fbp2:
+                    raise ValueError(f"ImgBB failed: {_ib_data_fbp2}")
+                from facebook_client import create_post as _fb_create_post3
+                _result_fbp2 = await _fb_create_post3(_pt_fbp2, image_url=_pub_url_fbp2)
+                if _result_fbp2.get("success"):
+                    await _status_fbp2.edit_text(f"\u2705 Пост опубликован в Facebook!\n\nТекст: {_pt_fbp2[:200]}")
+                else:
+                    await _status_fbp2.edit_text(f"\u274c Ошибка: {_result_fbp2.get('error')}")
+            except Exception as _fbp2e:
+                log.error(f"Facebook photo+caption error: {_fbp2e}", exc_info=True)
+                await _status_fbp2.edit_text(f"\u274c Ошибка: {_fbp2e}")
+            return
+
     caption = update.message.caption or ""
     photo = update.message.photo[-1]  # наибольшее разрешение
 
