@@ -471,36 +471,6 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка генерации: {e}")
 
 
-async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/sendemail — отправить последний одобренный баннер по базе клиентов."""
-    if not _is_owner(update):
-        return
-    if not _email_agent_available:
-        await update.message.reply_text("❌ email_agent не установлен")
-        return
-    if not _email_agent.has_pending_campaign():
-        await update.message.reply_text("❌ Нет готового баннера. Сначала создай через /email")
-        return
-    msg = await update.message.reply_text("📤 Отправляю рассылку...")
-    try:
-        import concurrent.futures
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            sent = await loop.run_in_executor(
-                pool,
-                lambda: _email_agent._send_via_sendgrid(
-                    _email_agent._pending_campaign["html"],
-                    _email_agent._pending_campaign["subject"],
-                    _email_agent._pending_campaign.get("preview_text", ""),
-                )
-            )
-        _email_agent._pending_campaign = None
-        result_text = "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем"
-        await _safe_edit(msg, result_text)
-    except Exception as e:
-        log.error(f"sendemail error: {e}", exc_info=True)
-        await _safe_edit(msg, f"❌ Ошибка отправки: {e}")
-
 
 async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/sendemail — отправить последний одобренный баннер по базе клиентов."""
@@ -2168,6 +2138,44 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not question or not question.strip():
         return
 
+    # Перехват запроса на пост в Facebook
+    if any(w in question.lower() for w in ["пост в фейсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в facebook"]):
+        try:
+            import anthropic as _a_fb
+            _a_fb_client = _a_fb.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            _resp_fb = await asyncio.to_thread(
+                _a_fb_client.messages.create,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=500,
+                system=(
+                    "You write engaging Facebook posts for BCHD Appliance Repair NYC. "
+                    "Style: warm, conversational, can use emojis and hashtags (unlike GBP posts). "
+                    "Output ONLY the post text, no intro, no markdown. English."
+                ),
+                messages=[{"role": "user", "content": question}]
+            )
+            _pt_fb = _resp_fb.content[0].text.strip()
+            if _pt_fb:
+                _pool_fb = await _get_db_pool()
+                if _pool_fb:
+                    async with _pool_fb.acquire() as _conn_fb:
+                        await _conn_fb.execute(
+                            "CREATE TABLE IF NOT EXISTS fb_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+                        )
+                        await _conn_fb.execute(
+                            "INSERT INTO fb_pending_post (chat_id, post_text) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET post_text=$2, created_at=NOW()",
+                            int(config.OWNER_CHAT_ID), _pt_fb
+                        )
+                await update.message.reply_text(
+                    f"\U0001f4dd Текст поста для Facebook:\n\n{_pt_fb}\n\n"
+                    f"\U0001f4f8 Пришли фото или напиши \"без фото\" чтобы опубликовать без изображения."
+                )
+            else:
+                await update.message.reply_text("\u274c Не удалось составить текст")
+        except Exception as _fbe:
+            log.error(f"Facebook post intercept error: {_fbe}", exc_info=True)
+            await update.message.reply_text(f"\u274c Ошибка: {_fbe}")
+        return
     # Перехват запроса на напоминание
     if any(w in question.lower() for w in ["напомни мне", "напомни ", "поставь напоминание", "запланируй напоминание"]):
         try:
@@ -2369,6 +2377,25 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.error(f"Review reply error: {_pe_rev}", exc_info=True)
             await update.message.reply_text(f"\u274c Ошибка: {_pe_rev}")
         return
+    # Публикация Facebook поста без фото
+    if question.lower().strip() in ["без фото", "no photo", "без фотографии", "опубликуй без фото"]:
+        _pool_fb2 = await _get_db_pool()
+        if _pool_fb2:
+            async with _pool_fb2.acquire() as _conn_fb2:
+                _row_fb = await _conn_fb2.fetchrow(
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", int(config.OWNER_CHAT_ID)
+                )
+            if _row_fb:
+                from facebook_client import create_post as _fb_create_post
+                _status_fb = await update.message.reply_text("\U0001f4e4 Публикую пост в Facebook...")
+                _result_fb = await _fb_create_post(_row_fb["post_text"])
+                async with _pool_fb2.acquire() as _conn_fb3:
+                    await _conn_fb3.execute("DELETE FROM fb_pending_post WHERE chat_id=$1", int(config.OWNER_CHAT_ID))
+                if _result_fb.get("success"):
+                    await _status_fb.edit_text(f"\u2705 Пост опубликован в Facebook! ID: {_result_fb.get('post_id', '')}")
+                else:
+                    await _status_fb.edit_text(f"\u274c Ошибка: {_result_fb.get('error')}")
+                return
     # Публикация GBP поста без фото
     if question.lower().strip() in ["без фото", "no photo", "без фотографии", "опубликуй без фото"]:
         _pending_data = _GBP_PHOTO_PENDING.get(int(config.OWNER_CHAT_ID))
@@ -3116,6 +3143,49 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     photo = update.message.photo[-1]  # наибольшее разрешение
 
+    # Проверяем — ждём ли фото для Facebook поста (ДО GBP)
+    _pool_fb_photo = await _get_db_pool()
+    if _pool_fb_photo:
+        try:
+            async with _pool_fb_photo.acquire() as _conn_fbp:
+                await _conn_fbp.execute(
+                    "CREATE TABLE IF NOT EXISTS fb_pending_post (chat_id BIGINT PRIMARY KEY, post_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())"
+                )
+                _row_fbp = await _conn_fbp.fetchrow(
+                    "SELECT post_text FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id
+                )
+            if _row_fbp:
+                _status_fbp = await update.message.reply_text("\U0001f4f8 Загружаю фото и публикую в Facebook...")
+                try:
+                    tg_file_fb = await ctx.bot.get_file(photo.file_id)
+                    import httpx as _hx_fb
+                    _fp_fb = tg_file_fb.file_path
+                    _tg_url_fb = _fp_fb if _fp_fb.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_fb}"
+                    async with _hx_fb.AsyncClient(timeout=30) as _hc_fb:
+                        _file_bytes_fb = (await _hc_fb.get(_tg_url_fb)).content
+                    import base64 as _b64_fb
+                    _imgbb_key_fb = __import__("os").environ.get("IMGBB_API_KEY", "")
+                    _img_b64_fb = _b64_fb.b64encode(bytes(_file_bytes_fb)).decode()
+                    async with _hx_fb.AsyncClient(timeout=30) as _hxc_fb:
+                        _ib_fb = await _hxc_fb.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_fb, "image": _img_b64_fb, "expiration": 600})
+                        _ib_data_fb = _ib_fb.json()
+                    _pub_url_fb = _ib_data_fb.get("data", {}).get("url", "")
+                    if not _pub_url_fb:
+                        raise ValueError(f"ImgBB failed: {_ib_data_fb}")
+                    from facebook_client import create_post as _fb_create_post2
+                    _result_fbp = await _fb_create_post2(_row_fbp["post_text"], image_url=_pub_url_fb)
+                    async with _pool_fb_photo.acquire() as _conn_fbp2:
+                        await _conn_fbp2.execute("DELETE FROM fb_pending_post WHERE chat_id=$1", update.effective_chat.id)
+                    if _result_fbp.get("success"):
+                        await _status_fbp.edit_text(f"\u2705 Пост с фото опубликован в Facebook!")
+                    else:
+                        await _status_fbp.edit_text(f"\u274c Ошибка: {_result_fbp.get('error')}")
+                except Exception as _fbpe:
+                    log.error(f"Facebook photo post error: {_fbpe}", exc_info=True)
+                    await _status_fbp.edit_text(f"\u274c Ошибка: {_fbpe}")
+                return
+        except Exception as _fb_check_e:
+            log.warning(f"FB pending check error: {_fb_check_e}")
     # Проверяем — ждём ли фото для GBP поста
     # Читаем из PostgreSQL если dict пустой
     pending_gbp_data = _GBP_PHOTO_PENDING.get(update.effective_chat.id)
@@ -4611,103 +4681,6 @@ async def scheduled_changes_analysis(app):
         log.error(f"Ошибка анализа изменений: {e}", exc_info=True)
 
 
-async def scheduled_lsa_workiz_reconciliation(app):
-    """
-    Еженедельно в понедельник 09:30 NY — сверка LSA лидов с Workiz.
-    Находит LSA лиды которые стали джобами с неправильным источником.
-    Присылает отчёт с рекомендациями по исправлению.
-    """
-    try:
-        from datetime import datetime as _dt, timedelta as _td
-        log.info("Запуск LSA↔Workiz сверки")
-
-        # Берём LSA лиды за последние 14 дней
-        lsa_result = await ads_client.get_lsa_leads(days=14)
-        lsa_leads = lsa_result.get("leads", []) if isinstance(lsa_result, dict) else lsa_result
-        if not lsa_leads:
-            return
-
-        # Берём джобы Workiz за последние 14 дней
-        import workiz_client as wz
-        date_from = (_dt.now() - _td(days=14)).strftime("%Y-%m-%d")
-        date_to = _dt.now().strftime("%Y-%m-%d")
-        wz_result = await wz.get_jobs_by_date_range(date_from=date_from, date_to=date_to, records=100)
-        wz_jobs = wz_result.get("jobs", [])
-
-        # Строим индекс Workiz джобов по номеру телефона
-        def _normalize_phone(p):
-            import re
-            return re.sub(r"\D", "", str(p or ""))[-10:]
-
-        wz_by_phone = {}
-        for job in wz_jobs:
-            phone = _normalize_phone(job.get("Phone") or job.get("ClientPhone") or "")
-            if phone:
-                wz_by_phone[phone] = job
-
-        # Сверяем
-        matched = []
-        unmatched = []
-        wrong_source = []
-
-        for lead in lsa_leads:
-            lead_phone = _normalize_phone(lead.get("phone_number") or lead.get("phone") or "")
-            if not lead_phone:
-                continue
-
-            if lead_phone in wz_by_phone:
-                job = wz_by_phone[lead_phone]
-                job_source = (job.get("JobSource") or "").strip()
-                job_id = job.get("UUID") or job.get("SerialId") or ""
-                client_name = f"{job.get('FirstName','')} {job.get('LastName','')}".strip()
-
-                if job_source.lower() not in ["lsa", "google lsa", "local services"]:
-                    wrong_source.append({
-                        "lead_id": lead.get("id"),
-                        "phone": lead_phone,
-                        "job_id": job_id,
-                        "client": client_name,
-                        "current_source": job_source or "не указан",
-                    })
-                else:
-                    matched.append(lead_phone)
-            else:
-                unmatched.append({
-                    "phone": lead_phone,
-                    "lead_id": lead.get("id"),
-                    "date": str(lead.get("creation_date_time", ""))[:10],
-                })
-
-        if not wrong_source and not unmatched:
-            log.info("LSA сверка: все лиды правильно атрибуированы")
-            return
-
-        # Формируем отчёт
-        lines = ["📊 *Еженедельная сверка LSA ↔ Workiz*\n"]
-
-        if wrong_source:
-            lines.append(f"⚠️ *Неправильный источник ({len(wrong_source)} джобов):*")
-            lines.append("Эти джобы пришли из LSA но в Workiz указан другой источник.\nИсправь вручную в Workiz:\n")
-            for item in wrong_source:
-                lines.append(
-                    f"• Джоб {item['job_id']} — {item['client']}\n"
-                    f"  📞 {item['phone']} | Источник: *{item['current_source']}* → нужно: LSA\n"
-                )
-
-        if unmatched:
-            lines.append(f"\n❓ *Не найдены в Workiz ({len(unmatched)} лидов):*")
-            lines.append("Эти LSA лиды не создали джоб в Workiz:\n")
-            for item in unmatched[:10]:
-                lines.append(f"• 📞 {item['phone']} (лид {item['lead_id']}, {item['date']})")
-
-        if matched:
-            lines.append(f"\n✅ Правильно атрибуированы: {len(matched)} лидов")
-
-        text = "\n".join(lines)
-        await _send_long_message(app.bot, config.OWNER_CHAT_ID, text)
-
-    except Exception as e:
-        log.error(f"Ошибка LSA сверки: {e}", exc_info=True)
 
 async def scheduled_lsa_workiz_reconciliation(app):
     """
@@ -4770,80 +4743,6 @@ async def scheduled_lsa_workiz_reconciliation(app):
         await _send_long_message(app.bot, config.OWNER_CHAT_ID, "\n".join(lines))
     except Exception as e:
         log.error(f"Ошибка LSA сверки: {e}", exc_info=True)
-
-async def scheduled_campaign_audit(app):
-    """
-    Каждый понедельник в 09:55 — полный проактивный аудит кампании.
-    Агент сам анализирует ключи, минус-слова, QS, IS, объявления
-    и создаёт карточки на конкретные улучшения без запроса от владельца.
-    """
-    if not config.google_ads_configured:
-        return
-    log.info("Проактивный аудит кампании")
-    try:
-        today = datetime.now(NY_TZ)
-        date_from = today.replace(day=1).strftime("%Y-%m-%d")
-        date_to = today.strftime("%Y-%m-%d")
-
-        # Собираем все данные для полного аудита
-        context_data = {"_period": {"date_from": date_from, "date_to": date_to}}
-        context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
-            date_from=date_from, date_to=date_to
-        )
-        context_data["keywords"] = {
-            "ads": await ads_client.get_keywords_analysis(
-                account="ads", date_from=date_from, date_to=date_to
-            )
-        }
-        context_data["budgets"] = {"ads": await ads_client.get_budget_data(account="ads")}
-        context_data["negatives"] = {
-            "ads": await ads_client.get_negative_keywords_list(account="ads")
-        }
-        context_data["search_terms"] = {
-            "ads": await ads_client.get_search_terms(account="ads")
-        }
-        context_data["ad_performance"] = {
-            "ads": await ads_client.get_ad_performance(account="ads")
-        }
-
-        question = (
-            "Выполни ПОЛНЫЙ проактивный аудит рекламной кампании. "
-            "Проверь ВСЁ и создай карточки на конкретные улучшения:\n"
-            "1. Ключи с QS < 5 — предложи обновить заголовки объявлений (update_ad_headlines)\n"
-            "2. Ключи с 0 показов за 14+ дней — предложи поднять ставку или паузу\n"
-            "3. Ключи с CPA > $100 при 5+ кликах — предложи снизить ставку или паузу\n"
-            "4. Поисковые запросы нерелевантные — предложи добавить минус-слова\n"
-            "5. Impression Share < 40% — предложи увеличить ставки на топ-ключах\n"
-            "6. Объявления с CTR < 3% при 100+ показах — предложи обновить заголовки\n"
-            "7. Конфликты ключей с минус-словами активной кампании\n"
-            "Создавай карточки СРАЗУ — не спрашивай разрешения. "
-            "Максимум 8 карточек за раз, приоритизируй по влиянию на бизнес."
-        )
-
-        result = await ai_analyst.chat_action(question, context_data, "action")
-        reply = result.get("reply", "")
-
-        if reply:
-            header = f"🔍 *Еженедельный аудит кампании — {today.strftime('%d.%m.%Y')}*\n\n"
-            await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
-
-        proposed = result.get("proposed_actions", [])
-        log.info(f"scheduled_campaign_audit: {len(proposed)} карточек")
-
-        for action in proposed:
-            if not isinstance(action, dict):
-                log.warning(f"proposed_actions: не-dict: {str(action)[:80]}")
-                continue
-            try:
-                action.setdefault("account", "ads")
-                action.setdefault("requires_approval", True)
-                action_id = await pending.add(action)
-                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
-            except Exception as e:
-                log.error(f"campaign_audit card error: {e}")
-
-    except Exception as e:
-        log.error(f"Ошибка scheduled_campaign_audit: {e}")
 
 
 async def scheduled_campaign_audit(app):
