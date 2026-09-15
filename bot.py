@@ -2034,6 +2034,42 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
             enabled = [kw for kw in keywords_data if kw.get("resource_name") in rns and kw.get("status") == "ENABLED"]
             if len(enabled) == len(kws):
                 return True, f"Все {len(kws)} ключей уже ENABLED"
+    elif a_type in ("remove_negative_keyword", "remove_negative_keywords"):
+        # Собираем текущие campaign-level негативы из context_data
+        existing_negatives = set()
+        for v in context_data.values():
+            if isinstance(v, dict) and "negatives" in v:
+                for neg in v["negatives"]:
+                    existing_negatives.add((neg.get("text", "").strip().lower(), neg.get("match_type", "")))
+        target = (action.get("keyword_text", "") or action.get("keyword", "")).strip().lower()
+        if target and target not in {t for t, _ in existing_negatives}:
+            return True, f"Минус-слово '{target}' уже отсутствует в списке негативов — нечего удалять"
+    elif a_type in ("add_negative_keywords", "add_negative_keyword"):
+        existing_negatives = set()
+        for v in context_data.values():
+            if isinstance(v, dict) and "negatives" in v:
+                for neg in v["negatives"]:
+                    existing_negatives.add(neg.get("text", "").strip().lower())
+        new_negs = action.get("negative_keywords", []) or action.get("keywords", [])
+        if new_negs:
+            new_texts = []
+            for n in new_negs:
+                if isinstance(n, dict):
+                    new_texts.append(n.get("text", "").strip().lower())
+                else:
+                    new_texts.append(str(n).strip().lower())
+            already_there = [t for t in new_texts if t in existing_negatives]
+            if new_texts and len(already_there) == len(new_texts):
+                return True, f"Минус-слов(о) {already_there} уже в списке негативов"
+    elif a_type in ("update_headlines", "update_ad_headlines"):
+        # Проверяем через recent_changes — было ли изменение заголовков этой группы за последние 14 дней
+        recent = context_data.get("recent_changes", [])
+        target_group = str(action.get("ad_group_id") or action.get("keyword", "")).strip().lower()
+        for chg in recent:
+            if chg.get("action_type") in ("update_headlines", "update_ad_headlines"):
+                chg_desc = str(chg.get("description", "")).lower()
+                if target_group and target_group in chg_desc:
+                    return True, f"Заголовки этой группы уже обновлялись недавно: {chg.get('applied_at')}"
     return False, ""
 
 
