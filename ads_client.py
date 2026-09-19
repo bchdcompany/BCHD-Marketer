@@ -1,11 +1,10 @@
 """
 Google Ads API клиент
-v6 — добавлена жёсткая защита: LSA (Local Services Ads) не поддерживает
-     ключевые слова/минус-слова вообще (Google сам определяет аудиторию).
-     Любая попытка pause_keywords/enable_keywords/add_negative_keywords
-     на LSA-аккаунте теперь блокируется ДО обращения к API, с понятной
-     ошибкой, вместо непрозрачного Google Ads RPC-исключения
-     (OPERATION_NOT_PERMITTED_FOR_CONTEXT / LOCAL_SERVICES).
+v7 — исправлен баг ложных срабатываний currently_excluded в get_search_terms:
+     раньше проверка "word in term_lower" матчила по ПОДСТРОКЕ (минус-слово
+     "man" ложно "блокировало" запрос "repairman"), теперь матчинг по целым
+     словам-токенам, как реально работает BROAD-match у Google Ads.
+     (v6: добавлена жёсткая защита — LSA не поддерживает ключевые слова.)
 """
 
 import asyncio
@@ -620,6 +619,18 @@ class GoogleAdsClient:
             'account': account,
         }
 
+    @staticmethod
+    def _tokenize_for_match(s: str) -> set:
+        """
+        Разбивает строку на набор целых слов (токенов) в нижнем регистре.
+        Используется для приближённой имитации BROAD-match минус-слов Google
+        Ads: минус-слово исключает запрос, только если ВСЕ ЕГО СЛОВА
+        присутствуют в запросе как ОТДЕЛЬНЫЕ ТОКЕНЫ, а не как подстрока
+        внутри другого слова.
+        """
+        import re as _re
+        return set(_re.findall(r"[a-z0-9]+", s.lower()))
+
     async def get_search_terms(self, days: int = 30, account: str = "ads") -> dict:
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
@@ -677,14 +688,19 @@ class GoogleAdsClient:
                 log.warning(f"Не удалось сверить search terms с текущими минус-словами: {e}")
                 negative_texts = set()
 
+            # ИСПРАВЛЕНО 19.09.2026: раньше здесь была проверка "word in
+            # term_lower" — она матчила по ПОДСТРОКЕ (например, минус-слово
+            # "man" ложно считало запрос "repairman" исключённым, хотя
+            # реальный BROAD-match Google Ads матчит только ЦЕЛЫЕ СЛОВА, и
+            # ручная проверка в Google Ads UI подтвердила, что такой запрос
+            # ничем не блокируется). Теперь сравниваем множества целых слов.
+            negative_token_sets = [self._tokenize_for_match(neg) for neg in negative_texts]
             for t in terms:
-                term_lower = t['term'].strip().lower()
-                # Broad-match минус-слово исключает запрос, если ВСЕ слова
-                # минус-слова встречаются где-либо в тексте запроса.
+                term_tokens = self._tokenize_for_match(t['term'])
                 t['currently_excluded'] = any(
-                    all(word in term_lower for word in neg.split())
-                    for neg in negative_texts
-                ) if negative_texts else (t['status'] == 'EXCLUDED')
+                    neg_tokens.issubset(term_tokens)
+                    for neg_tokens in negative_token_sets
+                ) if negative_token_sets else (t['status'] == 'EXCLUDED')
 
             return {'terms': terms, 'days': days, 'account': account}
         except Exception as e:
