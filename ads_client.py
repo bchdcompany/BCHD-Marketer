@@ -1,5 +1,17 @@
 """
 Google Ads API клиент
+v8 — исправлен баг ОБЛАСТИ ДЕЙСТВИЯ (scope) минус-слов в get_search_terms:
+     раньше currently_excluded вычислялся так, будто ЛЮБОЙ минус-слово во
+     ВСЕМ аккаунте может заблокировать ЛЮБОЙ поисковый запрос — без учёта
+     того, что campaign-level минус-слово действует ТОЛЬКО внутри своей
+     кампании, а ad_group-level — ТОЛЬКО внутри своей группы объявлений.
+     Из-за этого запрос 'washing machine repair brooklyn' в группе Washer &
+     Dryer Repair мог ошибочно считаться заблокированным минус-словом из
+     СОВСЕМ ДРУГОЙ кампании/группы, где оно реально ни на что не влияет.
+     Теперь campaign.id и ad_group.id запрашиваются и для search terms, и
+     для минус-слов, и матчинг проверяется СТРОГО в правильной области
+     видимости (campaign-level матчит только внутри той же campaign_id;
+     ad_group-level — только внутри той же campaign_id+ad_group_id).
 v7 — исправлен баг ложных срабатываний currently_excluded в get_search_terms:
      раньше проверка "word in term_lower" матчила по ПОДСТРОКЕ (минус-слово
      "man" ложно "блокировало" запрос "repairman"), теперь матчинг по целым
@@ -563,6 +575,7 @@ class GoogleAdsClient:
                     campaign_criterion.resource_name,
                     campaign_criterion.keyword.text,
                     campaign_criterion.keyword.match_type,
+                    campaign.id,
                     campaign.name
                 FROM campaign_criterion
                 WHERE campaign_criterion.type = 'KEYWORD'
@@ -573,6 +586,7 @@ class GoogleAdsClient:
                     'resource_name': row.campaign_criterion.resource_name,
                     'term': row.campaign_criterion.keyword.text,
                     'match_type': row.campaign_criterion.keyword.match_type.name,
+                    'campaign_id': row.campaign.id,
                     'campaign': row.campaign.name,
                     'level': 'campaign',
                 })
@@ -586,7 +600,9 @@ class GoogleAdsClient:
                     ad_group_criterion.resource_name,
                     ad_group_criterion.keyword.text,
                     ad_group_criterion.keyword.match_type,
+                    campaign.id,
                     campaign.name,
+                    ad_group.id,
                     ad_group.name
                 FROM ad_group_criterion
                 WHERE ad_group_criterion.type = 'KEYWORD'
@@ -599,7 +615,9 @@ class GoogleAdsClient:
                     'resource_name': row.ad_group_criterion.resource_name,
                     'term': row.ad_group_criterion.keyword.text,
                     'match_type': row.ad_group_criterion.keyword.match_type.name,
+                    'campaign_id': row.campaign.id,
                     'campaign': row.campaign.name,
+                    'ad_group_id': row.ad_group.id,
                     'ad_group': row.ad_group.name,
                     'level': 'ad_group',
                 })
@@ -643,7 +661,9 @@ class GoogleAdsClient:
             SELECT
                 search_term_view.search_term,
                 search_term_view.status,
+                campaign.id,
                 campaign.name,
+                ad_group.id,
                 ad_group.name,
                 metrics.impressions,
                 metrics.clicks,
@@ -666,7 +686,9 @@ class GoogleAdsClient:
                 terms.append({
                     'term': row.search_term_view.search_term,
                     'status': row.search_term_view.status.name,
+                    'campaign_id': row.campaign.id,
                     'campaign': row.campaign.name,
+                    'ad_group_id': row.ad_group.id,
                     'ad_group': row.ad_group.name,
                     'impressions': row.metrics.impressions,
                     'clicks': row.metrics.clicks,
@@ -683,24 +705,49 @@ class GoogleAdsClient:
             # это авторитетный, мгновенный источник истины.
             try:
                 neg_result = await self.get_negative_keywords_list(account=account)
-                negative_texts = {n['term'].strip().lower() for n in neg_result.get('negatives', [])}
+                negatives_list = neg_result.get('negatives', [])
             except Exception as e:
                 log.warning(f"Не удалось сверить search terms с текущими минус-словами: {e}")
-                negative_texts = set()
+                negatives_list = []
 
-            # ИСПРАВЛЕНО 19.09.2026: раньше здесь была проверка "word in
+            # ИСПРАВЛЕНО 19.09.2026 (v7): раньше здесь была проверка "word in
             # term_lower" — она матчила по ПОДСТРОКЕ (например, минус-слово
             # "man" ложно считало запрос "repairman" исключённым, хотя
-            # реальный BROAD-match Google Ads матчит только ЦЕЛЫЕ СЛОВА, и
-            # ручная проверка в Google Ads UI подтвердила, что такой запрос
-            # ничем не блокируется). Теперь сравниваем множества целых слов.
-            negative_token_sets = [self._tokenize_for_match(neg) for neg in negative_texts]
+            # реальный BROAD-match Google Ads матчит только ЦЕЛЫЕ СЛОВА).
+            # Теперь сравниваем множества целых слов-токенов.
+            #
+            # ИСПРАВЛЕНО 19.09.2026 (v8): этого всё ещё было недостаточно —
+            # проверка не учитывала ОБЛАСТЬ ДЕЙСТВИЯ минус-слова. В Google
+            # Ads campaign-level минус-слово блокирует запросы ТОЛЬКО внутри
+            # своей кампании, а ad_group-level — ТОЛЬКО внутри своей группы
+            # объявлений. Раньше любой минус-слово из ЛЮБОЙ кампании/группы
+            # аккаунта могло ложно "заблокировать" запрос в СОВСЕМ ДРУГОЙ
+            # кампании/группе. Теперь матчинг строго ограничен нужным scope.
+            tokenized_negatives = [
+                {
+                    'tokens': self._tokenize_for_match(n['term']),
+                    'level': n.get('level'),
+                    'campaign_id': n.get('campaign_id'),
+                    'ad_group_id': n.get('ad_group_id'),
+                }
+                for n in negatives_list
+            ]
+
             for t in terms:
                 term_tokens = self._tokenize_for_match(t['term'])
-                t['currently_excluded'] = any(
-                    neg_tokens.issubset(term_tokens)
-                    for neg_tokens in negative_token_sets
-                ) if negative_token_sets else (t['status'] == 'EXCLUDED')
+                excluded = False
+                for neg in tokenized_negatives:
+                    if not neg['tokens'] or not neg['tokens'].issubset(term_tokens):
+                        continue
+                    if neg['level'] == 'campaign' and neg['campaign_id'] == t.get('campaign_id'):
+                        excluded = True
+                        break
+                    if (neg['level'] == 'ad_group'
+                            and neg['campaign_id'] == t.get('campaign_id')
+                            and neg['ad_group_id'] == t.get('ad_group_id')):
+                        excluded = True
+                        break
+                t['currently_excluded'] = excluded if tokenized_negatives else (t['status'] == 'EXCLUDED')
 
             return {'terms': terms, 'days': days, 'account': account}
         except Exception as e:
