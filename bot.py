@@ -1960,6 +1960,48 @@ async def scheduled_lsa_weekly_audit(app):
         log.error(f"Ошибка еженедельного аудита LSA: {e}")
 
 
+_SELF_CONTRADICTION_PHRASES = [
+    "информационная карточка",
+    "информационное действие",
+    "действие информационное",
+    "не создаю карточку",
+    "не создавать карточку",
+    "не должна быть применена",
+    "не должно быть применено",
+    "нельзя применять",
+    "не применять до",
+    "не добавлять в минус",
+    "не блокировать",
+    "не паузировать",
+    "рекомендую подождать",
+    "уверенность: low",
+    "уверенность low",
+]
+
+
+def _action_is_self_contradictory(action: dict) -> tuple:
+    """
+    Код-уровневый предохранитель от карточек, которые сами себе противоречат:
+    модель иногда пишет в описании/обосновании "не делать этого", "оставить",
+    "информационная карточка" и т.п., но всё равно кладёт действие в
+    proposed_actions как обычную карточку с кнопкой одобрения — по нажатию
+    которой реально выполнится ровно то, от чего текст предостерегает
+    (например, "минус-слово ОСТАВИТЬ, не блокировать" — но карточка типа
+    add_negative_keywords, и одобрение реально добавит минус-слово).
+    Не полагаемся только на промпт (правило там уже есть, но нарушается) —
+    ищем сигнальные фразы прямо в содержимом карточки и блокируем её создание.
+    """
+    import json as _json_sc
+    try:
+        blob = _json_sc.dumps(action, ensure_ascii=False).lower()
+    except Exception:
+        blob = str(action).lower()
+    for phrase in _SELF_CONTRADICTION_PHRASES:
+        if phrase in blob:
+            return True, f"Карточка сама себе противоречит (найдена фраза '{phrase}' в её содержимом) — не должна была создаваться как действие"
+    return False, ""
+
+
 def _action_already_applied(action: dict, context_data: dict) -> tuple:
     a_type = action.get("type", "")
     keywords_data = []
@@ -2934,6 +2976,12 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             already, reason = _action_already_applied(action, context_data)
             if already:
                 log.info(f"Действие пропущено — уже применено: {action.get('type')} | {reason}")
+                already_applied_count += 1
+                continue
+
+            contradicts, c_reason = _action_is_self_contradictory(action)
+            if contradicts:
+                log.warning(f"Карточка пропущена — самопротиворечие: {action.get('type')} | {c_reason}")
                 already_applied_count += 1
                 continue
 
@@ -5163,6 +5211,10 @@ async def scheduled_campaign_audit(app):
                 already, reason = _action_already_applied(action, context_data)
                 if already:
                     log.info(f"campaign_audit: уже применено: {reason}")
+                    continue
+                contradicts, c_reason = _action_is_self_contradictory(action)
+                if contradicts:
+                    log.warning(f"campaign_audit: самопротиворечие: {c_reason}")
                     continue
                 action_id = await pending.add(action)
                 await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
