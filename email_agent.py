@@ -1,5 +1,9 @@
 """
 email_agent.py — BCHD Email Campaign Generator
+v2 — ask_campaign_topic() исправлена: была sync-функцией, вызывавшей
+     bot.send_message (async) без await — сообщение никогда реально не
+     уходило в Telegram (подтверждено RuntimeWarning в логах Railway
+     20.09.2026). Теперь функция async, вызывающий код должен её await'ить.
 """
 import os
 import re
@@ -21,7 +25,18 @@ WORKIZ_BOOKING_URL  = "https://www.bchdcompany.com/#booking-form"
 LOGO_URL = "http://cdn.mcauto-images-production.sendgrid.net/6e6226165269f28e/49a5a9a0-80f2-432d-9af0-972544bd432d/400x400.png"
 _pending_campaign = None
 
-def ask_campaign_topic(bot):
+async def ask_campaign_topic(bot):
+    """
+    ИСПРАВЛЕНО 20.09.2026: bot.send_message — асинхронная функция (coroutine)
+    в python-telegram-bot. Раньше её вызывали БЕЗ await — Python создавал
+    объект coroutine и тут же его отбрасывал, ничего реально не отправляя
+    (подтверждено RuntimeWarning в логах Railway: "coroutine 'ExtBot.
+    send_message' was never awaited"). Из-за этого еженедельное напоминание
+    о теме рассылки молча не доходило до владельца, хотя bot.py логировал
+    "вопрос о теме отправлен" как будто всё прошло успешно. Теперь функция
+    сама async и правильно ждёт отправку; вызывающий код в bot.py должен
+    делать `await ask_campaign_topic(bot)`, а не звать её синхронно.
+    """
     text = (
         "📧 *Время недельной рассылки!*\n\n"
         "Какую тему выбираем на эту неделю?\n\n"
@@ -31,7 +46,7 @@ def ask_campaign_topic(bot):
         "4️⃣ Своя идея — просто напиши\n\n"
         "_Можешь написать цифру или своими словами_"
     )
-    bot.send_message(chat_id=OWNER_CHAT_ID, text=text, parse_mode="Markdown")
+    await bot.send_message(chat_id=OWNER_CHAT_ID, text=text, parse_mode="Markdown")
 
 def handle_campaign_request(user_text: str, bot) -> None:
     bot.send_message(chat_id=OWNER_CHAT_ID, text="⏳ Генерирую баннер, подожди 30–60 секунд...")
