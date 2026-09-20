@@ -1372,7 +1372,7 @@ async def scheduled_anomaly_check(app):
                     ]
                     context_data["recent_changes"] = [
                         {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
-                         "applied_at": r["applied_at"].strftime("%d.%m")}
+                         "applied_at": r["applied_at"].strftime("%Y-%m-%d %H:%M")}
                         for r in _chg
                     ]
             except Exception as _e_am:
@@ -1976,6 +1976,38 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
                     current = kw.get("current_bid")
                     if current and abs(float(current) - float(new_bid)) < 0.01:
                         return True, f"Ставка уже ${current:.2f} — совпадает с предлагаемой"
+        # КОД-УРОВНЕВАЯ проверка правила "не менять ставку менее 7 дней назад" —
+        # не полагаемся только на то, что модель сама не положит такое действие
+        # в proposed_actions (уже наблюдали случай, когда текст карточки писал
+        # "не создаю карточку", а карточка всё равно создавалась).
+        kw_text = (action.get("keyword") or "").strip().lower()
+        if kw_text:
+            for chg in context_data.get("recent_changes", []):
+                if chg.get("type") != "update_bid":
+                    continue
+                chg_kw = (chg.get("keyword") or "").strip().lower()
+                chg_desc = (chg.get("description") or "").strip().lower()
+                if kw_text != chg_kw and kw_text not in chg_desc:
+                    continue
+                applied_raw = chg.get("applied_at")
+                if not applied_raw:
+                    continue
+                applied_dt = None
+                for _fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    try:
+                        applied_dt = datetime.strptime(applied_raw, _fmt)
+                        break
+                    except (ValueError, TypeError):
+                        continue
+                if not applied_dt:
+                    continue
+                days_since = (datetime.now() - applied_dt).total_seconds() / 86400
+                if days_since < 7:
+                    allowed_from = (applied_dt + timedelta(days=7)).strftime("%d.%m.%Y")
+                    return True, (
+                        f"Ставка по '{action.get('keyword')}' уже менялась {applied_dt.strftime('%d.%m.%Y')} "
+                        f"({days_since:.1f} дн. назад) — правило 7 дней разрешает менять не раньше {allowed_from}"
+                    )
     elif a_type == "update_final_url":
         rn = action.get("resource_name")
         new_url = action.get("new_url", "")
@@ -2685,7 +2717,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 context_data["recent_changes"] = [
                     {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
-                     "applied_at": r["applied_at"].strftime("%d.%m")}
+                     "applied_at": r["applied_at"].strftime("%Y-%m-%d %H:%M")}
                     for r in changes
                 ]
     except Exception as _e:
@@ -5052,7 +5084,7 @@ async def scheduled_campaign_audit(app):
                 ]
                 context_data["recent_changes"] = [
                     {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
-                     "applied_at": r["applied_at"].strftime("%d.%m")}
+                     "applied_at": r["applied_at"].strftime("%Y-%m-%d %H:%M")}
                     for r in _chg_audit
                 ]
         except Exception as _e_audit_mem:
