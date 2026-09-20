@@ -2002,6 +2002,55 @@ def _action_is_self_contradictory(action: dict) -> tuple:
     return False, ""
 
 
+def _collect_existing_negatives(context_data: dict) -> set:
+    """
+    Собирает тексты всех текущих минус-слов (campaign+ad_group уровня) из
+    context_data.
+    ИСПРАВЛЕН РЕАЛЬНЫЙ БАГ: раньше код искал ключ "negatives" прямо в
+    ТОП-уровневых значениях context_data (например, в context_data["negatives"]
+    самом по себе), но по факту он лежит на уровень глубже —
+    context_data["negatives"]["ads"]["negatives"] — так что проверка "negatives"
+    in v никогда не срабатывала. Плюс читалось несуществующее поле "text"
+    вместо реального "term" (см. ads_client.get_negative_keywords_list).
+    Из-за этого дедуп минус-слов не работал НИКОГДА — отсюда повторяющиеся
+    дубликаты карточек ('repair gizmo' x4 и т.п.) и сегодняшняя избыточная
+    карточка на уже заблокированный 'dishwasher service repair'.
+    """
+    existing = set()
+    for v in context_data.values():
+        if not isinstance(v, dict):
+            continue
+        candidates = [v] + [sub for sub in v.values() if isinstance(sub, dict)]
+        for cand in candidates:
+            negs = cand.get("negatives")
+            if isinstance(negs, list):
+                for neg in negs:
+                    text = (neg.get("term") or neg.get("text") or "").strip().lower()
+                    if text:
+                        existing.add(text)
+    return existing
+
+
+def _collect_currently_excluded_terms(context_data: dict) -> set:
+    """Тексты поисковых запросов с currently_excluded=true — запрос уже
+    реально заблокирован (возможно, другим, более широким минус-словом),
+    даже если его точного текста нет в списке негативов."""
+    excluded = set()
+    for v in context_data.values():
+        if not isinstance(v, dict):
+            continue
+        candidates = [v] + [sub for sub in v.values() if isinstance(sub, dict)]
+        for cand in candidates:
+            terms = cand.get("terms")
+            if isinstance(terms, list):
+                for t in terms:
+                    if t.get("currently_excluded"):
+                        text = (t.get("term") or "").strip().lower()
+                        if text:
+                            excluded.add(text)
+    return excluded
+
+
 def _action_already_applied(action: dict, context_data: dict) -> tuple:
     a_type = action.get("type", "")
     keywords_data = []
@@ -2076,32 +2125,30 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
             if len(enabled) == len(kws):
                 return True, f"Все {len(kws)} ключей уже ENABLED"
     elif a_type in ("remove_negative_keyword", "remove_negative_keywords"):
-        # Собираем текущие campaign-level негативы из context_data
-        existing_negatives = set()
-        for v in context_data.values():
-            if isinstance(v, dict) and "negatives" in v:
-                for neg in v["negatives"]:
-                    existing_negatives.add((neg.get("text", "").strip().lower(), neg.get("match_type", "")))
+        existing_negatives = _collect_existing_negatives(context_data)
         target = (action.get("keyword_text", "") or action.get("keyword", "")).strip().lower()
-        if target and target not in {t for t, _ in existing_negatives}:
+        if target and target not in existing_negatives:
             return True, f"Минус-слово '{target}' уже отсутствует в списке негативов — нечего удалять"
     elif a_type in ("add_negative_keywords", "add_negative_keyword"):
-        existing_negatives = set()
-        for v in context_data.values():
-            if isinstance(v, dict) and "negatives" in v:
-                for neg in v["negatives"]:
-                    existing_negatives.add(neg.get("text", "").strip().lower())
+        existing_negatives = _collect_existing_negatives(context_data)
+        excluded_terms = _collect_currently_excluded_terms(context_data)
         new_negs = action.get("negative_keywords", []) or action.get("keywords", [])
         if new_negs:
             new_texts = []
             for n in new_negs:
                 if isinstance(n, dict):
-                    new_texts.append(n.get("text", "").strip().lower())
+                    new_texts.append((n.get("text") or n.get("term") or "").strip().lower())
                 else:
                     new_texts.append(str(n).strip().lower())
-            already_there = [t for t in new_texts if t in existing_negatives]
+            already_there = [
+                t for t in new_texts
+                if t and (t in existing_negatives or t in excluded_terms)
+            ]
             if new_texts and len(already_there) == len(new_texts):
-                return True, f"Минус-слов(о) {already_there} уже в списке негативов"
+                return True, (
+                    f"Минус-слов(о) {already_there} уже заблокировано "
+                    f"(в списке негативов или запрос уже currently_excluded=true)"
+                )
     elif a_type in ("update_headlines", "update_ad_headlines"):
         # Проверяем через recent_changes — было ли изменение заголовков этой группы за последние 14 дней
         recent = context_data.get("recent_changes", [])
