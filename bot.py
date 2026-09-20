@@ -5095,7 +5095,7 @@ async def scheduled_weekly_email(app):
     if _email_agent_available:
         try:
             _email_agent.OWNER_CHAT_ID = str(config.OWNER_CHAT_ID)
-            _email_agent.ask_campaign_topic(app.bot)
+            await _email_agent.ask_campaign_topic(app.bot)
             log.info("scheduled_weekly_email: вопрос о теме отправлен")
         except Exception as e:
             log.error(f"email_agent.ask_campaign_topic error: {e}")
