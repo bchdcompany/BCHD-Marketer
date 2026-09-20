@@ -5006,6 +5006,43 @@ async def scheduled_campaign_audit(app):
         date_to = today.strftime("%Y-%m-%d")
 
         context_data = {"_period": {"date_from": date_from, "date_to": date_to}}
+        # Загружаем agent_memory, rejected_actions и recent_changes — без этого
+        # аудит не видит недавние решения (например, "подождать 7 дней") и
+        # заново предлагает уже отклонённые/отменённые действия.
+        try:
+            _pool_audit = await _get_db_pool()
+            if _pool_audit:
+                async with _pool_audit.acquire() as _conn_audit:
+                    _mem_audit = await _conn_audit.fetch(
+                        "SELECT category, key, value FROM agent_memory ORDER BY category, key"
+                    )
+                    _rej_audit = await _conn_audit.fetch(
+                        "SELECT action_type, description, keyword, rejected_at, retry_after "
+                        "FROM rejected_actions WHERE retry_after > NOW() ORDER BY rejected_at DESC LIMIT 20"
+                    )
+                    _chg_audit = await _conn_audit.fetch(
+                        "SELECT action_type, description, keyword, applied_at "
+                        "FROM ads_changes_log ORDER BY applied_at DESC LIMIT 15"
+                    )
+                if _mem_audit:
+                    _am_audit = {}
+                    for _r in _mem_audit:
+                        if _r["category"] not in _am_audit:
+                            _am_audit[_r["category"]] = {}
+                        _am_audit[_r["category"]][_r["key"]] = _r["value"]
+                    context_data["agent_memory"] = _am_audit
+                context_data["rejected_actions"] = [
+                    {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                     "rejected_at": r["rejected_at"].strftime("%d.%m"), "retry_after": r["retry_after"].strftime("%d.%m")}
+                    for r in _rej_audit
+                ]
+                context_data["recent_changes"] = [
+                    {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                     "applied_at": r["applied_at"].strftime("%d.%m")}
+                    for r in _chg_audit
+                ]
+        except Exception as _e_audit_mem:
+            log.warning(f"campaign_audit: ошибка загрузки agent_memory/rejected/changes: {_e_audit_mem}")
         context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
             date_from=date_from, date_to=date_to
         )
@@ -5817,8 +5854,6 @@ def main():
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.add_job(scheduled_anomaly_check, "interval", hours=4, args=[app])
-    scheduler.add_job(scheduled_campaign_audit, "cron",
-                      day_of_week="mon", hour=9, minute=55, args=[app])
     scheduler.add_job(scheduled_weekly_strategy, "cron", day_of_week="mon", hour=8, minute=45, args=[app])
     if _gbp_available and globals().get("gbp_client_inst"):
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
