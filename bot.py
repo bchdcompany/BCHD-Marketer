@@ -433,9 +433,11 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 chat_id=config.OWNER_CHAT_ID,
                 photo=_io.BytesIO(screenshot),
                 caption=(
-                    "📧 *Превью письма*\n\n"
-                    "Именно так клиенты увидят письмо в почте.\n\n"
-                    "Напиши *отправляй* или скажи что исправить."
+                    "📧 *Превью письма (идея для рассылки)*\n\n"
+                    "Именно так может выглядеть письмо.\n\n"
+                    "Marketer Agent сам рассылки не отправляет — если идея "
+                    "нравится, запусти реальную отправку вручную через "
+                    "техагента (bchd-agent)."
                 ),
                 parse_mode="Markdown"
             )
@@ -452,9 +454,10 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         chat_id=config.OWNER_CHAT_ID,
                         photo=_io.BytesIO(img_resp.content),
                         caption=(
-                            "🖼 *Превью фона письма*\n\n"
-                            "Клиенты получат HTML письмо с логотипом, текстом и кнопками.\n\n"
-                            "Напиши *отправляй* или скажи что исправить."
+                            "🖼 *Превью фона письма (идея для рассылки)*\n\n"
+                            "Так может выглядеть HTML-письмо с логотипом, текстом и кнопками.\n\n"
+                            "Marketer Agent сам рассылки не отправляет — запусти отправку "
+                            "вручную через техагента (bchd-agent)."
                         ),
                         parse_mode="Markdown"
                     )
@@ -462,7 +465,7 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     log.warning(f"Не удалось отправить превью: {img_e}")
                     await ctx.bot.send_message(
                         chat_id=config.OWNER_CHAT_ID,
-                        text="📧 Письмо готово. Напиши *отправляй* чтобы разослать.",
+                        text="📧 Идея для рассылки готова. Отправку сделай вручную через техагента (bchd-agent).",
                         parse_mode="Markdown"
                     )
 
@@ -473,86 +476,36 @@ async def cmd_email(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_sendemail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/sendemail — отправить последний одобренный баннер по базе клиентов."""
+    """
+    /sendemail — ОТКЛЮЧЕНО 20.09.2026 по решению владельца: Marketer Agent
+    больше не отправляет email-рассылки сам (после инцидента с
+    неподставившимся [First Name] у части получателей). Marketer Agent
+    может только предложить идею/тему и сгенерировать превью (/email) —
+    реальную отправку владелец всегда запускает сам вручную через
+    техагента (bchd-agent).
+    """
     if not _is_owner(update):
         return
-    if not _email_agent_available:
-        await update.message.reply_text("❌ email_agent не установлен")
-        return
-    if not _email_agent.has_pending_campaign():
-        await update.message.reply_text("❌ Нет готового баннера. Создай через /email")
-        return
-    msg = await update.message.reply_text("📤 Отправляю рассылку...")
-    try:
-        import concurrent.futures
-        loop = asyncio.get_event_loop()
-        pending = _email_agent._pending_campaign
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            sent = await loop.run_in_executor(
-                pool,
-                lambda: _email_agent._send_via_sendgrid(
-                    pending["html"],
-                    pending["subject"],
-                    pending.get("preview_text", ""),
-                )
-            )
-        _email_agent._pending_campaign = None
-        result_text = "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем"
-        await _safe_edit(msg, result_text)
-    except Exception as e:
-        log.error(f"sendemail error: {e}", exc_info=True)
-        await _safe_edit(msg, "❌ Ошибка отправки: " + str(e))
+    await update.message.reply_text(
+        "ℹ️ Marketer Agent больше не отправляет рассылки сам.\n\n"
+        "Используй /email чтобы получить идею/превью письма, а саму "
+        "отправку запускай вручную через техагента (bchd-agent)."
+    )
 
 
 async def cmd_emailtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """/emailtest — отправить тестовое письмо только на you@bchdcompany.com."""
+    """
+    /emailtest — ОТКЛЮЧЕНО 20.09.2026 по решению владельца, вместе со
+    /sendemail: Marketer Agent больше не отправляет никакие письма сам
+    (в т.ч. тестовые), только генерирует идею/превью через /email.
+    """
     if not _is_owner(update):
         return
-    if not _email_agent_available:
-        await update.message.reply_text("❌ email_agent не установлен")
-        return
-    if not _email_agent.has_pending_campaign():
-        await update.message.reply_text("❌ Нет готового баннера. Создай через /email")
-        return
-    msg = await update.message.reply_text("🧪 Отправляю тестовое письмо на you@bchdcompany.com...")
-    try:
-        import concurrent.futures, requests
-        loop = asyncio.get_event_loop()
-        pending = _email_agent._pending_campaign
-
-        def _send_test():
-            key = os.environ.get("SENDGRID_API_KEY", "")
-            payload = {
-                "personalizations": [{"to": [{"email": "you@bchdcompany.com", "name": "Chingis"}]}],
-                "from": {"email": "you@bchdcompany.com", "name": "BCHD Appliance Repair"},
-                "subject": "[TEST] " + pending["subject"],
-                "content": [{"type": "text/html", "value": pending["html"]}],
-                "tracking_settings": {
-                    "click_tracking": {"enable": True},
-                    "open_tracking": {"enable": True}
-                }
-            }
-            resp = requests.post(
-                "https://api.sendgrid.com/v3/mail/send",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=payload, timeout=30
-            )
-            return resp.status_code
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            status = await loop.run_in_executor(pool, _send_test)
-
-        if status == 202:
-            await _safe_edit(msg,
-                "✅ Тестовое письмо отправлено на you@bchdcompany.com\n\n"
-                "Проверь почту — если всё хорошо, напиши *отправляй* для рассылки по всей базе.",
-                parse_mode="Markdown"
-            )
-        else:
-            await _safe_edit(msg, f"❌ Ошибка SendGrid: {status}")
-    except Exception as e:
-        log.error(f"emailtest error: {e}", exc_info=True)
-        await _safe_edit(msg, f"❌ Ошибка: {e}")
+    await update.message.reply_text(
+        "ℹ️ Marketer Agent больше не отправляет письма сам, включая тестовые.\n\n"
+        "Используй /email чтобы получить идею/превью, а тестовую и реальную "
+        "отправку делай вручную через техагента (bchd-agent)."
+    )
 
 
 async def cmd_changes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2302,7 +2255,11 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await cmd_email(update, ctx)
         return
 
-    # Email agent: подтверждение или запрос рассылки — ПРИОРИТЕТ над обычным чатом
+    # Email agent: подтверждение рассылки — ОТКЛЮЧЕНО 20.09.2026 по решению
+    # владельца (после инцидента с неподставившимся [First Name] у части
+    # получателей). Marketer Agent больше НЕ отправляет письма сам ни по
+    # текстовому подтверждению, ни по карточке — только предлагает идею
+    # через /email. Реальная отправка — вручную через техагента (bchd-agent).
     if _email_agent_available:
         text_lower = question.lower().strip()
         confirm_kw = [
@@ -2311,36 +2268,21 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "отправить рассылку", "запускай рассылку", "запускай"
         ]
         negation_kw = ["не отправляй", "не отправлять", "не надо отправлять", "don't send", "not yet", "не сейчас", "не отправь", "стоп", "отмени", "не надо"]
-        campaign_kw = ["рассылк", "баннер для рассылки", "письмо клиент", "email кампани"]
 
         _has_negation = any(neg in text_lower for neg in negation_kw)
         is_confirm = any(kw in text_lower for kw in confirm_kw) and not _has_negation
 
         if is_confirm and _email_agent.has_pending_campaign():
-            msg = await update.message.reply_text("📤 Отправляю рассылку...")
-            try:
-                import concurrent.futures
-                loop = asyncio.get_event_loop()
-                email_pending_data = _email_agent._pending_campaign
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    sent = await loop.run_in_executor(
-                        pool,
-                        lambda: _email_agent._send_via_sendgrid(
-                            email_pending_data["html"],
-                            email_pending_data["subject"],
-                            email_pending_data.get("preview_text", ""),
-                        )
-                    )
-                _email_agent._pending_campaign = None
-                await _safe_edit(msg, "✅ Рассылка отправлена! Доставлено: " + str(sent) + " писем")
-            except Exception as e:
-                log.error(f"email send error: {e}", exc_info=True)
-                await _safe_edit(msg, "❌ Ошибка отправки: " + str(e))
+            await update.message.reply_text(
+                "ℹ️ Marketer Agent больше не отправляет рассылки сам.\n\n"
+                "Идея/превью уже готовы (см. выше) — саму отправку запусти "
+                "вручную через техагента (bchd-agent)."
+            )
             return
 
         elif is_confirm and not _email_agent.has_pending_campaign():
             await update.message.reply_text(
-                "❌ Нет готового баннера. Сначала создай через /email"
+                "❌ Нет готовой идеи для рассылки. Сначала создай через /email"
             )
             return
 
@@ -3662,23 +3604,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Специальная обработка GBP действий
             # Email рассылка
             if action.get("type") == "send_email_campaign":
-                try:
-                    await _safe_edit(query, f"📧 Отправляю рассылку по {action.get('total_clients', '?')} клиентам...")
-                    result = await _execute_email_campaign(action)
-                    if result.get("success"):
-                        await _safe_edit(query,
-                            f"✅ *Рассылка завершена*\n\n"
-                            f"• Отправлено: {result.get('sent', 0)}\n"
-                            f"• Ошибок: {result.get('failed', 0)}\n"
-                            f"• Всего получателей: {result.get('total', 0)}",
-                            parse_mode="Markdown"
-                        )
-                    else:
-                        await _safe_edit(query, f"❌ Ошибка рассылки: {result.get('error')}")
-                    return
-                except Exception as e:
-                    await _safe_edit(query, f"❌ Ошибка: {e}")
-                    return
+                # ОТКЛЮЧЕНО 20.09.2026 по решению владельца: Marketer Agent
+                # больше не отправляет рассылки сам (_execute_email_campaign
+                # реально слал письма по всей базе клиентов через
+                # email_sender.send_campaign — теперь этот путь не вызывается).
+                # Карточка лишь показывает готовый текст; реальную отправку
+                # владелец запускает вручную через техагента (bchd-agent).
+                _subj = action.get("subject", "")
+                _body = action.get("body_text", "") or action.get("offer", "")
+                await _safe_edit(query,
+                    f"📝 *Идея для рассылки готова — отправь через техагента*\n\n"
+                    f"Subject: {_subj}\n\n"
+                    f"{_body}\n\n"
+                    f"ℹ️ Marketer Agent сам больше не отправляет рассылки. "
+                    f"Скопируй текст выше и запусти реальную отправку вручную "
+                    f"через техагента (bchd-agent).",
+                    parse_mode="Markdown"
+                )
+                return
 
             _gbp_action_types = ("reply_to_review", "update_gbp_description",
                                   "update_gbp_categories", "create_gbp_post")
