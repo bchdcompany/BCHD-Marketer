@@ -4730,6 +4730,7 @@ async def _build_weekly_strategy() -> str:
         },
         "strategy_context": strategy_ctx,
         "thumbtack_budget": config.THUMBTACK_WEEKLY_BUDGET,
+        "search_cpa_target": 80,
     }
     try:
         prompt = (
@@ -4738,6 +4739,12 @@ async def _build_weekly_strategy() -> str:
             "Формат: 3-5 конкретных приоритетов с обоснованием. "
             "Учитывай историю принятых решений. "
             "Не повторяй уже выполненные действия. "
+            "КРИТИЧЕСКИ ВАЖНО: целевой CPA для Search-кампаний = РОВНО $80 "
+            "(см. context_data['search_cpa_target'] и системные правила). "
+            "Никогда не указывай другой диапазон или цифру для этого таргета "
+            "(например, '$35-55') — это запрещено, используй именно $80. "
+            "Если ссылаешься на другие числовые показатели (расход, конверсии, "
+            "CPA по факту) — бери их ТОЛЬКО из переданных данных, не изобретай. "
             "Отвечай на русском."
         )
         result = await ai_analyst.chat_action(prompt, context, "strategy_plan")
