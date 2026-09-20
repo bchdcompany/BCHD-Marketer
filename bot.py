@@ -4732,6 +4732,37 @@ async def _build_weekly_strategy() -> str:
         "thumbtack_budget": config.THUMBTACK_WEEKLY_BUDGET,
         "search_cpa_target": 80,
     }
+    # Загружаем agent_memory и recent_changes — без этого недельная стратегия
+    # не видит уже принятые решения (например, "07.09 переключили LSA на
+    # ручной биддинг $35/лид, чтобы контролировать перерасход") и может
+    # предложить действие, которое им противоречит (например, поднять
+    # бюджет LSA, не упомянув, что расход уже специально ограничивается
+    # вручную). Тот же паттерн, что был исправлен в scheduled_campaign_audit.
+    try:
+        _pool_strat = await _get_db_pool()
+        if _pool_strat:
+            async with _pool_strat.acquire() as _conn_strat:
+                _mem_strat = await _conn_strat.fetch(
+                    "SELECT category, key, value FROM agent_memory ORDER BY category, key"
+                )
+                _chg_strat = await _conn_strat.fetch(
+                    "SELECT action_type, description, keyword, applied_at "
+                    "FROM ads_changes_log ORDER BY applied_at DESC LIMIT 20"
+                )
+            if _mem_strat:
+                _am_strat = {}
+                for _r in _mem_strat:
+                    if _r["category"] not in _am_strat:
+                        _am_strat[_r["category"]] = {}
+                    _am_strat[_r["category"]][_r["key"]] = _r["value"]
+                context["agent_memory"] = _am_strat
+            context["recent_changes"] = [
+                {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
+                 "applied_at": r["applied_at"].strftime("%Y-%m-%d %H:%M")}
+                for r in _chg_strat
+            ]
+    except Exception as _e_strat_mem:
+        log.warning(f"weekly_strategy: ошибка загрузки agent_memory/recent_changes: {_e_strat_mem}")
     try:
         prompt = (
             "На основе данных за прошлую неделю составь КОНКРЕТНЫЙ стратегический план "
@@ -4745,6 +4776,13 @@ async def _build_weekly_strategy() -> str:
             "(например, '$35-55') — это запрещено, используй именно $80. "
             "Если ссылаешься на другие числовые показатели (расход, конверсии, "
             "CPA по факту) — бери их ТОЛЬКО из переданных данных, не изобретай. "
+            "ПЕРЕД любой рекомендацией про LSA (бюджет, биддинг) — обязательно "
+            "проверь context_data['agent_memory'] и context_data['recent_changes'] "
+            "на предмет недавних решений по LSA (например, переключение стратегии "
+            "биддинга). Если такое решение есть — явно упомяни его в обосновании "
+            "и учти его цель (например, если биддинг переключили на ручной, чтобы "
+            "ограничить перерасход, не предлагай просто поднять бюджет, не разобрав "
+            "эту связь). "
             "Отвечай на русском."
         )
         result = await ai_analyst.chat_action(prompt, context, "strategy_plan")
