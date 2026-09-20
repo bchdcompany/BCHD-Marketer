@@ -1979,6 +1979,113 @@ _SELF_CONTRADICTION_PHRASES = [
 ]
 
 
+def _tokenize_simple(text: str) -> set:
+    import re as _re_tok
+    return set(_re_tok.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", (text or "").lower()))
+
+
+def _strip_ungrounded_negative_items(action: dict, context_data: dict) -> None:
+    """
+    Для add_negative_keywords: убирает термины, чьи слова НЕ являются
+    подмножеством ни одного реального поискового запроса/ключа в
+    context_data этого запроса.
+    Обнаружено 20.09.2026: карточка предложила заблокировать 'appliance
+    repair service near me' с обоснованием "слишком широкий запрос,
+    высокая конкуренция" — БЕЗ единой цифры показов/кликов/расхода, то
+    есть термин был правдоподобно придуман по аналогии, а не взят из
+    данных (get_search_terms отдаёт только термины с показами > 5, так
+    что любой реально проблемный термин там обязан быть).
+    Проверка "подмножество слов" — та же логика, которую сам Google Ads
+    использует для BROAD-match минус-слов (см. ads_client.get_search_terms/
+    _tokenize_for_match), поэтому легитимные широкие категорийные
+    минус-слова (например, 'microwave' при реальном запросе 'microwave
+    repair near me') не пострадают — застрахованы только термины, не
+    имеющие ничего общего ни с одним реальным запросом.
+    """
+    if action.get("type") not in ("add_negative_keywords", "add_negative_keyword"):
+        return
+    real_token_sets = []
+    for v in context_data.values():
+        if not isinstance(v, dict):
+            continue
+        candidates = [v] + [sub for sub in v.values() if isinstance(sub, dict)]
+        for cand in candidates:
+            terms = cand.get("terms")
+            if isinstance(terms, list):
+                for t in terms:
+                    txt = t.get("term")
+                    if txt:
+                        real_token_sets.append(_tokenize_simple(txt))
+            kws = cand.get("keywords")
+            if isinstance(kws, list):
+                for k in kws:
+                    if isinstance(k, dict):
+                        txt = k.get("keyword") or k.get("text")
+                        if txt:
+                            real_token_sets.append(_tokenize_simple(txt))
+    if not real_token_sets:
+        # Нет данных для сверки в этом запросе (например, search_terms не
+        # запрашивались) — не блокируем вслепую, это не наш случай.
+        return
+    for field in ("negative_keywords", "keywords"):
+        items = action.get(field)
+        if not isinstance(items, list):
+            continue
+        kept = []
+        for item in items:
+            text = item.get("text") if isinstance(item, dict) else str(item)
+            cand_tokens = _tokenize_simple(text)
+            if not cand_tokens:
+                kept.append(item)
+                continue
+            grounded = any(cand_tokens.issubset(real_tokens) for real_tokens in real_token_sets)
+            if not grounded:
+                log.warning(f"_strip_ungrounded_negative_items: убран термин без подтверждения в данных: {text}")
+                continue
+            kept.append(item)
+        action[field] = kept
+
+
+_NEGATIVE_ITEM_KEEP_SIGNALS = [
+    "не исключать", "не исключ", "не блокировать", "не блокир",
+    "не добавлять в минус", "не добавлять", "оставить", "keep",
+]
+
+
+def _strip_contradictory_negative_items(action: dict) -> None:
+    """
+    Для add_negative_keywords/add_negative_keyword: убирает из СПИСКА
+    отдельные минус-слова, чья же собственная заметка говорит их не
+    добавлять/оставить/не исключать. Модель периодически кладёт такие
+    "keep-заметки" прямо ВНУТРЬ списка предлагаемых минус-слов (наблюдали
+    несколько раз за сессию: 'dishwasher repairman' — "оставить, не
+    блокировать", 'local dishwasher repairman' — "НЕ исключать — оставить")
+    — если такой пункт останется в списке и карточку одобрят, слово реально
+    добавится в минус, что прямо противоположно написанному. Точечно
+    вычищаем такие пункты, а не блокируем всю карточку — если в ней есть и
+    нормальные пункты, они дойдут до одобрения. Если после чистки список
+    станет пустым, _validate_action сам отклонит карточку как невалидную.
+    """
+    if action.get("type") not in ("add_negative_keywords", "add_negative_keyword"):
+        return
+    import json as _json_item
+    for field in ("negative_keywords", "keywords"):
+        items = action.get(field)
+        if not isinstance(items, list):
+            continue
+        kept = []
+        for item in items:
+            try:
+                blob = _json_item.dumps(item, ensure_ascii=False).lower() if isinstance(item, dict) else str(item).lower()
+            except Exception:
+                blob = str(item).lower()
+            if any(sig in blob for sig in _NEGATIVE_ITEM_KEEP_SIGNALS):
+                log.warning(f"_strip_contradictory_negative_items: убран пункт с keep-сигналом: {str(item)[:120]}")
+                continue
+            kept.append(item)
+        action[field] = kept
+
+
 def _action_is_self_contradictory(action: dict) -> tuple:
     """
     Код-уровневый предохранитель от карточек, которые сами себе противоречат:
@@ -3013,6 +3120,9 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action.setdefault("data_summary", action.get("reasoning", ""))
             action.setdefault("expected_impact", "")
             action.setdefault("requires_approval", True)
+
+            _strip_contradictory_negative_items(action)
+            _strip_ungrounded_negative_items(action, context_data)
 
             if not _action_ids_verified(action, context_data):
                 log.warning(f"Действие заблокировано — ID не найдены в свежих данных: type={action.get('type')} keyword={action.get('keyword')} rn={action.get('resource_name','')[:50]}")
@@ -5252,6 +5362,8 @@ async def scheduled_campaign_audit(app):
             try:
                 action.setdefault("account", "ads")
                 action.setdefault("requires_approval", True)
+                _strip_contradictory_negative_items(action)
+                _strip_ungrounded_negative_items(action, context_data)
                 if not _action_ids_verified(action, context_data):
                     log.warning(f"campaign_audit: ID не верифицирован: {action}")
                     continue
