@@ -2245,6 +2245,18 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.error(f"Reminder intercept error: {_re_err}", exc_info=True)
             await update.message.reply_text(f"\u274c Не удалось разобрать напоминание: {_re_err}")
         return
+    # Перехват просьбы показать/прислать еженедельное напоминание о теме
+    # рассылки прямо сейчас, простыми словами (ДОБАВЛЕНО 20.09.2026) —
+    # без этого пришлось бы ждать до воскресенья 12:00, когда оно приходит
+    # само. Владелец не должен помнить никакую команду для этого.
+    if any(w in question.lower() for w in [
+        "напоминание о рассылке", "напоминание про рассылку",
+        "покажи напоминание", "пришли напоминание про рассылку",
+        "как выглядит напоминание о рассылке",
+    ]):
+        await scheduled_weekly_email(ctx.application)
+        return
+
     # Перехват запроса на рассылку — ДО всего остального
     _q_email = question.lower()
     if any(w in _q_email for w in ["подготовь баннер для рассылки", "сделай рассылку клиентам", "создай рассылку", "баннер для рассылки"]):
@@ -5083,6 +5095,7 @@ async def scheduled_weekly_email(app):
     else:
         log.warning("scheduled_weekly_email: email_agent недоступен, пропускаю")
 
+
 async def _execute_email_campaign(action: dict) -> dict:
     """Выполняет email рассылку после одобрения."""
     if not _email_available:
@@ -5759,7 +5772,10 @@ def main():
     )
     scheduler.add_job(scheduled_morning_report,   "cron", hour=8,  minute=0,  args=[app])
     scheduler.add_job(scheduled_gbp_post_reminder, "interval", days=3, args=[app])
-    scheduler.add_job(scheduled_email_reminder, "cron", day_of_week="wed", hour=11, minute=0, args=[app])
+    # ОТКЛЮЧЕНО 20.09.2026 по решению владельца: дублировало воскресное
+    # scheduled_weekly_email (12:00) — оставлено только одно напоминание
+    # в неделю, по воскресеньям.
+    # scheduler.add_job(scheduled_email_reminder, "cron", day_of_week="wed", hour=11, minute=0, args=[app])
     scheduler.add_job(scheduled_social_media_reminder, "cron", day_of_week="mon,wed,fri", hour=15, minute=0, args=[app])
     scheduler.add_job(scheduled_holiday_banner_reminder, "cron", hour=9, minute=30, args=[app])
     scheduler.add_job(scheduled_lsa_daily_numbers, "cron", hour=20, minute=30, args=[app])
