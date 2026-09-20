@@ -5084,6 +5084,13 @@ async def scheduled_campaign_audit(app):
 async def scheduled_weekly_email(app):
     """
     Каждое воскресенье в 12:00 NY — спрашивает тему рассылки через email_agent.
+
+    ИСПРАВЛЕНО 20.09.2026: раньше при _email_agent_available=False (модуль
+    email_agent не импортировался при старте) эта функция ТОЛЬКО писала
+    предупреждение в лог и ничего не отправляла владельцу в Telegram —
+    напоминание могло молча не приходить неделями, и никто бы не заметил,
+    кроме как по логам Railway. Теперь при недоступности email_agent
+    владелец получает явное сообщение об этом в чат, а не тишину.
     """
     if _email_agent_available:
         try:
@@ -5092,8 +5099,26 @@ async def scheduled_weekly_email(app):
             log.info("scheduled_weekly_email: вопрос о теме отправлен")
         except Exception as e:
             log.error(f"email_agent.ask_campaign_topic error: {e}")
+            try:
+                await app.bot.send_message(
+                    chat_id=config.OWNER_CHAT_ID,
+                    text=f"⚠️ Не удалось отправить напоминание о теме рассылки: {e}",
+                )
+            except Exception:
+                pass
     else:
         log.warning("scheduled_weekly_email: email_agent недоступен, пропускаю")
+        try:
+            await app.bot.send_message(
+                chat_id=config.OWNER_CHAT_ID,
+                text=(
+                    "⚠️ Напоминание о теме рассылки не отправлено: модуль email_agent "
+                    "недоступен (не импортировался при запуске бота — проверь зависимости "
+                    "email_agent.py в Railway logs)."
+                ),
+            )
+        except Exception:
+            pass
 
 
 async def _execute_email_campaign(action: dict) -> dict:
