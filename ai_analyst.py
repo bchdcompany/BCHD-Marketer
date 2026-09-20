@@ -37,6 +37,73 @@ import anthropic
 log = logging.getLogger(__name__)
 
 
+def _tok_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _check_search_term_keyword_consistency(context_data: dict) -> list:
+    """
+    Обнаружено 20.09.2026: в одном ответе фигурировали ключевое слово
+    'appliance repair Brooklyn' с 4 кликами/$74.69 (из context_data[...]["keywords"])
+    и ПОИСКОВЫЙ ЗАПРОС 'appliance repair brooklyn' (тот же текст без учёта
+    регистра) с 5 кликами/$40.75 (из context_data[...]["terms"]) — то есть
+    у одной и той же фразы клики по search term ОКАЗАЛИСЬ БОЛЬШЕ кликов по
+    родительскому ключу, что математически невозможно (search term — это
+    подмножество трафика ключа). Модель не сверяла эти два среза данных
+    между собой и подала оба числа как факт.
+    Эта функция сверяет keywords vs terms по нормализованному тексту и
+    возвращает список предупреждений для явной передачи модели, чтобы она
+    не выдавала внутренне противоречивые цифры за надёжный факт.
+    """
+    warnings = []
+    kw_stats = {}
+    for v in context_data.values():
+        if not isinstance(v, dict):
+            continue
+        candidates = [v] + [sub for sub in v.values() if isinstance(sub, dict)]
+        for cand in candidates:
+            kws = cand.get("keywords")
+            if isinstance(kws, list):
+                for k in kws:
+                    if not isinstance(k, dict):
+                        continue
+                    txt = _tok_norm(k.get("keyword") or k.get("text"))
+                    if not txt:
+                        continue
+                    clicks = k.get("clicks")
+                    cost = k.get("cost")
+                    if txt not in kw_stats:
+                        kw_stats[txt] = {"clicks": clicks, "cost": cost}
+    for v in context_data.values():
+        if not isinstance(v, dict):
+            continue
+        candidates = [v] + [sub for sub in v.values() if isinstance(sub, dict)]
+        for cand in candidates:
+            terms = cand.get("terms")
+            if isinstance(terms, list):
+                for t in terms:
+                    if not isinstance(t, dict):
+                        continue
+                    txt = _tok_norm(t.get("term"))
+                    if not txt or txt not in kw_stats:
+                        continue
+                    kw = kw_stats[txt]
+                    t_clicks, k_clicks = t.get("clicks"), kw.get("clicks")
+                    t_cost, k_cost = t.get("cost"), kw.get("cost")
+                    if isinstance(t_clicks, (int, float)) and isinstance(k_clicks, (int, float)) and t_clicks > k_clicks:
+                        warnings.append(
+                            f"'{txt}': поисковый запрос показывает {t_clicks} кликов, "
+                            f"но родительское ключевое слово с тем же текстом — только {k_clicks} "
+                            f"кликов суммарно (запрос — подмножество ключа, больше кликов быть не может)"
+                        )
+                    elif isinstance(t_cost, (int, float)) and isinstance(k_cost, (int, float)) and t_cost > k_cost * 1.05:
+                        warnings.append(
+                            f"'{txt}': расход по поисковому запросу (${t_cost}) превышает расход "
+                            f"по родительскому ключевому слову (${k_cost}) — данные внутренне противоречивы"
+                        )
+    return warnings
+
+
 class AIAnalyst:
     """Использует Claude для глубокого анализа данных Google Ads"""
 
@@ -1149,12 +1216,32 @@ summary типа "Все ключи показывают CTR выше порог
     async def chat_action(self, question: str, context_data: dict, action_type: str, history: list = None) -> dict:
         period_info = context_data.get("_period", {})
         period_label = f"{period_info.get('date_from', '?')} — {period_info.get('date_to', '?')}"
+        try:
+            _consistency_warnings = _check_search_term_keyword_consistency(context_data)
+        except Exception as _e_cons:
+            _consistency_warnings = []
+            log.warning(f"chat_action: ошибка проверки согласованности keywords/terms: {_e_cons}")
+        consistency_block = ""
+        if _consistency_warnings:
+            _warn_lines = "\n".join(f"- {w}" for w in _consistency_warnings)
+            consistency_block = f"""
+
+⚠️ ОБНАРУЖЕНА ВНУТРЕННЯЯ НЕСОГЛАСОВАННОСТЬ В ДАННЫХ ЭТОГО ЗАПРОСА:
+{_warn_lines}
+Это значит, что как минимум одно из этих чисел ненадёжно (расхождение между
+срезом по ключевым словам и срезом по поисковым запросам). ЗАПРЕЩЕНО подавать
+оба числа как достоверный факт или строить на них вывод/действие. Вместо
+этого либо явно напиши в reply, что по этим конкретным цифрам есть
+несогласованность в данных и точный вывод сделать нельзя, либо используй
+только то число из пары, которое совпадает с других подтверждающим источником
+в context_data, если такой есть."""
         prompt = f"""
 Вот актуальные данные за период {period_label} (см. context_data["_period"]
 ниже для точных границ — используй ИМЕННО эти даты, если упоминаешь период
 в ответе; НЕ пиши "последние 30 дней", если реальный период другой):
 
 {json.dumps(context_data, ensure_ascii=False, indent=2)}
+{consistency_block}
 
 Запрос от владельца бизнеса: {question}
 
