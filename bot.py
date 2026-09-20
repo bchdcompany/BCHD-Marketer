@@ -702,6 +702,20 @@ async def cmd_audit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_auditnow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ команда для ручного тестового запуска еженедельного
+    проактивного аудита (scheduled_campaign_audit), не дожидаясь понедельника
+    09:55 — добавлена для проверки фикса с agent_memory/rejected_actions/
+    recent_changes. Можно удалить после тестирования."""
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+    await update.message.reply_text("🔍 Запускаю тестовый прогон еженедельного аудита кампании (scheduled_campaign_audit)...")
+    await scheduled_campaign_audit(ctx.application)
+
+
 async def cmd_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -5760,6 +5774,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("audit", cmd_audit))
+    app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("keywords", cmd_keywords))
     app.add_handler(CommandHandler("negatives", cmd_negatives))
