@@ -5057,6 +5057,15 @@ async def scheduled_campaign_audit(app):
                 ]
         except Exception as _e_audit_mem:
             log.warning(f"campaign_audit: ошибка загрузки agent_memory/rejected/changes: {_e_audit_mem}")
+        # Загружаем стратегический контекст (тот же, что использует
+        # scheduled_weekly_strategy по понедельникам в 08:45, за 1ч10мин до
+        # этого аудита) — чтобы аудит предлагал карточки, согласованные с
+        # уже утверждённым недельным планом, а не противоречил ему.
+        if strategy_memory:
+            try:
+                context_data["strategy_context"] = await strategy_memory.build_context_for_agent()
+            except Exception as _e_audit_strat:
+                log.warning(f"campaign_audit: ошибка загрузки strategy_context: {_e_audit_strat}")
         context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary(
             date_from=date_from, date_to=date_to
         )
