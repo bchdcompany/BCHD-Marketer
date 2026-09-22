@@ -716,6 +716,29 @@ async def cmd_auditnow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await scheduled_campaign_audit(ctx.application)
 
 
+async def cmd_showcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/showcard <id> — заново присылает карточку одобрения по её ID.
+    Нужна для восстановления: раньше кнопка "Уточнить" стирала исходное
+    сообщение карточки вместе с кнопками (см. фикс 22.09), а карточки,
+    созданные до этого фикса, могли остаться в базе без видимого сообщения
+    в чате. Также полезна если карточка просто потерялась в истории чата."""
+    if not _is_owner(update):
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /showcard <id карточки>")
+        return
+    action_id = ctx.args[0].strip()
+    action = await pending.get(action_id)
+    if not action:
+        await update.message.reply_text(f"⚠️ Карточка `{action_id}` не найдена (возможно уже одобрена/отклонена/устарела).", parse_mode="Markdown")
+        return
+    status = action.get("status", "pending")
+    if status != "pending":
+        await update.message.reply_text(f"ℹ️ Карточка `{action_id}` уже имеет статус '{status}', заново не присылаю.", parse_mode="Markdown")
+        return
+    await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+
+
 async def cmd_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -948,6 +971,21 @@ async def cmd_dayparting(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 action.setdefault("account", "ads")
                 action.setdefault("requires_approval", True)
+                # Тот же код-уровневый предохранитель, что и в остальных
+                # местах создания карточек (см. handle_text_message) —
+                # раньше этот цикл его не вызывал вообще.
+                already, reason = _action_already_applied(action, context_data)
+                if already:
+                    log.info(f"dayparting: действие пропущено — уже применено: {reason}")
+                    continue
+                contradicts, c_reason = _action_is_self_contradictory(action)
+                if contradicts:
+                    log.warning(f"dayparting: карточка пропущена — самопротиворечие: {c_reason}")
+                    continue
+                valid, v_reason = _validate_action(action)
+                if not valid:
+                    log.warning(f"dayparting: карточка отклонена валидацией: {v_reason}")
+                    continue
                 action_id = await pending.add(action)
                 await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
             except Exception as e:
@@ -1394,9 +1432,46 @@ async def scheduled_anomaly_check(app):
             header = f"Проактивный инсайт — {today.strftime('%d.%m %H:%M')}\n\n"
             await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
             for action in result.get("proposed_actions", []):
+                if not isinstance(action, dict):
+                    log.warning(f"anomaly_check proposed_actions: не-dict: {str(action)[:80]}")
+                    continue
                 try:
                     action.setdefault("account", "ads")
                     action.setdefault("requires_approval", True)
+
+                    # ВАЖНО: этот цикл раньше НЕ проходил через тот же
+                    # код-уровневый предохранитель, что регулярный чат и
+                    # scheduled_campaign_audit — из-за этого проактивный
+                    # инсайт (этот путь) мог создать карточку в обход
+                    # 7-дневного cooldown по ставкам, дедупа минус-слов и
+                    # проверки самопротиворечий, даже когда context_data
+                    # содержал все нужные данные для их поимки. Обнаружено
+                    # 20.09.2026 на карточке update_bid для 'refrigerator
+                    # repair near me' — ставка менялась 5 дней назад,
+                    # cooldown должен был заблокировать, но не сработал,
+                    # так как проверка тут вообще не вызывалась.
+                    _strip_contradictory_negative_items(action)
+                    _strip_ungrounded_negative_items(action, context_data)
+
+                    if not _action_ids_verified(action, context_data):
+                        log.warning(f"anomaly_check: действие заблокировано — ID не найдены в свежих данных: type={action.get('type')}")
+                        continue
+
+                    already, reason = _action_already_applied(action, context_data)
+                    if already:
+                        log.info(f"anomaly_check: действие пропущено — уже применено: {action.get('type')} | {reason}")
+                        continue
+
+                    contradicts, c_reason = _action_is_self_contradictory(action)
+                    if contradicts:
+                        log.warning(f"anomaly_check: карточка пропущена — самопротиворечие: {action.get('type')} | {c_reason}")
+                        continue
+
+                    valid, v_reason = _validate_action(action)
+                    if not valid:
+                        log.warning(f"anomaly_check: карточка отклонена валидацией: {v_reason} | type={action.get('type')}")
+                        continue
+
                     action_id = await pending.add(action)
                     await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
                 except Exception as e:
@@ -1706,6 +1781,14 @@ async def cmd_review_negatives(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "confidence": "medium",
         }
         try:
+            contradicts, c_reason = _action_is_self_contradictory(action)
+            if contradicts:
+                log.warning(f"/reviewnegatives: карточка пропущена — самопротиворечие: {c_reason}")
+                continue
+            valid, v_reason = _validate_action(action)
+            if not valid:
+                log.warning(f"/reviewnegatives: карточка отклонена валидацией: {v_reason}")
+                continue
             action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
@@ -2038,13 +2121,18 @@ def _strip_ungrounded_negative_items(action: dict, context_data: dict) -> None:
         # Нет данных для сверки в этом запросе (например, search_terms не
         # запрашивались) — не блокируем вслепую, это не наш случай.
         return
-    for field in ("negative_keywords", "keywords"):
+    # "negatives" — отдельное имя поля, используемое старым путём
+    # /negatives (find_negative_keywords), где элементы приходят с ключом
+    # "term", а не "text" — добавлено 20.09, до этого функция молча не
+    # затрагивала этот путь вообще (action.get("negative_keywords"/"keywords")
+    # были всегда None для карточек отсюда).
+    for field in ("negative_keywords", "keywords", "negatives"):
         items = action.get(field)
         if not isinstance(items, list):
             continue
         kept = []
         for item in items:
-            text = item.get("text") if isinstance(item, dict) else str(item)
+            text = (item.get("text") or item.get("term")) if isinstance(item, dict) else str(item)
             cand_tokens = _tokenize_simple(text)
             if not cand_tokens:
                 kept.append(item)
@@ -2080,7 +2168,7 @@ def _strip_contradictory_negative_items(action: dict) -> None:
     if action.get("type") not in ("add_negative_keywords", "add_negative_keyword"):
         return
     import json as _json_item
-    for field in ("negative_keywords", "keywords"):
+    for field in ("negative_keywords", "keywords", "negatives"):
         items = action.get(field)
         if not isinstance(items, list):
             continue
@@ -2261,7 +2349,7 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
     elif a_type in ("add_negative_keywords", "add_negative_keyword"):
         existing_negatives = _collect_existing_negatives(context_data)
         excluded_terms = _collect_currently_excluded_terms(context_data)
-        new_negs = action.get("negative_keywords", []) or action.get("keywords", [])
+        new_negs = action.get("negative_keywords", []) or action.get("keywords", []) or action.get("negatives", [])
         if new_negs:
             new_texts = []
             for n in new_negs:
@@ -3331,13 +3419,39 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _append_history(ctx, chat_id, question, reply)
 
     for action in result.get("proposed_actions", []):
+        if not isinstance(action, dict):
+            continue
         try:
             action.setdefault("account", accounts[0])
             action.setdefault("data_summary", action.get("reasoning", ""))
             action.setdefault("expected_impact", "")
             action.setdefault("requires_approval", True)
+
+            # Тот же полный предохранитель, что в handle_text_message —
+            # раньше здесь была только 1 из 6 проверок (_action_ids_verified),
+            # то есть голосовые запросы могли создавать карточки в обход
+            # cooldown/дедупа/самопротиворечий, доступных текстовому пути.
+            _strip_contradictory_negative_items(action)
+            _strip_ungrounded_negative_items(action, context_data)
+
             if not _action_ids_verified(action, context_data):
                 continue
+
+            already, reason = _action_already_applied(action, context_data)
+            if already:
+                log.info(f"голос: действие пропущено — уже применено: {reason}")
+                continue
+
+            contradicts, c_reason = _action_is_self_contradictory(action)
+            if contradicts:
+                log.warning(f"голос: карточка пропущена — самопротиворечие: {c_reason}")
+                continue
+
+            valid, v_reason = _validate_action(action)
+            if not valid:
+                log.warning(f"голос: карточка отклонена валидацией: {v_reason}")
+                continue
+
             action_id = await pending.add(action)
             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
         except Exception as e:
@@ -4112,7 +4226,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         elif cmd == "comment":
             ctx.user_data["awaiting_comment_for"] = param
-            await _safe_edit(query, f"💬 Напиши свой вопрос или уточнение — я отвечу и обновлю карточку.\n\n🆔 `{param}`", parse_mode="Markdown")
+            # ВАЖНО: раньше здесь был _safe_edit(query, ...), который
+            # ЗАМЕНЯЛ текст самой карточки (и убирал её кнопки Применить/
+            # Отклонить) на "напиши вопрос". Карточка при этом никуда не
+            # девалась из БД (всё ещё ждала одобрения), но визуально в
+            # чате пропадала — а более поздний ответ бота ошибочно
+            # утверждал "карточка по-прежнему ждёт одобрения", хотя
+            # одобрить её кнопкой было уже нельзя (кнопки стёрты).
+            # Обнаружено 22.09.2026: владелец не мог найти карточку
+            # после того как задал уточняющий вопрос. Фикс: не трогаем
+            # исходное сообщение карточки вообще — отправляем отдельное
+            # новое сообщение с просьбой написать вопрос, кнопки карточки
+            # остаются на месте и рабочими.
+            try:
+                await query.answer("💬 Напиши свой вопрос — карточка останется на месте")
+            except Exception:
+                pass
+            await _safe_send(
+                ctx.bot, config.OWNER_CHAT_ID,
+                f"💬 Напиши свой вопрос или уточнение по карточке `{param}` — "
+                f"я отвечу, а сама карточка останется выше с кнопками одобрения.",
+                parse_mode="Markdown",
+            )
             return
 
         account = param
@@ -4151,9 +4286,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await _save_cmd_result(ctx, chat_id, f"/audit ({account_label})", text)
                 if account != "both":
                     for action in analysis.get("recommendations", []):
-                        action["account"] = account
-                        action_id = await pending.add(action)
-                        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        if not isinstance(action, dict):
+                            continue
+                        try:
+                            action["account"] = account
+                            # Базовый предохранитель, не зависящий от точной
+                            # структуры data_result (в отличие от cooldown/
+                            # дедупа, которые требуют context_data строго
+                            # определённой формы) — раньше не вызывался тут
+                            # вообще, карточки из /audit шли в обход всех
+                            # проверок, включая самопротиворечия.
+                            contradicts, c_reason = _action_is_self_contradictory(action)
+                            if contradicts:
+                                log.warning(f"/audit: карточка пропущена — самопротиворечие: {c_reason}")
+                                continue
+                            valid, v_reason = _validate_action(action)
+                            if not valid:
+                                log.warning(f"/audit: карточка отклонена валидацией: {v_reason}")
+                                continue
+                            action_id = await pending.add(action)
+                            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        except Exception as ae:
+                            log.warning(f"/audit: карточка не создана: {ae}")
             except Exception as e:
                 log.error(f"Ошибка audit callback: {e}")
                 await _safe_edit(query, f"❌ Ошибка: {e}")
@@ -4213,9 +4367,27 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     data_result = await ads_client.get_keywords_analysis(account=acc)
                     analysis = await ai_analyst.analyze_keywords(data_result)
                     texts.append(f"*Google Ads ({len(data_result.get('keywords', []))} ключей):*\n{analysis.get('summary', 'Нет данных')}")
+                    _kw_ctx = {"keywords": {acc: data_result}}
                     for action in _build_keyword_actions(analysis, acc):
-                        action_id = await pending.add(action)
-                        await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        if not isinstance(action, dict):
+                            continue
+                        try:
+                            already, reason = _action_already_applied(action, _kw_ctx)
+                            if already:
+                                log.info(f"/keywords: действие пропущено — уже применено: {reason}")
+                                continue
+                            contradicts, c_reason = _action_is_self_contradictory(action)
+                            if contradicts:
+                                log.warning(f"/keywords: карточка пропущена — самопротиворечие: {c_reason}")
+                                continue
+                            valid, v_reason = _validate_action(action)
+                            if not valid:
+                                log.warning(f"/keywords: карточка отклонена валидацией: {v_reason}")
+                                continue
+                            action_id = await pending.add(action)
+                            await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
+                        except Exception as ae:
+                            log.warning(f"/keywords: карточка не создана: {ae}")
                 if account == "both":
                     texts.append("ℹ️ *LSA:* ключевые слова не используются (Google определяет аудиторию автоматически)")
                 result_text = "\n\n".join(texts)
@@ -4265,7 +4437,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             "risks": "Проверь список перед применением",
                             "negatives": negatives,
                         }
+                        _neg_ctx = {"search_terms": {acc: data_result}}
                         try:
+                            _strip_contradictory_negative_items(action)
+                            _strip_ungrounded_negative_items(action, _neg_ctx)
+                            already, reason = _action_already_applied(action, _neg_ctx)
+                            if already:
+                                log.info(f"/negatives: действие пропущено — уже применено: {reason}")
+                                continue
+                            contradicts, c_reason = _action_is_self_contradictory(action)
+                            if contradicts:
+                                log.warning(f"/negatives: карточка пропущена — самопротиворечие: {c_reason}")
+                                continue
+                            valid, v_reason = _validate_action(action)
+                            if not valid:
+                                log.warning(f"/negatives: карточка отклонена валидацией: {v_reason}")
+                                continue
                             action_id = await pending.add(action)
                             await _send_approval_card(ctx.bot, config.OWNER_CHAT_ID, action_id, action)
                             any_cards_created = True
@@ -5237,13 +5424,43 @@ async def scheduled_changes_analysis(app):
                 change_ids
             )
         
-        # Создаём карточки если агент предложил действия
+        # Создаём карточки если агент предложил действия — тот же полный
+        # предохранитель, что в остальных местах (раньше здесь не вызывался
+        # вообще: этот путь может предложить откат/усиление изменения, а
+        # значит подвержен тем же рискам cooldown/дедупа/самопротиворечий).
         for action in result.get("proposed_actions", []):
             if not isinstance(action, dict):
                 continue
-            action.setdefault("requires_approval", True)
-            action_id = await pending.add(action)
-            await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            try:
+                action.setdefault("account", "ads")
+                action.setdefault("requires_approval", True)
+
+                _strip_contradictory_negative_items(action)
+                _strip_ungrounded_negative_items(action, context_data)
+
+                if not _action_ids_verified(action, context_data):
+                    log.warning(f"changes_analysis: действие заблокировано — ID не найдены в свежих данных: type={action.get('type')}")
+                    continue
+
+                already, reason = _action_already_applied(action, context_data)
+                if already:
+                    log.info(f"changes_analysis: действие пропущено — уже применено: {reason}")
+                    continue
+
+                contradicts, c_reason = _action_is_self_contradictory(action)
+                if contradicts:
+                    log.warning(f"changes_analysis: карточка пропущена — самопротиворечие: {c_reason}")
+                    continue
+
+                valid, v_reason = _validate_action(action)
+                if not valid:
+                    log.warning(f"changes_analysis: карточка отклонена валидацией: {v_reason}")
+                    continue
+
+                action_id = await pending.add(action)
+                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+            except Exception as ae:
+                log.error(f"changes_analysis card error: {ae}")
             
     except Exception as e:
         log.error(f"Ошибка анализа изменений: {e}", exc_info=True)
@@ -5445,6 +5662,10 @@ async def scheduled_campaign_audit(app):
                 if contradicts:
                     log.warning(f"campaign_audit: самопротиворечие: {c_reason}")
                     continue
+                valid, v_reason = _validate_action(action)
+                if not valid:
+                    log.warning(f"campaign_audit: карточка отклонена валидацией: {v_reason}")
+                    continue
                 action_id = await pending.add(action)
                 await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
             except Exception as e:
@@ -5641,9 +5862,22 @@ async def scheduled_weekly_audit(app):
             text += _format_audit(data, analysis)
             await _safe_send(app.bot, config.OWNER_CHAT_ID, text, parse_mode="Markdown")
             for action in analysis.get("recommendations", []):
-                action["account"] = account
-                action_id = await pending.add(action)
-                await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+                if not isinstance(action, dict):
+                    continue
+                try:
+                    action["account"] = account
+                    contradicts, c_reason = _action_is_self_contradictory(action)
+                    if contradicts:
+                        log.warning(f"weekly_audit: карточка пропущена — самопротиворечие: {c_reason}")
+                        continue
+                    valid, v_reason = _validate_action(action)
+                    if not valid:
+                        log.warning(f"weekly_audit: карточка отклонена валидацией: {v_reason}")
+                        continue
+                    action_id = await pending.add(action)
+                    await _send_approval_card(app.bot, config.OWNER_CHAT_ID, action_id, action)
+                except Exception as ae:
+                    log.warning(f"weekly_audit: карточка не создана: {ae}")
     except Exception as e:
         log.error(f"Ошибка аудита: {e}")
 
@@ -6097,6 +6331,7 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
+    app.add_handler(CommandHandler("showcard", cmd_showcard))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("keywords", cmd_keywords))
     app.add_handler(CommandHandler("negatives", cmd_negatives))
