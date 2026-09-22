@@ -4128,9 +4128,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.info(f"VERIFY_ACTION RESULT: action_id={param}, type={action.get('type')}, verification={verification}")
             verified = verification.get("verified")
             await pending.record_execution_result(param, verified)
+            # ВАЖНО: action_type должен быть определён ДО ветвления по verified —
+            # раньше он присваивался только внутри "if verified is True", но
+            # использовался безусловно в "elif verified is False and action_type
+            # == 'dispute_lsa_lead'" ниже. Если verified оказывался False или
+            # None (не True), это падало с NameError, необработанным до этого
+            # места — карточка навсегда зависала на "⏳ Применяю...", без
+            # финального статуса. Обнаружено 22.09.2026 на карточке снижения
+            # ставки 'refrigerator repair Brooklyn'.
+            action_type = action.get('type', '')
             if verified is True:
                 # Формируем детали проверки в зависимости от типа действия
-                action_type = action.get('type', '')
                 verify_details = ""
                 if action_type == 'update_bid':
                     actual = verification.get('actual_bid')
