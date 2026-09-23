@@ -3142,6 +3142,26 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 log.warning(f"Ошибка сбора Thumbtack: {e}")
+        if "workiz_revenue" in data_needed or "roas" in data_needed:
+            # Реально собранная выручка из Workiz по источнику (в отличие от
+            # campaigns/lsa_leads — там только расход и число лидов на стороне
+            # рекламной платформы, не факт оплаты). Обнаружено 23.09.2026:
+            # агент честно сказал "нет доступа к Workiz" на вопрос про
+            # конверсию LSA-лидов в оплаченные заказы, хотя эти данные система
+            # уже умеет получать (используются в утреннем отчёте) — просто не
+            # были подключены к обычному чату.
+            try:
+                from marketer_revenue_by_source import get_revenue_by_source
+                _rev_data = await get_revenue_by_source(period_from, period_to)
+                context_data["workiz_revenue"] = {
+                    "period_from": period_from,
+                    "period_to": period_to,
+                    "google_ads_collected": _rev_data.get("Google Ads", {}).get("collected_revenue", 0),
+                    "lsa_collected": _rev_data.get("Google LSA", {}).get("collected_revenue", 0),
+                    "thumbtack_collected": _rev_data.get("Thumbtack", {}).get("collected_revenue", 0),
+                }
+            except Exception as e:
+                log.warning(f"Ошибка сбора workiz_revenue: {e}")
         if "gbp_reviews" in data_needed:
             try:
                 _gbp_inst = globals().get("gbp_client_inst")
