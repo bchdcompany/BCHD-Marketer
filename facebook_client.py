@@ -101,10 +101,17 @@ async def create_instagram_post(caption: str, image_url: str) -> dict:
         return {"success": False, "error": "META_INSTAGRAM_ID/META_PAGE_TOKEN не настроены"}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            # Шаг 1 — создаём container
+            # Шаг 1 — создаём container. ВАЖНО: явно указываем media_type="IMAGE" —
+            # без него Instagram Graph API иногда не может однозначно определить
+            # тип медиа по URL (особенно если сервис-хостер отдаёт нестандартные
+            # заголовки/редиректы) и отвечает ошибкой "Only photo or video can be
+            # accepted as media type." даже для нормальной прямой ссылки на фото.
+            # Обнаружено 23.09.2026 на реальной публикации через ImgBB-ссылку.
+            # У видео (create_instagram_video_post ниже) media_type уже передавался
+            # явно ("REELS") — для фото этого не хватало, отсюда асимметрия.
             resp1 = await client.post(
                 f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
-                data={"image_url": image_url, "caption": caption, "access_token": META_PAGE_TOKEN},
+                data={"image_url": image_url, "caption": caption, "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
             )
             data1 = resp1.json()
             if "error" in data1:
