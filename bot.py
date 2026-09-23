@@ -1431,6 +1431,49 @@ async def scheduled_anomaly_check(app):
             reply = result.get("reply", "")
             header = f"Проактивный инсайт — {today.strftime('%d.%m %H:%M')}\n\n"
             await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+
+            # Сохраняем deferred_reviews ("подождём ещё N дней по этому ключу"),
+            # чтобы следующая проактивная проверка не противоречила сама себе.
+            # Обнаружено 23.09.2026: агент 22.09 написал "дать ещё 7-10 дней
+            # при ставке $5" по 'appliance repair NYC', а 23.09 создал карточку
+            # на новое снижение той же ставки — решение "подождать" просто
+            # нигде не сохранялось между запросами. category='deferred_review',
+            # key='account:keyword'. Не полагаемся на ON CONFLICT (constraint
+            # на (category, key) в проде не подтверждён) — делаем безопасный
+            # SELECT-затем-UPDATE/INSERT.
+            for _dr in result.get("deferred_reviews", []) or []:
+                try:
+                    if not isinstance(_dr, dict):
+                        continue
+                    _dr_kw = (_dr.get("keyword") or "").strip()
+                    _dr_acc = (_dr.get("account") or "ads").strip()
+                    _dr_after = (_dr.get("review_after") or "").strip()
+                    _dr_reason = (_dr.get("reason") or "").strip()
+                    if not _dr_kw or not _dr_after:
+                        continue
+                    import json as _json_dr
+                    _dr_key = f"{_dr_acc}:{_dr_kw}"
+                    _dr_value = _json_dr.dumps({"review_after": _dr_after, "reason": _dr_reason}, ensure_ascii=False)
+                    _pool_dr = await _get_db_pool()
+                    if _pool_dr:
+                        async with _pool_dr.acquire() as _conn_dr:
+                            _existing = await _conn_dr.fetchrow(
+                                "SELECT 1 FROM agent_memory WHERE category = $1 AND key = $2",
+                                "deferred_review", _dr_key,
+                            )
+                            if _existing:
+                                await _conn_dr.execute(
+                                    "UPDATE agent_memory SET value = $1 WHERE category = $2 AND key = $3",
+                                    _dr_value, "deferred_review", _dr_key,
+                                )
+                            else:
+                                await _conn_dr.execute(
+                                    "INSERT INTO agent_memory (category, key, value) VALUES ($1, $2, $3)",
+                                    "deferred_review", _dr_key, _dr_value,
+                                )
+                except Exception as _e_dr:
+                    log.warning(f"anomaly_check: не удалось сохранить deferred_review {_dr}: {_e_dr}")
+
             for action in result.get("proposed_actions", []):
                 if not isinstance(action, dict):
                     log.warning(f"anomaly_check proposed_actions: не-dict: {str(action)[:80]}")
