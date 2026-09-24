@@ -89,6 +89,38 @@ async def create_video_post(message: str, video_url: str) -> dict:
 
 META_INSTAGRAM_ID = os.environ.get("META_INSTAGRAM_ID", "")
 
+# Media-fetch-failure subcode — Meta пытается скачать файл по нашей публичной
+# ссылке и иногда получает кратковременный сбой (видимо, задержка CDN-
+# пропагации сразу после загрузки), даже когда сама ссылка валидна и хостинг
+# надёжный (Cloudinary). Обнаружено 23.09.2026: из 3 фото карусели 2 прошли
+# нормально, 1-е словило именно эту ошибку. Ретраим только этот конкретный
+# subcode — остальные ошибки (неверный токен, недоступный аккаунт и т.п.)
+# ретраить бессмысленно, там сразу возвращаем ошибку.
+_MEDIA_FETCH_FAILURE_SUBCODE = 2207052
+
+
+async def _create_ig_media_container(client: "httpx.AsyncClient", data: dict, max_retries: int = 2) -> dict:
+    """POST на /media с повтором при кратковременном сбое скачивания файла
+    Meta-краулером (subcode 2207052). Возвращает распарсенный JSON-ответ —
+    вызывающий код сам проверяет наличие "error" и достаёт "id"."""
+    last_data = {}
+    for attempt in range(max_retries + 1):
+        resp = await client.post(f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media", data=data)
+        last_data = resp.json()
+        err = last_data.get("error", {})
+        if not err:
+            return last_data
+        if err.get("error_subcode") == _MEDIA_FETCH_FAILURE_SUBCODE and attempt < max_retries:
+            logger.warning(
+                f"Instagram media fetch transient failure (попытка {attempt + 1}/{max_retries + 1}), "
+                f"повтор через 4с: {err}"
+            )
+            import asyncio as _asyncio_retry
+            await _asyncio_retry.sleep(4)
+            continue
+        return last_data
+    return last_data
+
 
 async def create_instagram_post(caption: str, image_url: str) -> dict:
     """
@@ -109,11 +141,10 @@ async def create_instagram_post(caption: str, image_url: str) -> dict:
             # Обнаружено 23.09.2026 на реальной публикации через ImgBB-ссылку.
             # У видео (create_instagram_video_post ниже) media_type уже передавался
             # явно ("REELS") — для фото этого не хватало, отсюда асимметрия.
-            resp1 = await client.post(
-                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
-                data={"image_url": image_url, "caption": caption, "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
+            data1 = await _create_ig_media_container(
+                client,
+                {"image_url": image_url, "caption": caption, "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
             )
-            data1 = resp1.json()
             if "error" in data1:
                 logger.error(f"Instagram container error: {data1['error']}")
                 return {"success": False, "error": data1["error"].get("message", str(data1["error"]))}
@@ -173,11 +204,10 @@ async def create_instagram_carousel_post(caption: str, image_urls: list) -> dict
         async with httpx.AsyncClient(timeout=90) as client:
             child_ids = []
             for url in image_urls:
-                resp_child = await client.post(
-                    f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
-                    data={"image_url": url, "is_carousel_item": "true", "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
+                data_child = await _create_ig_media_container(
+                    client,
+                    {"image_url": url, "is_carousel_item": "true", "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
                 )
-                data_child = resp_child.json()
                 if "error" in data_child:
                     logger.error(f"Instagram carousel child error: {data_child['error']}")
                     return {"success": False, "error": data_child["error"].get("message", str(data_child["error"]))}
