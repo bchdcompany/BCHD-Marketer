@@ -5227,6 +5227,39 @@ async def _build_weekly_strategy() -> str:
         lsa = ads_data.get("lsa", {})
     except Exception:
         combined = google = lsa = {}
+
+    # ДОБАВЛЕНО 24.09.2026 по просьбе владельца: мониторить конверсии Search
+    # (скользящее окно 30 дней, а не только последние 7) и докладывать статус
+    # относительно порога перехода со стратегии Maximize Conversions на
+    # Target CPA (нужно 30-50 конверсий/месяц для стабильной работы Smart
+    # Bidding — см. agent_memory/google-ads-campaign). Считается отдельно
+    # от 7-дневного окна выше, которое слишком короткое и шумное для этой
+    # оценки (месячный объём точнее отражает готовность к переключению).
+    TARGET_CPA_THRESHOLD_LOW = 30
+    TARGET_CPA_THRESHOLD_HIGH = 50
+    month_from = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+    try:
+        search_30d = await ads_client.get_spend_for_period(month_from, week_to, account="ads")
+        search_conv_30d = search_30d.get("conversions", 0) or 0
+    except Exception:
+        search_conv_30d = None
+    target_cpa_status = ""
+    if search_conv_30d is not None:
+        if search_conv_30d >= TARGET_CPA_THRESHOLD_LOW:
+            target_cpa_status = (
+                f"🎯 Search-конверсии за 30 дней: {search_conv_30d:.0f} — "
+                f"порог {TARGET_CPA_THRESHOLD_LOW}+ ДОСТИГНУТ. Можно рассмотреть "
+                f"переход со стратегии Maximize Conversions на Target CPA "
+                f"(смена стратегии — ручное действие в Google Ads UI, бот её "
+                f"не выполняет)."
+            )
+        else:
+            target_cpa_status = (
+                f"🎯 Search-конверсии за 30 дней: {search_conv_30d:.0f} из "
+                f"{TARGET_CPA_THRESHOLD_LOW}-{TARGET_CPA_THRESHOLD_HIGH} нужных "
+                f"для перехода на Target CPA — ещё рано."
+            )
+
     strategy_ctx = {}
     if strategy_memory:
         try:
@@ -5318,6 +5351,8 @@ async def _build_weekly_strategy() -> str:
     text = f"Стратегия на неделю — {today.strftime('%d.%m.%Y')}\n"
     text += f"На основе {week_from} — {week_to}\n\n"
     text += f"Прошлая неделя: расход ${spend:.2f} | конверсии {conv:.0f}\n\n"
+    if target_cpa_status:
+        text += f"{target_cpa_status}\n\n"
     text += f"План на эту неделю:\n{plan_text}"
     return text
 
