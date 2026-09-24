@@ -681,7 +681,7 @@ API, без ручной работы владельца в интерфейсе
                             "type": "object",
                             "required": ["type", "description", "reasoning"],
                             "properties": {
-                                "type": {"type": "string", "description": "Тип действия: update_bid, pause_keywords, enable_keywords, add_negative_keywords, update_ad_headlines, budget_change, pause_campaign, enable_campaign, reply_to_review, create_gbp_post"},
+                                "type": {"type": "string", "description": "Тип действия: update_bid, pause_keywords, enable_keywords, add_keywords (добавить НОВЫЙ ключ в таргетинг), add_negative_keywords (исключить термин — противоположность add_keywords), update_ad_headlines, budget_change, pause_campaign, enable_campaign, reply_to_review, create_gbp_post"},
                                 "account": {"type": "string", "description": "ads или lsa"},
                                 "description": {"type": "string", "description": "Краткое описание действия"},
                                 "reasoning": {"type": "string", "description": "Обоснование с цифрами"},
@@ -1527,11 +1527,36 @@ pause_keywords, enable_keywords или add_negative_keywords. LSA не
   {{"type": "...", "account": "ads", "keywords": [{{"resource_name": "...", "keyword": "..."}}],
     "description": "...", "reasoning": "...", "risks": "...", "urgency": "...",
     "urgency_label": "...", "confidence": "..."}}
-- add_negative_keywords (ТОЛЬКО account="ads", никогда "lsa"):
+- add_negative_keywords (ТОЛЬКО account="ads", никогда "lsa") — ИСКЛЮЧАЕТ термин
+  из показа объявлений (это ПРОТИВОПОЛОЖНОСТЬ добавлению нового ключа):
   {{"type": "add_negative_keywords", "account": "ads",
     "negatives": [{{"term": "...", "reason": "..."}}], "description": "...",
     "reasoning": "...", "risks": "...", "urgency": "...", "urgency_label": "...",
     "confidence": "..."}}
+- add_keywords (ТОЛЬКО account="ads", никогда "lsa") — ДОБАВЛЯЕТ новое ключевое
+  слово в ТАРГЕТИНГ (чтобы объявление начало показываться по этому запросу).
+  ЖЁСТКО ОТЛИЧАЙ от add_negative_keywords: обнаружено 24.09.2026 — при
+  предложении добавить перспективный search term ("local dishwasher
+  repairman", "washing machine repair brooklyn", уже показавшие клики/
+  конверсии) как НОВЫЙ ключ для таргетинга, было ошибочно сгенерировано
+  действие type=add_negative_keywords — то есть термин чуть не ИСКЛЮЧИЛИ
+  из показов вместо того чтобы начать по нему таргетироваться. Это
+  противоположный по смыслу результат. Признак правильного выбора: если
+  цель — "начать получать клики/лиды по этому запросу" → add_keywords;
+  если цель — "перестать показываться по нерелевантному запросу" →
+  add_negative_keywords. ОБЯЗАТЕЛЬНОЕ поле ad_group_id — бери его ТОЛЬКО из
+  реального ad_group_id существующего ключа той же тематики в
+  context_data["keywords"] этого запроса (например у похожего активного
+  ключа той же ad_group, куда логично добавить новый); если ни одного
+  ad_group_id для нужной темы нет в свежих данных — НЕ создавай действие,
+  а честно скажи что нужны данные по ключевым словам этой группы.
+  match_type — "PHRASE" по умолчанию, если владелец явно не просил иное.
+  bid — консервативная стартовая ставка (ориентируйся на bid похожих
+  активных ключей той же ad_group из context_data, не выдумывай число):
+  {{"type": "add_keywords", "account": "ads", "ad_group_id": "...",
+    "ad_group_name": "...", "keywords": [{{"text": "...", "match_type": "PHRASE",
+    "bid": 7.0}}], "description": "...", "reasoning": "...", "risks": "...",
+    "urgency": "...", "urgency_label": "...", "confidence": "..."}}
 - update_bid (точечное изменение ставки по ОДНОМУ ключевому слову — используй
   ЭТУ схему, когда владелец просит поднять/снизить ставку на конкретный
   ключ или группу ключей по результатам анализа CPA/сезонности; для
