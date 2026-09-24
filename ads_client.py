@@ -168,7 +168,8 @@ class GoogleAdsClient:
                 metrics.cost_per_conversion,
                 metrics.conversions_from_interactions_rate,
                 metrics.search_impression_share,
-                metrics.search_rank_lost_impression_share
+                metrics.search_rank_lost_impression_share,
+                metrics.search_budget_lost_impression_share
             FROM campaign
             WHERE segments.date BETWEEN '{date_from}' AND '{date_to}'
               AND campaign.status != 'REMOVED'
@@ -195,6 +196,7 @@ class GoogleAdsClient:
                     'conversion_rate': round(row.metrics.conversions_from_interactions_rate * 100, 2),
                     'impression_share': round(row.metrics.search_impression_share * 100, 1),
                     'rank_lost_is': round(row.metrics.search_rank_lost_impression_share * 100, 1),
+                    'budget_lost_is': round(row.metrics.search_budget_lost_impression_share * 100, 1),
                     'account': account,
                 })
             return {
