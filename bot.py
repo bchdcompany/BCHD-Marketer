@@ -1602,9 +1602,16 @@ async def scheduled_anomaly_check(app):
 
 async def scheduled_purge_pending(app):
     """Раз в сутки чистит очень старые записи в очереди одобрения (>72ч),
-    чтобы память процесса не росла бесконечно при долгой работе."""
+    чтобы память процесса не росла бесконечно при долгой работе.
+
+    ИСПРАВЛЕНО 24.09.2026 — ВТОРОЙ, независимый баг поверх SQL-бага в
+    самой purge_stale(): здесь отсутствовал await — "removed =
+    pending.purge_stale(...)" создавал корутину, но никогда её не запускал.
+    DELETE-запрос физически не выполнялся ни разу, даже после исправления
+    SQL. Обнаружено по RuntimeWarning в логе Railway и по тому, что
+    /purgenow вернул "удалено 0" даже после фикса purge_stale."""
     try:
-        removed = pending.purge_stale(max_age_hours=72)
+        removed = await pending.purge_stale(max_age_hours=72)
         if removed:
             log.info(f"Очищено {removed} устаревших записей из очереди одобрения")
     except Exception as e:
