@@ -3153,7 +3153,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if "search_terms" in data_needed:
             context_data["search_terms"] = {}
             for acc in accounts:
-                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
+                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc, date_from=period_from, date_to=period_to)
         if "ad_performance" in data_needed:
             # LSA не имеет "объявлений" в этом смысле (Google сам формирует
             # объявление из профиля) — собираем только для Google Ads
@@ -3517,7 +3517,7 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if "search_terms" in data_needed:
             context_data["search_terms"] = {}
             for acc in accounts:
-                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc)
+                context_data["search_terms"][acc] = await ads_client.get_search_terms(account=acc, date_from=period_from, date_to=period_to)
         if not context_data or list(context_data.keys()) == ["_period"]:
             context_data["campaigns_summary"] = await ads_client.get_both_accounts_summary()
     except Exception as e:
@@ -5904,7 +5904,7 @@ async def scheduled_campaign_audit(app):
             "ads": await ads_client.get_negative_keywords_list(account="ads")
         }
         context_data["search_terms"] = {
-            "ads": await ads_client.get_search_terms(account="ads")
+            "ads": await ads_client.get_search_terms(account="ads", date_from=date_from, date_to=date_to)
         }
         context_data["ad_performance"] = {
             "ads": await ads_client.get_ad_performance(account="ads")
