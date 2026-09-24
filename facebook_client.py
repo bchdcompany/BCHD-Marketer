@@ -155,6 +155,80 @@ async def create_instagram_post(caption: str, image_url: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+async def create_instagram_carousel_post(caption: str, image_urls: list) -> dict:
+    """
+    Публикует карусель (несколько фото в одном посте) в Instagram — до 10 фото.
+    Процесс в три шага (Instagram Graph API):
+    1. Для каждого фото создаём child-контейнер с is_carousel_item=true (без
+       caption — подпись указывается только на родительском контейнере)
+    2. Создаём родительский контейнер media_type=CAROUSEL со списком children
+    3. Ждём готовности родительского контейнера и публикуем его
+    """
+    if not META_INSTAGRAM_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_INSTAGRAM_ID/META_PAGE_TOKEN не настроены"}
+    if len(image_urls) < 2:
+        return {"success": False, "error": "Для карусели нужно минимум 2 фото"}
+    image_urls = image_urls[:10]
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            child_ids = []
+            for url in image_urls:
+                resp_child = await client.post(
+                    f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
+                    data={"image_url": url, "is_carousel_item": "true", "media_type": "IMAGE", "access_token": META_PAGE_TOKEN},
+                )
+                data_child = resp_child.json()
+                if "error" in data_child:
+                    logger.error(f"Instagram carousel child error: {data_child['error']}")
+                    return {"success": False, "error": data_child["error"].get("message", str(data_child["error"]))}
+                child_ids.append(data_child.get("id", ""))
+
+            resp_parent = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
+                data={
+                    "media_type": "CAROUSEL",
+                    "children": ",".join(child_ids),
+                    "caption": caption,
+                    "access_token": META_PAGE_TOKEN,
+                },
+            )
+            data_parent = resp_parent.json()
+            if "error" in data_parent:
+                logger.error(f"Instagram carousel parent error: {data_parent['error']}")
+                return {"success": False, "error": data_parent["error"].get("message", str(data_parent["error"]))}
+            container_id = data_parent.get("id", "")
+
+            # Ждём готовности родительского контейнера — тот же класс ошибки
+            # "Media ID is not available", что был для одиночного фото, актуален
+            # и здесь, если публиковать сразу без проверки статуса.
+            import asyncio as _asyncio_car
+            for _ in range(10):
+                status_resp = await client.get(
+                    f"{GRAPH_API_BASE}/{container_id}",
+                    params={"fields": "status_code", "access_token": META_PAGE_TOKEN},
+                )
+                status_data = status_resp.json()
+                if status_data.get("status_code") == "FINISHED":
+                    break
+                if status_data.get("status_code") == "ERROR":
+                    logger.error(f"Instagram carousel processing error: {status_data}")
+                    return {"success": False, "error": f"Carousel processing failed: {status_data}"}
+                await _asyncio_car.sleep(3)
+
+            resp_publish = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media_publish",
+                data={"creation_id": container_id, "access_token": META_PAGE_TOKEN},
+            )
+            data_publish = resp_publish.json()
+            if "error" in data_publish:
+                logger.error(f"Instagram carousel publish error: {data_publish['error']}")
+                return {"success": False, "error": data_publish["error"].get("message", str(data_publish["error"]))}
+            return {"success": True, "post_id": data_publish.get("id", ""), "result": data_publish}
+    except Exception as e:
+        logger.error(f"Instagram carousel exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def create_instagram_video_post(caption: str, video_url: str) -> dict:
     """
     Публикует видео (Reel) в Instagram через тот же двухшаговый процесс,
