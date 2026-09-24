@@ -87,6 +87,53 @@ async def create_video_post(message: str, video_url: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+async def create_facebook_multi_photo_post(message: str, image_urls: list) -> dict:
+    """
+    Публикует ОДИН пост с несколькими фото (до 10) на странице Facebook —
+    аналог карусели Instagram. Процесс (официальный паттерн Graph API):
+    1. Каждое фото загружаем как неопубликованное (published=false) в
+       /{page-id}/photos — получаем media_fbid для каждого.
+    2. Создаём один пост в /{page-id}/feed с attached_media[i]=media_fbid.
+    Facebook НЕ поддерживает так же гибко смешивать фото и видео в одном
+    посте, как это делает Instagram-карусель — для видео используется
+    отдельный create_video_post.
+    """
+    if not META_PAGE_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_PAGE_ID/META_PAGE_TOKEN не настроены"}
+    if len(image_urls) < 2:
+        return {"success": False, "error": "Для поста с несколькими фото нужно минимум 2 фото"}
+    image_urls = image_urls[:10]
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            media_fbids = []
+            for url in image_urls:
+                resp = await client.post(
+                    f"{GRAPH_API_BASE}/{META_PAGE_ID}/photos",
+                    data={"url": url, "published": "false", "access_token": META_PAGE_TOKEN},
+                )
+                data = resp.json()
+                if "error" in data:
+                    logger.error(f"Facebook multi-photo upload error: {data['error']}")
+                    return {"success": False, "error": data["error"].get("message", str(data["error"]))}
+                media_fbids.append(data.get("id", ""))
+
+            import json as _json_fb
+            feed_payload = {"message": message, "access_token": META_PAGE_TOKEN}
+            for i, mid in enumerate(media_fbids):
+                feed_payload[f"attached_media[{i}]"] = _json_fb.dumps({"media_fbid": mid})
+
+            resp2 = await client.post(f"{GRAPH_API_BASE}/{META_PAGE_ID}/feed", data=feed_payload)
+            data2 = resp2.json()
+            if "error" in data2:
+                logger.error(f"Facebook multi-photo post error: {data2['error']}")
+                return {"success": False, "error": data2["error"].get("message", str(data2["error"]))}
+            post_id = data2.get("post_id") or data2.get("id", "")
+            return {"success": True, "post_id": post_id, "result": data2}
+    except Exception as e:
+        logger.error(f"Facebook multi-photo post exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 META_INSTAGRAM_ID = os.environ.get("META_INSTAGRAM_ID", "")
 
 # Media-fetch-failure subcode — Meta пытается скачать файл по нашей публичной
@@ -256,6 +303,95 @@ async def create_instagram_carousel_post(caption: str, image_urls: list) -> dict
             return {"success": True, "post_id": data_publish.get("id", ""), "result": data_publish}
     except Exception as e:
         logger.error(f"Instagram carousel exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def create_instagram_media_carousel_post(caption: str, media_items: list) -> dict:
+    """
+    Публикует СМЕШАННУЮ карусель (фото и/или видео вместе, до 10 элементов) в
+    Instagram. media_items — список {"type": "image"|"video", "url": "..."}.
+    Отличие от create_instagram_carousel_post (только фото) в том, что видео-
+    элементы карусели тоже нужно создавать с media_type=VIDEO и дожидаться
+    обработки (status_code=FINISHED) каждого ПЕРЕД созданием родительского
+    контейнера — иначе получим ту же ошибку "Media ID is not available", что
+    была у одиночного фото/видео без ожидания готовности.
+    """
+    if not META_INSTAGRAM_ID or not META_PAGE_TOKEN:
+        return {"success": False, "error": "META_INSTAGRAM_ID/META_PAGE_TOKEN не настроены"}
+    if len(media_items) < 2:
+        return {"success": False, "error": "Для карусели нужно минимум 2 элемента"}
+    media_items = media_items[:10]
+    try:
+        import asyncio as _asyncio_mix
+        async with httpx.AsyncClient(timeout=180) as client:
+            child_ids = []
+            for item in media_items:
+                if item.get("type") == "video":
+                    data_req = {"video_url": item["url"], "is_carousel_item": "true",
+                                "media_type": "VIDEO", "access_token": META_PAGE_TOKEN}
+                else:
+                    data_req = {"image_url": item["url"], "is_carousel_item": "true",
+                                "media_type": "IMAGE", "access_token": META_PAGE_TOKEN}
+                data_child = await _create_ig_media_container(client, data_req)
+                if "error" in data_child:
+                    logger.error(f"Instagram mixed carousel child error: {data_child['error']}")
+                    return {"success": False, "error": data_child["error"].get("message", str(data_child["error"]))}
+                cid = data_child.get("id", "")
+                if item.get("type") == "video":
+                    # Видео-элемент карусели тоже требует времени на обработку
+                    for _ in range(15):
+                        st_resp = await client.get(
+                            f"{GRAPH_API_BASE}/{cid}",
+                            params={"fields": "status_code", "access_token": META_PAGE_TOKEN},
+                        )
+                        st_data = st_resp.json()
+                        if st_data.get("status_code") == "FINISHED":
+                            break
+                        if st_data.get("status_code") == "ERROR":
+                            logger.error(f"Instagram mixed carousel video child error: {st_data}")
+                            return {"success": False, "error": f"Video child processing failed: {st_data}"}
+                        await _asyncio_mix.sleep(3)
+                child_ids.append(cid)
+
+            resp_parent = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media",
+                data={
+                    "media_type": "CAROUSEL",
+                    "children": ",".join(child_ids),
+                    "caption": caption,
+                    "access_token": META_PAGE_TOKEN,
+                },
+            )
+            data_parent = resp_parent.json()
+            if "error" in data_parent:
+                logger.error(f"Instagram mixed carousel parent error: {data_parent['error']}")
+                return {"success": False, "error": data_parent["error"].get("message", str(data_parent["error"]))}
+            container_id = data_parent.get("id", "")
+
+            for _ in range(10):
+                status_resp = await client.get(
+                    f"{GRAPH_API_BASE}/{container_id}",
+                    params={"fields": "status_code", "access_token": META_PAGE_TOKEN},
+                )
+                status_data = status_resp.json()
+                if status_data.get("status_code") == "FINISHED":
+                    break
+                if status_data.get("status_code") == "ERROR":
+                    logger.error(f"Instagram mixed carousel processing error: {status_data}")
+                    return {"success": False, "error": f"Carousel processing failed: {status_data}"}
+                await _asyncio_mix.sleep(3)
+
+            resp_publish = await client.post(
+                f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media_publish",
+                data={"creation_id": container_id, "access_token": META_PAGE_TOKEN},
+            )
+            data_publish = resp_publish.json()
+            if "error" in data_publish:
+                logger.error(f"Instagram mixed carousel publish error: {data_publish['error']}")
+                return {"success": False, "error": data_publish["error"].get("message", str(data_publish["error"]))}
+            return {"success": True, "post_id": data_publish.get("id", ""), "result": data_publish}
+    except Exception as e:
+        logger.error(f"Instagram mixed carousel exception: {e}")
         return {"success": False, "error": str(e)}
 
 
