@@ -298,6 +298,38 @@ async def _safe_edit(target, text: str, parse_mode="Markdown", **kwargs):
             return await edit_fn(fallback)
 
 
+async def _upload_image_public(file_bytes: bytes) -> str:
+    """
+    Загружает изображение на Cloudinary (unsigned upload) и возвращает публичную
+    HTTPS-ссылку (secure_url). Заменяет собой ImgBB — обнаружено 23.09.2026:
+    Instagram Graph API не мог скачать фото по ссылкам ImgBB
+    ("Media download has failed. The media URI doesn't meet our requirements.",
+    error_subcode 2207052), хотя сама ссылка открывалась нормально в браузере —
+    похоже на блокировку/неправильные заголовки на стороне ImgBB для
+    серверных краулеров вроде facebookexternalhit. Cloudinary отдаёт файлы
+    с корректными заголовками и надёжно фетчится с серверов Meta.
+    Требует переменные окружения CLOUDINARY_CLOUD_NAME и CLOUDINARY_UPLOAD_PRESET
+    (unsigned-пресет, настроенный в Cloudinary Dashboard).
+    Бросает ValueError при ошибке — вызывающий код должен сам ловить исключение.
+    """
+    cloud_name = config.CLOUDINARY_CLOUD_NAME if hasattr(config, "CLOUDINARY_CLOUD_NAME") else __import__("os").environ.get("CLOUDINARY_CLOUD_NAME", "")
+    upload_preset = config.CLOUDINARY_UPLOAD_PRESET if hasattr(config, "CLOUDINARY_UPLOAD_PRESET") else __import__("os").environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+    if not cloud_name or not upload_preset:
+        raise ValueError("CLOUDINARY_CLOUD_NAME/CLOUDINARY_UPLOAD_PRESET не настроены")
+    import httpx as _hx_cld
+    async with _hx_cld.AsyncClient(timeout=30) as _client_cld:
+        _resp_cld = await _client_cld.post(
+            f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
+            data={"upload_preset": upload_preset},
+            files={"file": ("upload.jpg", bytes(file_bytes), "image/jpeg")},
+        )
+        _data_cld = _resp_cld.json()
+    _pub_url_cld = _data_cld.get("secure_url", "")
+    if not _pub_url_cld:
+        raise ValueError(f"Cloudinary upload failed: {_data_cld}")
+    return _pub_url_cld
+
+
 async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
     text = _truncate_for_telegram(text)
     try:
@@ -3734,15 +3766,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 import httpx as _hx_igp2
                 async with _hx_igp2.AsyncClient(timeout=30) as _hc_igp2:
                     _file_bytes_igp2 = (await _hc_igp2.get(_tg_url_igp2)).content
-                import base64 as _b64_igp2
-                _imgbb_key_igp2 = __import__("os").environ.get("IMGBB_API_KEY", "")
-                _img_b64_igp2 = _b64_igp2.b64encode(bytes(_file_bytes_igp2)).decode()
-                async with _hx_igp2.AsyncClient(timeout=30) as _hxc_igp2:
-                    _ib_igp2 = await _hxc_igp2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_igp2, "image": _img_b64_igp2})
-                    _ib_data_igp2 = _ib_igp2.json()
-                _pub_url_igp2 = _ib_data_igp2.get("data", {}).get("url", "")
-                if not _pub_url_igp2:
-                    raise ValueError(f"ImgBB failed: {_ib_data_igp2}")
+                _pub_url_igp2 = await _upload_image_public(_file_bytes_igp2)
                 from facebook_client import create_instagram_post as _ig_create_post2
                 _result_igp2 = await _ig_create_post2(_pt_igp2, image_url=_pub_url_igp2)
                 if _result_igp2.get("success"):
@@ -3773,15 +3797,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 import httpx as _hx_fbp2
                 async with _hx_fbp2.AsyncClient(timeout=30) as _hc_fbp2:
                     _file_bytes_fbp2 = (await _hc_fbp2.get(_tg_url_fbp2)).content
-                import base64 as _b64_fbp2
-                _imgbb_key_fbp2 = __import__("os").environ.get("IMGBB_API_KEY", "")
-                _img_b64_fbp2 = _b64_fbp2.b64encode(bytes(_file_bytes_fbp2)).decode()
-                async with _hx_fbp2.AsyncClient(timeout=30) as _hxc_fbp2:
-                    _ib_fbp2 = await _hxc_fbp2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_fbp2, "image": _img_b64_fbp2})
-                    _ib_data_fbp2 = _ib_fbp2.json()
-                _pub_url_fbp2 = _ib_data_fbp2.get("data", {}).get("url", "")
-                if not _pub_url_fbp2:
-                    raise ValueError(f"ImgBB failed: {_ib_data_fbp2}")
+                _pub_url_fbp2 = await _upload_image_public(_file_bytes_fbp2)
                 from facebook_client import create_post as _fb_create_post3
                 _result_fbp2 = await _fb_create_post3(_pt_fbp2, image_url=_pub_url_fbp2)
                 if _result_fbp2.get("success"):
@@ -3816,15 +3832,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     _tg_url_ig = _fp_ig if _fp_ig.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_ig}"
                     async with _hx_ig.AsyncClient(timeout=30) as _hc_ig:
                         _file_bytes_ig = (await _hc_ig.get(_tg_url_ig)).content
-                    import base64 as _b64_ig
-                    _imgbb_key_ig = __import__("os").environ.get("IMGBB_API_KEY", "")
-                    _img_b64_ig = _b64_ig.b64encode(bytes(_file_bytes_ig)).decode()
-                    async with _hx_ig.AsyncClient(timeout=30) as _hxc_ig:
-                        _ib_ig = await _hxc_ig.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_ig, "image": _img_b64_ig})
-                        _ib_data_ig = _ib_ig.json()
-                    _pub_url_ig = _ib_data_ig.get("data", {}).get("url", "")
-                    if not _pub_url_ig:
-                        raise ValueError(f"ImgBB failed: {_ib_data_ig}")
+                    _pub_url_ig = await _upload_image_public(_file_bytes_ig)
                     from facebook_client import create_instagram_post as _ig_create_post
                     _result_igp = await _ig_create_post(_row_igp["post_text"], image_url=_pub_url_ig)
                     async with _pool_ig_photo.acquire() as _conn_igp2:
@@ -3859,15 +3867,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     _tg_url_fb = _fp_fb if _fp_fb.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{_fp_fb}"
                     async with _hx_fb.AsyncClient(timeout=30) as _hc_fb:
                         _file_bytes_fb = (await _hc_fb.get(_tg_url_fb)).content
-                    import base64 as _b64_fb
-                    _imgbb_key_fb = __import__("os").environ.get("IMGBB_API_KEY", "")
-                    _img_b64_fb = _b64_fb.b64encode(bytes(_file_bytes_fb)).decode()
-                    async with _hx_fb.AsyncClient(timeout=30) as _hxc_fb:
-                        _ib_fb = await _hxc_fb.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key_fb, "image": _img_b64_fb, "expiration": 600})
-                        _ib_data_fb = _ib_fb.json()
-                    _pub_url_fb = _ib_data_fb.get("data", {}).get("url", "")
-                    if not _pub_url_fb:
-                        raise ValueError(f"ImgBB failed: {_ib_data_fb}")
+                    _pub_url_fb = await _upload_image_public(_file_bytes_fb)
                     from facebook_client import create_post as _fb_create_post2
                     _result_fbp = await _fb_create_post2(_row_fbp["post_text"], image_url=_pub_url_fb)
                     async with _pool_fb_photo.acquire() as _conn_fbp2:
@@ -3904,16 +3904,7 @@ async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             async with _hx_dl.AsyncClient(timeout=30) as _hc:
                 file_bytes = (await _hc.get(_tg_url)).content
             post_text = pending_gbp_data.get("post_text", "")
-            import base64 as _b64
-            _imgbb_key = __import__("os").environ.get("IMGBB_API_KEY", "")
-            _img_b64 = _b64.b64encode(bytes(file_bytes)).decode()
-            import httpx as _hx2
-            async with _hx2.AsyncClient(timeout=30) as _hxc2:
-                _ib = await _hxc2.post("https://api.imgbb.com/1/upload", data={"key": _imgbb_key, "image": _img_b64, "expiration": 600})
-                _ib_data = _ib.json()
-            _pub_url = _ib_data.get("data", {}).get("url", "")
-            if not _pub_url:
-                raise ValueError(f"ImgBB failed: {_ib_data}")
+            _pub_url = await _upload_image_public(file_bytes)
             _ac3 = {"type": "create_gbp_post", "post_text": post_text, "topic_type": "STANDARD",
                     "image_url": _pub_url, "description": "Опубликовать пост в GBP с фото",
                     "reasoning": "Владелец прислал фото", "urgency": "low",
