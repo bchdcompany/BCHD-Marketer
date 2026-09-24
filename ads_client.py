@@ -651,13 +651,28 @@ class GoogleAdsClient:
         import re as _re
         return set(_re.findall(r"[a-z0-9]+", s.lower()))
 
-    async def get_search_terms(self, days: int = 30, account: str = "ads") -> dict:
+    async def get_search_terms(self, days: int = 30, account: str = "ads",
+                                date_from: str = None, date_to: str = None) -> dict:
+        """
+        ИСПРАВЛЕНО 24.09.2026: раньше эта функция ВСЕГДА использовала
+        скользящее окно "последние {days} дней от сейчас", игнорируя период,
+        за который вызывающий код (например scheduled_campaign_audit)
+        запрашивал keywords/campaigns. Из-за этого термины сравнивались за
+        30 дней, а их родительские ключи — за произвольный другой период
+        (например 14 дней), и агент видел у search term БОЛЬШЕ кликов, чем
+        у его же ключа — статистически "невозможную" картину, хотя на самом
+        деле это были два разных временных окна. Теперь date_from/date_to
+        можно передать явно (как в get_keywords_analysis/get_full_audit_data),
+        чтобы период совпадал; если не переданы — поведение по умолчанию
+        (скользящее окно в {days} дней) сохранено для обратной совместимости.
+        """
         customer_id = self.lsa_customer_id if account == "lsa" else self.customer_id
         if not customer_id:
             return {'error': f'Customer ID для {account} не настроен', 'terms': []}
 
-        date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        date_to = datetime.now().strftime("%Y-%m-%d")
+        if not date_from or not date_to:
+            date_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")
 
         query = f"""
             SELECT
@@ -751,7 +766,7 @@ class GoogleAdsClient:
                         break
                 t['currently_excluded'] = excluded if tokenized_negatives else (t['status'] == 'EXCLUDED')
 
-            return {'terms': terms, 'days': days, 'account': account}
+            return {'terms': terms, 'days': days, 'account': account, 'date_from': date_from, 'date_to': date_to}
         except Exception as e:
             log.error(f"get_search_terms({account}) error: {e}")
             return {'error': str(e), 'terms': [], 'account': account}
