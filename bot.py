@@ -775,6 +775,21 @@ async def cmd_auditnow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await scheduled_campaign_audit(ctx.application)
 
 
+async def cmd_purgenow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ команда для ручного тестового запуска очистки очереди
+    одобрения (scheduled_purge_pending), не дожидаясь 03:00 — добавлена
+    24.09.2026 для проверки фикса SQL-бага в purge_stale (interval '$1 hours'
+    не параметризовался и запрос падал молча при каждом вызове, поэтому
+    очередь копилась месяцами). Можно удалить после тестирования."""
+    if not _is_owner(update):
+        return
+    before = await pending.pending_count()
+    await update.message.reply_text(f"🧹 Запускаю очистку очереди одобрения (сейчас {before} записей)...")
+    await scheduled_purge_pending(ctx.application)
+    after = await pending.pending_count()
+    await update.message.reply_text(f"✅ Готово. Было {before}, стало {after} (удалено {before - after}).")
+
+
 async def cmd_showcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/showcard <id> — заново присылает карточку одобрения по её ID.
     Нужна для восстановления: раньше кнопка "Уточнить" стирала исходное
@@ -6638,6 +6653,7 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
+    app.add_handler(CommandHandler("purgenow", cmd_purgenow))  # ВРЕМЕННО — для теста фикса purge_stale, можно убрать после проверки
     app.add_handler(CommandHandler("showcard", cmd_showcard))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("keywords", cmd_keywords))
