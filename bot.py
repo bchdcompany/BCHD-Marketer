@@ -3732,7 +3732,101 @@ async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+_MEDIA_GROUP_BUFFER: dict = {}
+_INSTAGRAM_POST_TRIGGERS = ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту",
+                            "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram",
+                            "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]
+
+
 async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Точка входа для фото. Если фото пришло ОДНО (без media_group_id) — обрабатываем
+    сразу, как раньше. Если фото пришло АЛЬБОМОМ (Telegram присылает каждое фото
+    альбома отдельным Update с одинаковым media_group_id, и подпись есть только у
+    ОДНОГО из них) — копим все фото альбома в _MEDIA_GROUP_BUFFER и обрабатываем
+    их ОДНИМ пакетом после короткой паузы (см. _process_photo_album). Без этого
+    несколько фото в одном сообщении: (1) публиковали пост только по одному фото
+    вместо карусели, и (2) остальные фото каждое по отдельности запускали общий
+    анализ через Vision, дублируя/путая ответы (обнаружено 23.09.2026 на реальном
+    тесте — три фото альбомом дали один пост из 1 фото плюс два нерелевантных
+    повторных ответа про CPA/LSA из истории чата).
+    """
+    if not _is_owner(update):
+        return
+    mgid = update.message.media_group_id
+    if not mgid:
+        await _handle_photo_message_single(update, ctx)
+        return
+    entry = _MEDIA_GROUP_BUFFER.setdefault(
+        mgid, {"photos": [], "caption": "", "caption_update": None, "first_update": update, "task": None}
+    )
+    entry["photos"].append(update.message.photo[-1])
+    if update.message.caption:
+        entry["caption"] = update.message.caption
+        entry["caption_update"] = update
+    if entry["task"]:
+        entry["task"].cancel()
+    entry["task"] = asyncio.create_task(_process_photo_album(mgid, ctx))
+
+
+async def _process_photo_album(mgid: str, ctx: ContextTypes.DEFAULT_TYPE):
+    """Debounce: ждём, пока придут все фото альбома (обычно доли секунды между
+    сообщениями одного альбома), затем обрабатываем накопленный набор ОДИН раз."""
+    try:
+        await asyncio.sleep(2.0)
+    except asyncio.CancelledError:
+        return  # пришло ещё одно фото того же альбома — таймер перезапущен заново
+    entry = _MEDIA_GROUP_BUFFER.pop(mgid, None)
+    if not entry:
+        return
+    photos = entry["photos"]
+    caption = entry["caption"]
+    cl = caption.lower()
+    if caption and any(w in cl for w in _INSTAGRAM_POST_TRIGGERS) and len(photos) > 1:
+        await _publish_instagram_carousel(entry["caption_update"], ctx, photos, caption)
+        return
+    # Facebook-подпись или отсутствие узнаваемой команды — обрабатываем как раньше,
+    # но ОДИН раз (на фото с подписью, если оно есть, иначе на первом фото альбома),
+    # а не по разу на каждое фото альбома.
+    use_update = entry["caption_update"] or entry["first_update"]
+    await _handle_photo_message_single(use_update, ctx)
+
+
+async def _publish_instagram_carousel(caption_update: Update, ctx: ContextTypes.DEFAULT_TYPE, photos: list, caption: str):
+    """Публикует карусель (до 10 фото) в Instagram по фото альбома + подписи владельца."""
+    status = await caption_update.message.reply_text("\U0001f4dd Составляю текст и публикую карусель в Instagram...")
+    try:
+        import anthropic as _a_car
+        _client_car = _a_car.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        _resp_car = await asyncio.to_thread(
+            _client_car.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+            messages=[{"role": "user", "content": caption}],
+        )
+        pt = _resp_car.content[0].text.strip()
+        image_urls = []
+        import httpx as _hx_car
+        for p in photos[:10]:  # лимит Instagram Graph API на карусель
+            tg_file = await ctx.bot.get_file(p.file_id)
+            fp = tg_file.file_path
+            tg_url = fp if fp.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{fp}"
+            async with _hx_car.AsyncClient(timeout=30) as _hc_car:
+                file_bytes = (await _hc_car.get(tg_url)).content
+            image_urls.append(await _upload_image_public(file_bytes))
+        from facebook_client import create_instagram_carousel_post as _ig_carousel
+        result = await _ig_carousel(pt, image_urls)
+        if result.get("success"):
+            await _safe_edit(status, f"✅ Карусель опубликована в Instagram ({len(image_urls)} фото)!\n\nТекст: {pt[:200]}")
+        else:
+            await _safe_edit(status, f"❌ Ошибка: {result.get('error')}")
+    except Exception as e:
+        log.error(f"Instagram carousel error: {e}", exc_info=True)
+        await _safe_edit(status, f"❌ Ошибка: {e}")
+
+
+async def _handle_photo_message_single(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Принимает фото/скриншот, отправляет в Claude Vision для анализа,
     затем продолжает как обычный текстовый запрос (с контекстом из фото).
