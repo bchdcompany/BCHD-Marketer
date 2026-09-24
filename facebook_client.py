@@ -119,6 +119,27 @@ async def create_instagram_post(caption: str, image_url: str) -> dict:
                 return {"success": False, "error": data1["error"].get("message", str(data1["error"]))}
             container_id = data1.get("id", "")
 
+            # Ждём, пока Instagram обработает контейнер, ПЕРЕД публикацией — как
+            # уже делается для видео ниже (create_instagram_video_post). Раньше
+            # для фото этого шага не было, и media_publish вызывался сразу же,
+            # что иногда даёт ошибку "Media ID is not available" / "The media
+            # is not ready for publishing" (code 9007, subcode 2207027) —
+            # обнаружено 23.09.2026 на реальной публикации. Фото обычно готовы
+            # намного быстрее видео, поэтому ждём максимум ~15 секунд.
+            import asyncio as _asyncio_ig
+            for _ in range(5):
+                status_resp = await client.get(
+                    f"{GRAPH_API_BASE}/{container_id}",
+                    params={"fields": "status_code", "access_token": META_PAGE_TOKEN},
+                )
+                status_data = status_resp.json()
+                if status_data.get("status_code") == "FINISHED":
+                    break
+                if status_data.get("status_code") == "ERROR":
+                    logger.error(f"Instagram container processing error: {status_data}")
+                    return {"success": False, "error": f"Container processing failed: {status_data}"}
+                await _asyncio_ig.sleep(3)
+
             # Шаг 2 — публикуем container
             resp2 = await client.post(
                 f"{GRAPH_API_BASE}/{META_INSTAGRAM_ID}/media_publish",
