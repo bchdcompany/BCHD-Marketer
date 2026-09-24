@@ -372,12 +372,25 @@ class PendingActions:
         return [a for a in self._store.values() if a["status"] == "pending"]
 
     async def purge_stale(self, max_age_hours: int = 72) -> int:
+        """
+        ИСПРАВЛЕНО 24.09.2026 — КРИТИЧЕСКИЙ БАГ: запрос использовал
+        "interval '$1 hours'" — Postgres НЕ подставляет параметр $1 внутри
+        строкового литерала, он воспринимает буквальный текст "$1 hours"
+        как значение interval и падает с ошибкой парсинга при КАЖДОМ вызове.
+        Ошибка ловилась в except и тихо возвращала 0 — из-за этого очистка
+        очереди одобрения не срабатывала НИ РАЗУ с момента добавления этой
+        функции, и карточки многонедельной давности продолжали копиться
+        (обнаружено 24.09.2026: карточка с данными за "01-11.08" всё ещё
+        была в очереди из 96 записей). Правильный способ параметризовать
+        interval — умножить параметр (число часов) на interval '1 hour'
+        ВНЕ строкового литерала.
+        """
         if self._pool:
             try:
                 async with self._pool.acquire() as conn:
                     result = await conn.execute(
                         "DELETE FROM pending_actions WHERE status='pending' "
-                        "AND created_at < now() - interval '$1 hours'",
+                        "AND created_at < now() - ($1 * interval '1 hour')",
                         max_age_hours
                     )
                 try:
