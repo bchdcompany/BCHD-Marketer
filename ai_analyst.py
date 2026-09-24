@@ -90,6 +90,24 @@ def _check_search_term_keyword_consistency(context_data: dict) -> list:
                     kw = kw_stats[txt]
                     t_clicks, k_clicks = t.get("clicks"), kw.get("clicks")
                     t_cost, k_cost = t.get("cost"), kw.get("cost")
+                    # ИСПРАВЛЕНО 24.09.2026: если у ключа k_clicks==0 (и k_cost
+                    # тоже 0/None) — это сигнатура СВЕЖЕДОБАВЛЕННОГО ключа
+                    # (например через add_keywords несколько часов назад),
+                    # у которого физически ещё нет собственной статистики.
+                    # В этом случае search term с тем же текстом, но с реальной
+                    # историей — это НЕ противоречие: тот же текст запроса
+                    # раньше матчился под ДРУГИМИ ключами (broad/phrase match)
+                    # ещё до создания точного ключа, это два разных объекта за
+                    # разные периоды жизни, а не родитель/подмножество. Раньше
+                    # это ложно флагалось как "внутренне противоречивые данные"
+                    # (найдено на кейсе 'local dishwasher repairman': ключ
+                    # clicks=0/cost=$0 только что добавлен, term clicks=11/
+                    # cost=$69.37 накоплен за 30 дней под другими ключами).
+                    # Настоящий инцидент 20.09 был про ключ с НЕНУЛЕВОЙ
+                    # собственной статистикой (4 клика), поэтому проверка на
+                    # k_clicks > 0 сохраняет чувствительность к реальным багам.
+                    if k_clicks == 0 and not k_cost:
+                        continue
                     if isinstance(t_clicks, (int, float)) and isinstance(k_clicks, (int, float)) and t_clicks > k_clicks:
                         warnings.append(
                             f"'{txt}': поисковый запрос показывает {t_clicks} кликов, "
