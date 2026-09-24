@@ -4449,6 +4449,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     expected = verification.get('expected_terms', [])
                     if not missing:
                         verify_details = f"\n📊 Все {len(expected)} минус-слов найдены в настройках кампании"
+                elif action_type in ('add_keywords', 'addkeywords'):
+                    missing = verification.get('missing_keywords', [])
+                    expected = verification.get('expected_keywords', [])
+                    if not missing:
+                        verify_details = f"\n📊 Ключ(и) {', '.join(expected)} найден(ы) в настройках группы объявлений"
                 elif action_type == 'budget_change':
                     actual = verification.get('actual_budget')
                     if actual is not None:
