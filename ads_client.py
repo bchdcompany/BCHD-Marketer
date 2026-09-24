@@ -1316,6 +1316,46 @@ class GoogleAdsClient:
                     'checked_campaigns': len(target_ids),
                 }
 
+            elif action_type in ('add_keywords', 'addkeywords'):
+                # Добавлено 24.09.2026: раньше add_keywords вообще не был
+                # покрыт verify_action и всегда падал в общий else → всегда
+                # показывал владельцу "⚠️ Не подтверждено", даже когда API
+                # реально вернул success=True с resource_names (как в кейсе
+                # local dishwasher repairman). Проверяем по факту, что
+                # ключевое слово реально появилось в настройках нужной
+                # ad_group — тот же паттерн, что для add_negative_keywords.
+                if self._is_lsa(customer_id):
+                    return {'verified': None, 'note': 'LSA не поддерживает ключевые слова — перепроверка неприменима'}
+                ad_group_id = action.get('ad_group_id')
+                keywords = action.get('keywords', [])
+                if not ad_group_id or not keywords:
+                    return {'verified': None, 'note': 'Нет ad_group_id или keywords для перепроверки'}
+                texts_expected = {
+                    (kw.get('text') if isinstance(kw, dict) else str(kw)).strip().lower()
+                    for kw in keywords if (kw.get('text') if isinstance(kw, dict) else str(kw))
+                }
+                query = f"""
+                    SELECT ad_group_criterion.keyword.text, ad_group_criterion.status
+                    FROM ad_group_criterion
+                    WHERE ad_group.id = {ad_group_id}
+                      AND ad_group_criterion.type = 'KEYWORD'
+                      AND ad_group_criterion.negative = FALSE
+                """
+                try:
+                    rows = await self._search(customer_id, query)
+                    found_texts = {
+                        row.ad_group_criterion.keyword.text.strip().lower()
+                        for row in rows if row.ad_group_criterion.status.name != 'REMOVED'
+                    }
+                except Exception as e:
+                    return {'verified': None, 'note': f'Ошибка проверки: {e}'}
+                missing = texts_expected - found_texts
+                return {
+                    'verified': len(missing) == 0,
+                    'expected_keywords': list(texts_expected),
+                    'missing_keywords': list(missing),
+                }
+
             elif action_type == 'remove_negative_keyword':
                 rn = action.get('resource_name', '')
                 if not rn:
