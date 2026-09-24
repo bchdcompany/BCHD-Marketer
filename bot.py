@@ -330,6 +330,33 @@ async def _upload_image_public(file_bytes: bytes) -> str:
     return _pub_url_cld
 
 
+async def _upload_video_public(file_bytes: bytes) -> str:
+    """
+    Загружает видео на Cloudinary (unsigned upload, resource_type=video) и
+    возвращает публичную HTTPS-ссылку (secure_url) — используется для смешанных
+    каруселей Instagram (фото+видео), где видео тоже нужно по прямой публичной
+    ссылке, а не по временной ссылке Telegram. Тот же unsigned-пресет
+    (CLOUDINARY_UPLOAD_PRESET), что и для фото, подходит и для видео.
+    Бросает ValueError при ошибке — вызывающий код должен сам ловить исключение.
+    """
+    cloud_name = config.CLOUDINARY_CLOUD_NAME if hasattr(config, "CLOUDINARY_CLOUD_NAME") else __import__("os").environ.get("CLOUDINARY_CLOUD_NAME", "")
+    upload_preset = config.CLOUDINARY_UPLOAD_PRESET if hasattr(config, "CLOUDINARY_UPLOAD_PRESET") else __import__("os").environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+    if not cloud_name or not upload_preset:
+        raise ValueError("CLOUDINARY_CLOUD_NAME/CLOUDINARY_UPLOAD_PRESET не настроены")
+    import httpx as _hx_cldv
+    async with _hx_cldv.AsyncClient(timeout=120) as _client_cldv:
+        _resp_cldv = await _client_cldv.post(
+            f"https://api.cloudinary.com/v1_1/{cloud_name}/video/upload",
+            data={"upload_preset": upload_preset},
+            files={"file": ("upload.mp4", bytes(file_bytes), "video/mp4")},
+        )
+        _data_cldv = _resp_cldv.json()
+    _pub_url_cldv = _data_cldv.get("secure_url", "")
+    if not _pub_url_cldv:
+        raise ValueError(f"Cloudinary video upload failed: {_data_cldv}")
+    return _pub_url_cldv
+
+
 async def _safe_reply(message, text: str, parse_mode="Markdown", **kwargs):
     text = _truncate_for_telegram(text)
     try:
@@ -3555,6 +3582,23 @@ async def handle_voice_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_video_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
+    Точка входа для видео — симметрично handle_photo_message: одиночное видео
+    обрабатывается сразу, видео в составе альбома (media_group_id, например
+    смешанный альбом фото+видео) копится в общий _MEDIA_GROUP_BUFFER и
+    обрабатывается один раз вместе с остальными элементами альбома
+    (см. _process_media_album).
+    """
+    if not _is_owner(update):
+        return
+    if not update.message.media_group_id:
+        await _handle_video_message_single(update, ctx)
+        return
+    _media_group_add(update, "video")
+    _MEDIA_GROUP_BUFFER[update.message.media_group_id]["ctx"] = ctx
+
+
+async def _handle_video_message_single(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
     Facebook поддерживает видео прямо в постах (в отличие от Google Business
     Profile, где видео разрешено только в общей галерее, не в самом посте).
     Проверяем сначала — ждём ли видео для Facebook поста.
@@ -3736,64 +3780,93 @@ _MEDIA_GROUP_BUFFER: dict = {}
 _INSTAGRAM_POST_TRIGGERS = ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту",
                             "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram",
                             "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]
+_FACEBOOK_POST_TRIGGERS = ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб",
+                           "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook",
+                           "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook"]
 
 
-async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Точка входа для фото. Если фото пришло ОДНО (без media_group_id) — обрабатываем
-    сразу, как раньше. Если фото пришло АЛЬБОМОМ (Telegram присылает каждое фото
-    альбома отдельным Update с одинаковым media_group_id, и подпись есть только у
-    ОДНОГО из них) — копим все фото альбома в _MEDIA_GROUP_BUFFER и обрабатываем
-    их ОДНИМ пакетом после короткой паузы (см. _process_photo_album). Без этого
-    несколько фото в одном сообщении: (1) публиковали пост только по одному фото
-    вместо карусели, и (2) остальные фото каждое по отдельности запускали общий
-    анализ через Vision, дублируя/путая ответы (обнаружено 23.09.2026 на реальном
-    тесте — три фото альбомом дали один пост из 1 фото плюс два нерелевантных
-    повторных ответа про CPA/LSA из истории чата).
-    """
-    if not _is_owner(update):
-        return
+def _media_group_add(update: Update, kind: str) -> dict:
+    """Добавляет фото/видео из update в общий буфер альбома (по media_group_id) и
+    возвращает актуальную запись. kind — 'photo' или 'video'."""
     mgid = update.message.media_group_id
-    if not mgid:
-        await _handle_photo_message_single(update, ctx)
-        return
     entry = _MEDIA_GROUP_BUFFER.setdefault(
-        mgid, {"photos": [], "caption": "", "caption_update": None, "first_update": update, "task": None}
+        mgid, {"items": [], "caption": "", "caption_update": None, "first_update": update, "task": None}
     )
-    entry["photos"].append(update.message.photo[-1])
+    obj = update.message.photo[-1] if kind == "photo" else update.message.video
+    entry["items"].append({"kind": kind, "obj": obj})
     if update.message.caption:
         entry["caption"] = update.message.caption
         entry["caption_update"] = update
     if entry["task"]:
         entry["task"].cancel()
-    entry["task"] = asyncio.create_task(_process_photo_album(mgid, ctx))
+    entry["task"] = asyncio.create_task(_process_media_album(mgid))
+    return entry
 
 
-async def _process_photo_album(mgid: str, ctx: ContextTypes.DEFAULT_TYPE):
-    """Debounce: ждём, пока придут все фото альбома (обычно доли секунды между
-    сообщениями одного альбома), затем обрабатываем накопленный набор ОДИН раз."""
+async def handle_photo_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Точка входа для фото. Если фото пришло ОДНО (без media_group_id) — обрабатываем
+    сразу, как раньше. Если фото пришло АЛЬБОМОМ (Telegram присылает каждое фото/видео
+    альбома отдельным Update с одинаковым media_group_id, и подпись есть только у
+    ОДНОГО из них) — копим весь альбом (в т.ч. видео, см. handle_video_message) в
+    _MEDIA_GROUP_BUFFER и обрабатываем его ОДНИМ пакетом после короткой паузы (см.
+    _process_media_album). Без этого несколько фото в одном сообщении: (1) публиковали
+    пост только по одному фото вместо карусели, и (2) остальные фото каждое по
+    отдельности запускали общий анализ через Vision, дублируя/путая ответы (обнаружено
+    23.09.2026 на реальном тесте — три фото альбомом дали один пост из 1 фото плюс
+    два нерелевантных повторных ответа про CPA/LSA из истории чата).
+    """
+    if not _is_owner(update):
+        return
+    if not update.message.media_group_id:
+        await _handle_photo_message_single(update, ctx)
+        return
+    _media_group_add(update, "photo")
+    _MEDIA_GROUP_BUFFER[update.message.media_group_id]["ctx"] = ctx
+
+
+async def _process_media_album(mgid: str):
+    """Debounce: ждём, пока придут все фото/видео альбома (обычно доли секунды
+    между сообщениями одного альбома), затем обрабатываем накопленный набор ОДИН раз."""
     try:
         await asyncio.sleep(2.0)
     except asyncio.CancelledError:
-        return  # пришло ещё одно фото того же альбома — таймер перезапущен заново
+        return  # пришёл ещё один элемент того же альбома — таймер перезапущен заново
     entry = _MEDIA_GROUP_BUFFER.pop(mgid, None)
     if not entry:
         return
-    photos = entry["photos"]
+    ctx = entry["ctx"]
+    items = entry["items"]
     caption = entry["caption"]
     cl = caption.lower()
-    if caption and any(w in cl for w in _INSTAGRAM_POST_TRIGGERS) and len(photos) > 1:
-        await _publish_instagram_carousel(entry["caption_update"], ctx, photos, caption)
+    has_video = any(i["kind"] == "video" for i in items)
+    is_ig = caption and any(w in cl for w in _INSTAGRAM_POST_TRIGGERS)
+    is_fb = caption and any(w in cl for w in _FACEBOOK_POST_TRIGGERS)
+
+    if is_ig and len(items) > 1:
+        if has_video:
+            await _publish_instagram_mixed_carousel(entry["caption_update"], ctx, items, caption)
+        else:
+            await _publish_instagram_carousel(entry["caption_update"], ctx, [i["obj"] for i in items], caption)
         return
-    # Facebook-подпись или отсутствие узнаваемой команды — обрабатываем как раньше,
-    # но ОДИН раз (на фото с подписью, если оно есть, иначе на первом фото альбома),
-    # а не по разу на каждое фото альбома.
+    if is_fb and len(items) > 1 and not has_video:
+        await _publish_facebook_multi_photo(entry["caption_update"], ctx, [i["obj"] for i in items], caption)
+        return
+    # FB с видео в альбоме, или подпись не распознана — Facebook не умеет
+    # смешивать фото+видео в одном посте через API, поэтому в остальных
+    # случаях обрабатываем ОДИН элемент (с подписью, если она есть, иначе
+    # первый в альбоме) старым способом — как раньше, но один раз, а не по
+    # разу на каждый элемент альбома.
     use_update = entry["caption_update"] or entry["first_update"]
-    await _handle_photo_message_single(use_update, ctx)
+    use_kind = "video" if use_update.message.video else "photo"
+    if use_kind == "video":
+        await _handle_video_message_single(use_update, ctx)
+    else:
+        await _handle_photo_message_single(use_update, ctx)
 
 
 async def _publish_instagram_carousel(caption_update: Update, ctx: ContextTypes.DEFAULT_TYPE, photos: list, caption: str):
-    """Публикует карусель (до 10 фото) в Instagram по фото альбома + подписи владельца."""
+    """Публикует карусель из фото (до 10 шт.) в Instagram по фото альбома + подписи владельца."""
     status = await caption_update.message.reply_text("\U0001f4dd Составляю текст и публикую карусель в Instagram...")
     try:
         import anthropic as _a_car
@@ -3823,6 +3896,79 @@ async def _publish_instagram_carousel(caption_update: Update, ctx: ContextTypes.
             await _safe_edit(status, f"❌ Ошибка: {result.get('error')}")
     except Exception as e:
         log.error(f"Instagram carousel error: {e}", exc_info=True)
+        await _safe_edit(status, f"❌ Ошибка: {e}")
+
+
+async def _publish_instagram_mixed_carousel(caption_update: Update, ctx: ContextTypes.DEFAULT_TYPE, items: list, caption: str):
+    """Публикует смешанную карусель (фото и видео вместе, до 10 элементов) в Instagram."""
+    status = await caption_update.message.reply_text("\U0001f4dd Составляю текст и публикую карусель (фото+видео) в Instagram...")
+    try:
+        import anthropic as _a_mix
+        _client_mix = _a_mix.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        _resp_mix = await asyncio.to_thread(
+            _client_mix.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+            messages=[{"role": "user", "content": caption}],
+        )
+        pt = _resp_mix.content[0].text.strip()
+        media_items = []
+        import httpx as _hx_mix
+        for it in items[:10]:
+            tg_file = await ctx.bot.get_file(it["obj"].file_id)
+            fp = tg_file.file_path
+            tg_url = fp if fp.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{fp}"
+            async with _hx_mix.AsyncClient(timeout=60) as _hc_mix:
+                file_bytes = (await _hc_mix.get(tg_url)).content
+            if it["kind"] == "video":
+                pub_url = await _upload_video_public(file_bytes)
+                media_items.append({"type": "video", "url": pub_url})
+            else:
+                pub_url = await _upload_image_public(file_bytes)
+                media_items.append({"type": "image", "url": pub_url})
+        from facebook_client import create_instagram_media_carousel_post as _ig_mixed
+        result = await _ig_mixed(pt, media_items)
+        if result.get("success"):
+            await _safe_edit(status, f"✅ Карусель опубликована в Instagram ({len(media_items)} элементов)!\n\nТекст: {pt[:200]}")
+        else:
+            await _safe_edit(status, f"❌ Ошибка: {result.get('error')}")
+    except Exception as e:
+        log.error(f"Instagram mixed carousel error: {e}", exc_info=True)
+        await _safe_edit(status, f"❌ Ошибка: {e}")
+
+
+async def _publish_facebook_multi_photo(caption_update: Update, ctx: ContextTypes.DEFAULT_TYPE, photos: list, caption: str):
+    """Публикует пост с несколькими фото (до 10 шт.) в Facebook по фото альбома + подписи владельца."""
+    status = await caption_update.message.reply_text("\U0001f4dd Составляю текст и публикую пост с фото в Facebook...")
+    try:
+        import anthropic as _a_fbm
+        _client_fbm = _a_fbm.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        _resp_fbm = await asyncio.to_thread(
+            _client_fbm.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+            messages=[{"role": "user", "content": caption}],
+        )
+        pt = _resp_fbm.content[0].text.strip()
+        image_urls = []
+        import httpx as _hx_fbm
+        for p in photos[:10]:
+            tg_file = await ctx.bot.get_file(p.file_id)
+            fp = tg_file.file_path
+            tg_url = fp if fp.startswith("http") else f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{fp}"
+            async with _hx_fbm.AsyncClient(timeout=30) as _hc_fbm:
+                file_bytes = (await _hc_fbm.get(tg_url)).content
+            image_urls.append(await _upload_image_public(file_bytes))
+        from facebook_client import create_facebook_multi_photo_post as _fb_multi
+        result = await _fb_multi(pt, image_urls)
+        if result.get("success"):
+            await _safe_edit(status, f"✅ Пост с {len(image_urls)} фото опубликован в Facebook!\n\nТекст: {pt[:200]}")
+        else:
+            await _safe_edit(status, f"❌ Ошибка: {result.get('error')}")
+    except Exception as e:
+        log.error(f"Facebook multi-photo error: {e}", exc_info=True)
         await _safe_edit(status, f"❌ Ошибка: {e}")
 
 
