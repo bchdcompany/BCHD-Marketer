@@ -790,6 +790,44 @@ async def cmd_purgenow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Готово. Было {before}, стало {after} (удалено {before - after}).")
 
 
+async def cmd_workizjob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ диагностическая команда: /workizjob <номер джоба, напр. 1966>
+    Присылает сырой JSON джоба из Workiz (job/get/{UUID}/), чтобы найти
+    точное имя поля с реальными платежами (Payments) — сейчас
+    get_jobs_by_source() считает "собрано" как JobTotalPrice - JobAmountDue
+    (сводные поля из job/all/), а не по факту записей оплат, из-за чего
+    цифры "Реально собрано" могут расходиться с реальностью. Можно удалить
+    после того как найдём и подключим правильное поле."""
+    if not _is_owner(update):
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /workizjob <номер джоба>, например /workizjob 1966")
+        return
+    serial = ctx.args[0]
+    today = datetime.now(NY_TZ)
+    date_from = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+    date_to = today.strftime("%Y-%m-%d")
+    await update.message.reply_text(f"🔍 Ищу джоб #{serial} за последние 90 дней...")
+    found = await workiz_client.find_job_by_serial(serial, date_from, date_to)
+    if not found.get("found"):
+        await update.message.reply_text(
+            f"⚠️ Джоб #{serial} не найден за 90 дней (просканировано {found.get('total_jobs_scanned', 0)}). "
+            f"{found.get('error', '')}"
+        )
+        return
+    uuid = found.get("uuid")
+    raw = await workiz_client.get_job_raw(uuid)
+    payment_like_keys = [k for k in raw.keys() if "pay" in k.lower()] if isinstance(raw, dict) else []
+    await update.message.reply_text(
+        f"UUID: {uuid}\nКлючи с 'pay' в названии: {payment_like_keys or 'не найдено'}"
+    )
+    import json as _json
+    text = _json.dumps(raw, indent=2, ensure_ascii=False, default=str)
+    for i in range(0, len(text), 3500):
+        chunk = text[i:i + 3500]
+        await update.message.reply_text(f"```\n{chunk}\n```", parse_mode="Markdown")
+
+
 async def cmd_showcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/showcard <id> — заново присылает карточку одобрения по её ID.
     Нужна для восстановления: раньше кнопка "Уточнить" стирала исходное
@@ -6746,6 +6784,7 @@ def main():
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
     app.add_handler(CommandHandler("purgenow", cmd_purgenow))  # ВРЕМЕННО — для теста фикса purge_stale, можно убрать после проверки
+    app.add_handler(CommandHandler("workizjob", cmd_workizjob))  # ВРЕМЕННО — диагностика реальных полей платежей Workiz, можно убрать после проверки
     app.add_handler(CommandHandler("showcard", cmd_showcard))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("keywords", cmd_keywords))
