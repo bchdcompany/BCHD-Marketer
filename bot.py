@@ -2491,14 +2491,64 @@ def _action_already_applied(action: dict, context_data: dict) -> tuple:
                     f"(в списке негативов или запрос уже currently_excluded=true)"
                 )
     elif a_type in ("update_headlines", "update_ad_headlines"):
-        # Проверяем через recent_changes — было ли изменение заголовков этой группы за последние 14 дней
+        target_ad_id = action.get("ad_id")
+        target_group = str(action.get("ad_group") or action.get("ad_group_name") or "").strip().lower()
+        new_headlines = action.get("headlines", []) or []
+        new_texts = [str(h).strip().lower() for h in new_headlines if str(h).strip()]
+
+        # 1) Точная проверка ТЕКУЩЕГО состояния объявления: реально ли все
+        # предложенные заголовки уже есть среди живых заголовков этого ad_id.
+        # Ищем по ad_performance (единственный источник фактических headlines).
+        matched_ad = None
+        ad_perf = context_data.get("ad_performance", {})
+        if isinstance(ad_perf, dict):
+            for _acc_val in ad_perf.values():
+                if not isinstance(_acc_val, dict):
+                    continue
+                for ad in _acc_val.get("ads", []):
+                    if target_ad_id and ad.get("ad_id") == target_ad_id:
+                        matched_ad = ad
+                        break
+                    if not target_ad_id and target_group and str(ad.get("ad_group", "")).strip().lower() == target_group:
+                        matched_ad = ad
+                        break
+                if matched_ad:
+                    break
+        if matched_ad and new_texts:
+            existing_headlines = {str(h).strip().lower() for h in matched_ad.get("headlines", [])}
+            if all(t in existing_headlines for t in new_texts):
+                return True, f"Заголовок(и) {new_texts} уже есть среди текущих заголовков этого объявления (ad_id={matched_ad.get('ad_id')})"
+
+        # 2) Код-уровневая проверка правила "не чаще раза в 14 дней" — по
+        # ad_id/ad_group (не по несуществующему полю ad_group_id) И с
+        # реальной проверкой даты applied_at, как и написано в комментарии.
         recent = context_data.get("recent_changes", [])
-        target_group = str(action.get("ad_group_id") or action.get("keyword", "")).strip().lower()
+        id_str = str(target_ad_id) if target_ad_id else ""
         for chg in recent:
-            if chg.get("action_type") in ("update_headlines", "update_ad_headlines"):
-                chg_desc = str(chg.get("description", "")).lower()
-                if target_group and target_group in chg_desc:
-                    return True, f"Заголовки этой группы уже обновлялись недавно: {chg.get('applied_at')}"
+            if chg.get("action_type") not in ("update_headlines", "update_ad_headlines"):
+                continue
+            chg_desc = str(chg.get("description", "")).lower()
+            if not ((id_str and id_str in chg_desc) or (target_group and target_group in chg_desc)):
+                continue
+            applied_raw = chg.get("applied_at")
+            if not applied_raw:
+                continue
+            applied_dt = None
+            for _fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    applied_dt = datetime.strptime(applied_raw, _fmt)
+                    break
+                except (ValueError, TypeError):
+                    continue
+            if not applied_dt:
+                continue
+            days_since = (datetime.now() - applied_dt).total_seconds() / 86400
+            if days_since < 14:
+                allowed_from = (applied_dt + timedelta(days=14)).strftime("%d.%m.%Y")
+                return True, (
+                    f"Заголовки этой группы уже обновлялись {applied_dt.strftime('%d.%m.%Y')} "
+                    f"({days_since:.1f} дн. назад) — правило 14 дней разрешает менять не раньше {allowed_from}"
+                )
     return False, ""
 
 
