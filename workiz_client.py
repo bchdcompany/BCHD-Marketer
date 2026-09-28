@@ -147,6 +147,45 @@ async def get_jobs_by_source(
     }
 
 
+async def get_job_raw(uuid: str) -> dict:
+    """
+    Возвращает СЫРОЙ JSON одного джоба по UUID через job/get/{UUID}/.
+
+    Зачем: get_jobs_by_source() сейчас считает "собрано" как
+    JobTotalPrice - JobAmountDue — оба поля берутся из списочного
+    эндпоинта job/all/ (это сводные/инвойсные поля, а не реальные записи
+    платежей). Если у джоба несколько частичных оплат, оплата наличными
+    без вовремя обновлённого инвойса, или сумма JobAmountDue просто не
+    успевает синхронизироваться — эта формула даст неверное "собрано".
+    Нужно посмотреть сырой ответ job/get и найти реальное поле(я) с
+    платежами (кандидаты: Payments, PaymentsList, payment_list и т.п.),
+    как мы уже делали раньше для полей телефона (см. find_job_by_phone).
+    """
+    if not uuid:
+        return {"error": "Пустой UUID"}
+    return await _get(f"job/get/{uuid}/")
+
+
+async def find_job_by_serial(serial_id, date_from: str, date_to: str) -> dict:
+    """
+    Ищет джоб по номеру (SerialId, например 1966 из '#1966') за период —
+    используется вместе с get_job_raw() для диагностики полей платежей.
+    """
+    target = str(serial_id).strip().lstrip("#")
+    if not target:
+        return {"found": False, "error": "Пустой номер джоба"}
+
+    result = await get_jobs_by_date_range(date_from, date_to, records=200)
+    if "error" in result:
+        return {"found": False, "error": result["error"]}
+
+    for job in result.get("jobs", []):
+        if str(job.get("SerialId", "")).strip() == target:
+            return {"found": True, "uuid": job.get("UUID"), "job": job}
+
+    return {"found": False, "total_jobs_scanned": result.get("total", 0)}
+
+
 async def find_job_by_phone(phone: str, date_from: str, date_to: str) -> dict:
     """
     Ищет джоб(ы) в Workiz по номеру телефона клиента за указанный период.
