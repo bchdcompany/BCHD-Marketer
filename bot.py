@@ -1003,8 +1003,14 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     if all_overdue:
         _total_due_all = sum(float(j.get("JobAmountDue", 0) or 0) for j in all_overdue)
         text += f"\n⚠️ *Неоплаченные джобы, все источники ({len(all_overdue)}, всего ${_total_due_all:.0f}):*\n"
-        for j in all_overdue[:5]:
+        _shown = all_overdue[:5]
+        _shown_due_sum = sum(float(j.get("JobAmountDue", 0) or 0) for j in _shown)
+        for j in _shown:
             text += f"• #{j.get('SerialId')}: ${float(j.get('JobTotalPrice', 0) or 0):.0f} (долг ${float(j.get('JobAmountDue', 0) or 0):.0f}, {j.get('Status')}, {j.get('JobSource', '?')})\n"
+        _rest_count = len(all_overdue) - len(_shown)
+        if _rest_count > 0:
+            _rest_due = _total_due_all - _shown_due_sum
+            text += f"_(показаны топ-5 по сумме долга; ещё {_rest_count} джоб(ов) на ${_rest_due:.0f} не выведены)_\n"
 
     return text
 
