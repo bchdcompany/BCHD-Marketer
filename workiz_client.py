@@ -147,6 +147,7 @@ async def get_jobs_by_source(
     for j in source_jobs:
         jobs_summary.append({
             "serial_id": j.get("SerialId"),
+            "client_name": f"{(j.get('FirstName') or '').strip()} {(j.get('LastName') or '').strip()}".strip(),
             "status": j.get("Status"),
             "total_price": float(j.get("JobTotalPrice", 0) or 0),
             "amount_due": float(j.get("JobAmountDue", 0) or 0),
