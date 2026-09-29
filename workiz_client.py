@@ -57,30 +57,52 @@ async def _get(endpoint: str, params: dict = None) -> dict:
 
 async def get_jobs_by_date_range(date_from: str, date_to: str, records: int = 100) -> dict:
     """
-    Получает список джобов начиная с date_from (Workiz API поддерживает
-    только нижнюю границу через параметр start_date — верхнюю границу
-    date_to обрезаем на своей стороне после получения ответа).
+    Получает ВСЕ джобы за период [date_from, date_to] — с пагинацией.
+    Workiz API поддерживает только нижнюю границу через start_date —
+    верхнюю (date_to) обрезаем на своей стороне после получения ответа.
+
+    ВАЖНО (найдено 28.09.2026 при разборе жалобы "собрано больше, чем
+    показывает бот"): раньше этот метод делал ОДИН запрос и брал максимум
+    `records` джобов без offset. Если за период в Workiz реально больше
+    записей, чем `records` — лишние джобы молча отбрасывались, и вместе
+    с ними часть реальной выручки/собранного пропадала из всех отчётов,
+    которые строятся поверх get_jobs_by_source() (ROAS, утренний/вечерний
+    отчёт). Теперь пагинируем через offset, пока страница не станет
+    короче page_size — так же, как уже сделано в get_clients_with_email().
     """
-    params = {
-        "start_date": date_from,
-        "records": records,
-    }
-    result = await _get("job/all/", params)
-    if "error" in result:
-        return result
-    jobs = result.get("data", [])
-    if isinstance(jobs, dict):
-        jobs = jobs.get("data", [])
+    all_jobs = []
+    offset = 0
+    page_size = records or 100
+    while True:
+        params = {"start_date": date_from, "records": page_size, "offset": offset}
+        result = await _get("job/all/", params)
+        if isinstance(result, dict) and result.get("error"):
+            if not all_jobs:
+                return result
+            log.warning(f"get_jobs_by_date_range: ошибка на offset={offset}, останавливаюсь с {len(all_jobs)} уже собранными: {result.get('error')}")
+            break
+        jobs = result.get("data", []) if isinstance(result, dict) else []
+        if isinstance(jobs, dict):
+            jobs = jobs.get("data", [])
+        if not jobs:
+            break
+        all_jobs.extend(jobs)
+        if len(jobs) < page_size:
+            break
+        offset += page_size
+        if offset > 20000:
+            log.warning("get_jobs_by_date_range: остановлено на offset=20000 — подозрительно много джобов, проверь период")
+            break
 
     # Обрезаем по верхней границе на своей стороне, т.к. API не принимает to_date
     filtered = []
-    for job in jobs:
+    for job in all_jobs:
         created = job.get("CreatedDate") or job.get("JobDateTime") or ""
         created_date_only = created[:10] if created else ""
         if not created_date_only or created_date_only <= date_to:
             filtered.append(job)
 
-    return {"jobs": filtered, "total": len(filtered), "total_before_filter": len(jobs)}
+    return {"jobs": filtered, "total": len(filtered), "total_before_filter": len(all_jobs)}
 
 
 async def get_jobs_by_source(
@@ -175,7 +197,7 @@ async def find_job_by_serial(serial_id, date_from: str, date_to: str) -> dict:
     if not target:
         return {"found": False, "error": "Пустой номер джоба"}
 
-    result = await get_jobs_by_date_range(date_from, date_to, records=200)
+    result = await get_jobs_by_date_range(date_from, date_to)
     if "error" in result:
         return {"found": False, "error": result["error"]}
 
