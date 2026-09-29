@@ -938,6 +938,10 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
 
     google_jobs = await workiz_client.get_jobs_by_source("Google", date_from, date_to)
     thumbtack_jobs = await workiz_client.get_jobs_by_source("Thumbtack", date_from, date_to)
+    # Органические источники (без рекламных расходов) — показываем для полной
+    # картины по просьбе владельца, не только платные каналы.
+    referral_jobs = await workiz_client.get_jobs_by_source("Referral from others", date_from, date_to)
+    return_jobs = await workiz_client.get_jobs_by_source("Customer return", date_from, date_to)
 
     ads_cost = ads_spend.get("spend", 0)
     lsa_cost = lsa_spend.get("spend", 0)
@@ -980,16 +984,41 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
         text += f"• Джобов из Thumbtack не найдено за период\n"
     text += "\n"
 
-    total_revenue = g_rev + t_rev
-    total_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
-    total_jobs = g_jobs + t_jobs
-    text += f"📈 *Итого по всем каналам:*\n"
-    text += f"• Расходы: ${total_ad_spend:.2f} | Выручка: ${total_revenue:.2f} | Собрано: ${total_collected:.2f}\n"
-    if total_ad_spend > 0 and total_revenue > 0:
-        total_roas = total_revenue / total_ad_spend * 100
+    r = referral_jobs
+    r_rev = r.get('total_revenue', 0)
+    r_jobs = r.get('total_jobs', 0)
+    text += f"🤝 *Рекомендации (без рекламных расходов):*\n"
+    text += f"• Джобов: {r_jobs} | Выручка: ${r_rev:.2f} | Собрано: ${r.get('total_collected', 0):.2f}\n"
+    if r.get('total_due', 0) > 0:
+        text += f"• Долг: ${r.get('total_due', 0):.2f}\n"
+    text += "\n"
+
+    cr = return_jobs
+    cr_rev = cr.get('total_revenue', 0)
+    cr_jobs = cr.get('total_jobs', 0)
+    text += f"🔁 *Возврат клиентов (без рекламных расходов):*\n"
+    text += f"• Джобов: {cr_jobs} | Выручка: ${cr_rev:.2f} | Собрано: ${cr.get('total_collected', 0):.2f}\n"
+    if cr.get('total_due', 0) > 0:
+        text += f"• Долг: ${cr.get('total_due', 0):.2f}\n"
+    text += "\n"
+
+    paid_revenue = g_rev + t_rev
+    paid_collected = g.get('total_collected', 0) + t.get('total_collected', 0)
+    paid_jobs = g_jobs + t_jobs
+    text += f"📈 *Итого по платным каналам (Google+LSA+Thumbtack):*\n"
+    text += f"• Расходы: ${total_ad_spend:.2f} | Выручка: ${paid_revenue:.2f} | Собрано: ${paid_collected:.2f}\n"
+    if total_ad_spend > 0 and paid_revenue > 0:
+        total_roas = paid_revenue / total_ad_spend * 100
         text += f"• Общий ROAS: {total_roas:.0f}%\n"
-    if total_jobs > 0 and total_ad_spend > 0:
-        text += f"• Средний CPA по всем каналам: ${total_ad_spend / total_jobs:.0f}\n"
+    if paid_jobs > 0 and total_ad_spend > 0:
+        text += f"• Средний CPA по платным каналам: ${total_ad_spend / paid_jobs:.0f}\n"
+    text += "\n"
+
+    total_revenue_all = paid_revenue + r_rev + cr_rev
+    total_collected_all = paid_collected + r.get('total_collected', 0) + cr.get('total_collected', 0)
+    total_jobs_all = paid_jobs + r_jobs + cr_jobs
+    text += f"🏁 *Итого по бизнесу (все источники, вкл. органику):*\n"
+    text += f"• Джобов: {total_jobs_all} | Выручка: ${total_revenue_all:.2f} | Собрано: ${total_collected_all:.2f}\n"
 
     # Проверяем долги по ВСЕМ джобам за период, не только по рекламным источникам
     try:
@@ -1003,14 +1032,8 @@ async def _build_roas_report(date_from: str, date_to: str) -> str:
     if all_overdue:
         _total_due_all = sum(float(j.get("JobAmountDue", 0) or 0) for j in all_overdue)
         text += f"\n⚠️ *Неоплаченные джобы, все источники ({len(all_overdue)}, всего ${_total_due_all:.0f}):*\n"
-        _shown = all_overdue[:5]
-        _shown_due_sum = sum(float(j.get("JobAmountDue", 0) or 0) for j in _shown)
-        for j in _shown:
+        for j in all_overdue:
             text += f"• #{j.get('SerialId')}: ${float(j.get('JobTotalPrice', 0) or 0):.0f} (долг ${float(j.get('JobAmountDue', 0) or 0):.0f}, {j.get('Status')}, {j.get('JobSource', '?')})\n"
-        _rest_count = len(all_overdue) - len(_shown)
-        if _rest_count > 0:
-            _rest_due = _total_due_all - _shown_due_sum
-            text += f"_(показаны топ-5 по сумме долга; ещё {_rest_count} джоб(ов) на ${_rest_due:.0f} не выведены)_\n"
 
     return text
 
