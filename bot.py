@@ -2733,7 +2733,8 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 system=(
                     "You write engaging Instagram captions for BCHD Appliance Repair NYC. "
                     "Style: casual, warm, emojis and relevant hashtags encouraged. "
-                    "Output ONLY the caption text, no intro, no markdown. English."
+                    "Output ONLY the caption text, no intro, no markdown. "
+                    "Always write in English, regardless of what language the input/instructions are written in."
                 ),
                 messages=[{"role": "user", "content": question}]
             )
@@ -2771,7 +2772,8 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 system=(
                     "You write engaging Facebook posts for BCHD Appliance Repair NYC. "
                     "Style: warm, conversational, can use emojis and hashtags (unlike GBP posts). "
-                    "Output ONLY the post text, no intro, no markdown. English."
+                    "Output ONLY the post text, no intro, no markdown. "
+                    "Always write in English, regardless of what language the input/instructions are written in."
                 ),
                 messages=[{"role": "user", "content": question}]
             )
@@ -3761,7 +3763,7 @@ async def _handle_video_message_single(update: Update, ctx: ContextTypes.DEFAULT
                     _a_igc_client.messages.create,
                     model="claude-haiku-4-5-20251001",
                     max_tokens=500,
-                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text. Always write in English, regardless of what language the input/instructions are written in.",
                     messages=[{"role": "user", "content": _caption_text}]
                 )
                 _pt_igc = _resp_igc.content[0].text.strip()
@@ -3788,7 +3790,7 @@ async def _handle_video_message_single(update: Update, ctx: ContextTypes.DEFAULT
                     _a_fbc_client.messages.create,
                     model="claude-haiku-4-5-20251001",
                     max_tokens=500,
-                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text. Always write in English, regardless of what language the input/instructions are written in.",
                     messages=[{"role": "user", "content": _caption_text}]
                 )
                 _pt_fbc = _resp_fbc.content[0].text.strip()
@@ -4015,7 +4017,7 @@ async def _publish_instagram_carousel(caption_update: Update, ctx: ContextTypes.
             _client_car.messages.create,
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
-            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text. Always write in English, regardless of what language the input/instructions are written in.",
             messages=[{"role": "user", "content": caption}],
         )
         pt = _resp_car.content[0].text.strip()
@@ -4049,7 +4051,7 @@ async def _publish_instagram_mixed_carousel(caption_update: Update, ctx: Context
             _client_mix.messages.create,
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
-            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+            system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text. Always write in English, regardless of what language the input/instructions are written in.",
             messages=[{"role": "user", "content": caption}],
         )
         pt = _resp_mix.content[0].text.strip()
@@ -4088,7 +4090,7 @@ async def _publish_facebook_multi_photo(caption_update: Update, ctx: ContextType
             _client_fbm.messages.create,
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
-            system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+            system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text. Always write in English, regardless of what language the input/instructions are written in.",
             messages=[{"role": "user", "content": caption}],
         )
         pt = _resp_fbm.content[0].text.strip()
@@ -4135,7 +4137,7 @@ async def _handle_photo_message_single(update: Update, ctx: ContextTypes.DEFAULT
                     _a_igp2_client.messages.create,
                     model="claude-haiku-4-5-20251001",
                     max_tokens=500,
-                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text.",
+                    system="You write engaging Instagram captions for BCHD Appliance Repair NYC. Style: casual, warm, emojis and hashtags encouraged. Output ONLY the caption text. Always write in English, regardless of what language the input/instructions are written in.",
                     messages=[{"role": "user", "content": _photo_caption}]
                 )
                 _pt_igp2 = _resp_igp2.content[0].text.strip()
@@ -4166,7 +4168,7 @@ async def _handle_photo_message_single(update: Update, ctx: ContextTypes.DEFAULT
                     _a_fbp2_client.messages.create,
                     model="claude-haiku-4-5-20251001",
                     max_tokens=500,
-                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text.",
+                    system="You write engaging Facebook posts for BCHD Appliance Repair NYC. Style: warm, conversational, emojis and hashtags OK. Output ONLY the post text. Always write in English, regardless of what language the input/instructions are written in.",
                     messages=[{"role": "user", "content": _photo_caption}]
                 )
                 _pt_fbp2 = _resp_fbp2.content[0].text.strip()
