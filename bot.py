@@ -2714,6 +2714,36 @@ def _action_ids_verified(action: dict, context_data: dict) -> bool:
     return all(id_val in context_str for id_val in ids_to_check)
 
 
+def _remember_recent_story(ctx: ContextTypes.DEFAULT_TYPE, text: str):
+    """Запоминает текст (подпись к фото/видео, описание заказа и т.п.), который
+    не был распознан как явный триггер соцсетей/галереи — чтобы если владелец
+    следующим сообщением попросит сделать пост БЕЗ повторного описания темы,
+    бот не сочинял generic-текст не по делу.
+
+    Баг, найденный 01.10.2026: владелец прислал видео с подписью-историей про
+    протечку посудомойки у клиента; подпись не совпала ни с одним известным
+    триггером (это не "пост в инстаграм про...", просто рассказ), бот не
+    распознал тему и спросил про загрузку в галерею GBP, а когда владелец
+    следом написал просто "сделай пост в инстаграмме" без темы — у текстового
+    перехватчика не было никакого контекста, и модель сочинила не относящийся
+    к делу текст про холодильник. Теперь такой текст сохраняется на 20 минут
+    и используется как тема, если следующий запрос поста сам по себе пустой."""
+    text = (text or "").strip()
+    if text:
+        ctx.chat_data["recent_story_text"] = text
+        ctx.chat_data["recent_story_ts"] = datetime.now(NY_TZ)
+
+
+def _get_recent_story(ctx: ContextTypes.DEFAULT_TYPE, max_age_minutes: int = 20) -> str:
+    text = ctx.chat_data.get("recent_story_text")
+    ts = ctx.chat_data.get("recent_story_ts")
+    if not text or not ts:
+        return ""
+    if (datetime.now(NY_TZ) - ts).total_seconds() > max_age_minutes * 60:
+        return ""
+    return text
+
+
 async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(update):
         return
@@ -2724,6 +2754,21 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Перехват запроса на пост в Instagram
     if any(w in question.lower() for w in ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram", "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram"]):
         try:
+            # Если само сообщение-триггер почти не содержит темы (например,
+            # просто "сделай пост в инстаграмме" без описания), используем
+            # недавно сохранённую историю/подпись (см. _remember_recent_story,
+            # добавлено 01.10.2026 — баг: бот сочинял generic-текст не по делу,
+            # когда тема не повторялась в самом триггере).
+            _ig_trigger_words = ["пост в инстаграм", "пост в инстаграмм", "пост в instagram", "пост в инсту", "опубликуй в инстаграм", "опубликуй в инстаграмм", "опубликуй в instagram", "опубликуй пост в инстаграм", "опубликуй пост в инстаграмм", "опубликуй пост в instagram", "сделай"]
+            _ig_remainder = question.lower()
+            for _sw in _ig_trigger_words:
+                _ig_remainder = _ig_remainder.replace(_sw, "")
+            _ig_remainder = _ig_remainder.strip(" ,.!?\n")
+            _recent_story_ig = _get_recent_story(ctx)
+            if len(_ig_remainder) < 15 and _recent_story_ig:
+                _topic_for_ig = _recent_story_ig
+            else:
+                _topic_for_ig = question
             import anthropic as _a_ig
             _a_ig_client = _a_ig.Anthropic(api_key=config.ANTHROPIC_API_KEY)
             _resp_ig = await asyncio.to_thread(
@@ -2736,7 +2781,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "Output ONLY the caption text, no intro, no markdown. "
                     "Always write in English, regardless of what language the input/instructions are written in."
                 ),
-                messages=[{"role": "user", "content": question}]
+                messages=[{"role": "user", "content": _topic_for_ig}]
             )
             _pt_ig = _resp_ig.content[0].text.strip()
             if _pt_ig:
@@ -2763,6 +2808,18 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Перехват запроса на пост в Facebook
     if any(w in question.lower() for w in ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook", "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook"]):
         try:
+            # Тот же фоллбэк на недавнюю историю, что и для Instagram выше
+            # (см. комментарий там) — баг от 01.10.2026.
+            _fb_trigger_words = ["пост в фейсбук", "пост в фэйсбук", "пост в facebook", "сделай пост в фб", "опубликуй в фейсбук", "опубликуй в фэйсбук", "опубликуй в facebook", "опубликуй пост в фейсбук", "опубликуй пост в фэйсбук", "опубликуй пост в facebook", "сделай"]
+            _fb_remainder = question.lower()
+            for _sw in _fb_trigger_words:
+                _fb_remainder = _fb_remainder.replace(_sw, "")
+            _fb_remainder = _fb_remainder.strip(" ,.!?\n")
+            _recent_story_fb = _get_recent_story(ctx)
+            if len(_fb_remainder) < 15 and _recent_story_fb:
+                _topic_for_fb = _recent_story_fb
+            else:
+                _topic_for_fb = question
             import anthropic as _a_fb
             _a_fb_client = _a_fb.Anthropic(api_key=config.ANTHROPIC_API_KEY)
             _resp_fb = await asyncio.to_thread(
@@ -2775,7 +2832,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "Output ONLY the post text, no intro, no markdown. "
                     "Always write in English, regardless of what language the input/instructions are written in."
                 ),
-                messages=[{"role": "user", "content": question}]
+                messages=[{"role": "user", "content": _topic_for_fb}]
             )
             _pt_fb = _resp_fb.content[0].text.strip()
             if _pt_fb:
@@ -3911,10 +3968,19 @@ async def _handle_video_message_single(update: Update, ctx: ContextTypes.DEFAULT
             await status_msg.edit_text(f"\u274c Ошибка загрузки видео: {_ve}")
         return
     # Видео без явного запроса на галерею и без ожидания фото для поста —
-    # просто подтверждаем что видео получено, но не знаем что с ним делать
+    # просто подтверждаем что видео получено, но не знаем что с ним делать.
+    # БАГ от 01.10.2026: если подпись к видео была реальной историей
+    # (например, рассказ про клиента), но не совпала ни с одним известным
+    # триггером, она просто отбрасывалась — а следующее "сделай пост в
+    # инстаграм" без темы оставалось без контекста. Теперь сохраняем такую
+    # подпись на 20 минут, чтобы следующий пост-запрос мог её использовать
+    # (см. _remember_recent_story/_get_recent_story).
+    if _caption_text:
+        _remember_recent_story(ctx, _caption_text)
     await update.message.reply_text(
-        "\U0001f4f9 Вижу видео. Хочешь загрузить его в галерею профиля GBP? "
-        "Напиши \"загрузи видео в галерею\" и пришли видео ещё раз."
+        "\U0001f4f9 Вижу видео. Хочешь загрузить его в галерею профиля GBP — "
+        "напиши \"загрузи видео в галерею\" и пришли видео ещё раз. "
+        "Или сразу напиши \"сделай пост в инстаграм/фейсбук\" — использую эту подпись как тему."
     )
 
 
