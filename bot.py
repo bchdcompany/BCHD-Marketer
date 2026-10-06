@@ -828,6 +828,41 @@ async def cmd_workizjob(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"```\n{chunk}\n```", parse_mode="Markdown")
 
 
+async def cmd_agentmemory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ диагностическая команда: /agentmemory [категория]
+    Дамп таблицы agent_memory (долгосрочная память агента) — нужна, чтобы
+    проверить, нет ли там устаревших значений. Повод: 05.10.2026 аудит
+    кампании написал "CPA $61 > целевых $80 временного таргета" — хотя
+    61 < 80 (арифметически неверно) и хотя текущая реальная цель — $30
+    (установлена владельцем 20.09.2026, см. ai_analyst.py). В коде нигде
+    не захардкожено число $80 — похоже, в agent_memory осталась старая
+    запись с прежней целью, которую агент продолжает подмешивать в
+    рассуждения. Можно удалить команду после проверки/чистки."""
+    if not _is_owner(update):
+        return
+    pool = await _get_db_pool()
+    if not pool:
+        await update.message.reply_text("❌ База данных недоступна")
+        return
+    filter_cat = ctx.args[0] if ctx.args else None
+    async with pool.acquire() as conn:
+        if filter_cat:
+            rows = await conn.fetch(
+                "SELECT category, key, value FROM agent_memory WHERE category = $1 ORDER BY key",
+                filter_cat,
+            )
+        else:
+            rows = await conn.fetch("SELECT category, key, value FROM agent_memory ORDER BY category, key")
+    if not rows:
+        await update.message.reply_text("agent_memory пуста" + (f" (категория {filter_cat})" if filter_cat else ""))
+        return
+    text = f"📋 agent_memory" + (f" — категория {filter_cat}" if filter_cat else "") + f" ({len(rows)} записей):\n\n"
+    for r in rows:
+        text += f"[{r['category']}] {r['key']} = {r['value']}\n"
+    for i in range(0, len(text), 3500):
+        await update.message.reply_text(text[i:i + 3500])
+
+
 async def cmd_showcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/showcard <id> — заново присылает карточку одобрения по её ID.
     Нужна для восстановления: раньше кнопка "Уточнить" стирала исходное
@@ -1544,7 +1579,7 @@ async def scheduled_anomaly_check(app):
                             if _r["category"] not in _am:
                                 _am[_r["category"]] = {}
                             _am[_r["category"]][_r["key"]] = _r["value"]
-                        context_data["agent_memory"] = _am
+                        context_data["agent_memory"] = _annotate_deferred_review_status(_am, today)
                     context_data["rejected_actions"] = [
                         {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
                          "rejected_at": r["rejected_at"].strftime("%d.%m"), "retry_after": r["retry_after"].strftime("%d.%m")}
@@ -2335,6 +2370,48 @@ def _strip_ungrounded_negative_items(action: dict, context_data: dict) -> None:
                 continue
             kept.append(item)
         action[field] = kept
+
+
+def _annotate_deferred_review_status(agent_memory: dict, today: datetime = None) -> dict:
+    """
+    Аннотирует agent_memory["deferred_review"] явным статусом ИСТЁК/АКТИВЕН
+    вместо того, чтобы полагаться на модель, которая сама должна посчитать
+    "today >= review_after" внутри свободного текста.
+
+    БАГ, найденный 05.10.2026: в один и тот же день scheduled_campaign_audit
+    написал "appliance repair Brooklyn — уже под deferred_review до 29-30.09,
+    не трогаю повторно", а более ранний проактивный инсайт (anomaly_check)
+    про refrigerator repair Brooklyn написал "ставка менялась 22.09, ждём до
+    29.09... по правилу «<7 дней назад — не трогать» эти ключи трогать
+    нельзя" — хотя дата была 05.10, то есть 22.09 это уже 13 дней назад, а
+    29.09 прошло 6 дней назад. deferred_review давно истёк, а модель вместо
+    этого бессрочно держала ключ "под защитой". Модель регулярно путается в
+    арифметике дат внутри текста. Теперь статус (истёк/активен) считается
+    один раз в коде и передаётся модели уже готовым, а не на её усмотрение.
+    """
+    today = today or datetime.now(NY_TZ)
+    today_str = today.strftime("%Y-%m-%d")
+    dr = agent_memory.get("deferred_review")
+    if not isinstance(dr, dict):
+        return agent_memory
+    import json as _json_ann
+    for _key, _val in list(dr.items()):
+        try:
+            _parsed = _json_ann.loads(_val) if isinstance(_val, str) else (dict(_val) if _val else {})
+        except Exception:
+            continue
+        _review_after = str(_parsed.get("review_after") or "").strip()
+        if not _review_after:
+            continue
+        if _review_after <= today_str:
+            _parsed["status"] = (
+                f"ИСТЁК {_review_after} (сегодня {today_str}) — дата пересмотра УЖЕ ПРОШЛА, "
+                f"этот ключ больше НЕ защищён этим deferred_review, пересмотри его как обычно"
+            )
+        else:
+            _parsed["status"] = f"АКТИВЕН до {_review_after} (сегодня {today_str}) — не трогай до этой даты"
+        dr[_key] = _json_ann.dumps(_parsed, ensure_ascii=False)
+    return agent_memory
 
 
 _NEGATIVE_ITEM_KEEP_SIGNALS = [
@@ -3300,7 +3377,7 @@ async def handle_text_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         if cat not in agent_mem:
                             agent_mem[cat] = {}
                         agent_mem[cat][r["key"]] = r["value"]
-                    context_data["agent_memory"] = agent_mem
+                    context_data["agent_memory"] = _annotate_deferred_review_status(agent_mem)
     except Exception as _me:
         log.warning(f"Ошибка загрузки agent_memory: {_me}")
     # Добавляем rejected_actions и changes_log в контекст
@@ -5517,7 +5594,7 @@ async def _build_weekly_strategy() -> str:
                     if _r["category"] not in _am_strat:
                         _am_strat[_r["category"]] = {}
                     _am_strat[_r["category"]][_r["key"]] = _r["value"]
-                context["agent_memory"] = _am_strat
+                context["agent_memory"] = _annotate_deferred_review_status(_am_strat, today)
             context["recent_changes"] = [
                 {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
                  "applied_at": r["applied_at"].strftime("%Y-%m-%d %H:%M")}
@@ -6150,7 +6227,7 @@ async def scheduled_campaign_audit(app):
                         if _r["category"] not in _am_audit:
                             _am_audit[_r["category"]] = {}
                         _am_audit[_r["category"]][_r["key"]] = _r["value"]
-                    context_data["agent_memory"] = _am_audit
+                    context_data["agent_memory"] = _annotate_deferred_review_status(_am_audit, today)
                 context_data["rejected_actions"] = [
                     {"type": r["action_type"], "description": r["description"], "keyword": r["keyword"],
                      "rejected_at": r["rejected_at"].strftime("%d.%m"), "retry_after": r["retry_after"].strftime("%d.%m")}
@@ -6915,6 +6992,7 @@ def main():
     app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
     app.add_handler(CommandHandler("purgenow", cmd_purgenow))  # ВРЕМЕННО — для теста фикса purge_stale, можно убрать после проверки
     app.add_handler(CommandHandler("workizjob", cmd_workizjob))  # ВРЕМЕННО — диагностика реальных полей платежей Workiz, можно убрать после проверки
+    app.add_handler(CommandHandler("agentmemory", cmd_agentmemory))  # ВРЕМЕННО — диагностика agent_memory (проверить устаревший таргет $80), можно убрать после проверки
     app.add_handler(CommandHandler("showcard", cmd_showcard))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("keywords", cmd_keywords))
