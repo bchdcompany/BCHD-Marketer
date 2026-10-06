@@ -6999,22 +6999,33 @@ def main():
     scheduler.add_job(scheduled_lsa_daily_numbers, "cron", hour=20, minute=30, args=[app])
     scheduler.add_job(scheduled_budget_check,     "cron", hour=14, minute=0,  args=[app])
     scheduler.add_job(scheduled_evening_summary,  "cron", hour=21, minute=0,  args=[app])
-    scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="mon", hour=9,  minute=0,  args=[app])
-    scheduler.add_job(scheduled_campaign_audit,   "cron", day_of_week="mon", hour=9,  minute=55, args=[app])
+    # РАЗНЕСЕНО ПО ДНЯМ НЕДЕЛИ 05.10.2026 (по просьбе владельца): раньше все
+    # 7 еженедельных отчётов/аудитов (lsa_weekly_audit, weekly_strategy,
+    # weekly_audit, weekly_roas, thumbtack_check, gbp_profile_check,
+    # campaign_audit) были привязаны к понедельнику между 8:30 и 9:55 —
+    # владелец физически не успевал разобрать ~7-8 сообщений подряд с утра.
+    # Теперь по 1-2 еженедельных пункта в день, Пн-Пт, тот же час (8:30),
+    # чтобы попадать в уже привычное утреннее время, но не все разом.
+    # Порядок по дням выбран по смыслу: сначала деньги (roas), затем общий
+    # аудит + thumbtack, затем детальный аудит кампании, затем LSA + GBP,
+    # и в конце недели — стратегия на следующие 7 дней (к этому моменту уже
+    # видны все находки недели).
+    scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
+    scheduler.add_job(scheduled_weekly_audit,     "cron", day_of_week="tue", hour=8,  minute=30, args=[app])
+    scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="tue", hour=8,  minute=50, args=[app])
+    scheduler.add_job(scheduled_campaign_audit,   "cron", day_of_week="wed", hour=8,  minute=30, args=[app])
+    scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="thu", hour=8,  minute=30, args=[app])
+    scheduler.add_job(scheduled_weekly_strategy,  "cron", day_of_week="fri", hour=8,  minute=30, args=[app])
     scheduler.add_job(scheduled_competitors_check,"cron", day_of_week="sun", hour=9,  minute=30, args=[app])
     scheduler.add_job(scheduled_ab_test_check,    "cron", day_of_week="wed", hour=10, minute=0,  args=[app])
     scheduler.add_job(scheduled_seasonal_check,   "cron", day=1,             hour=8,  minute=0,  args=[app])
-    scheduler.add_job(scheduled_lsa_weekly_audit, "cron", day_of_week="mon", hour=8,  minute=30, args=[app])
-    scheduler.add_job(scheduled_weekly_roas,      "cron", day_of_week="mon", hour=9,  minute=15, args=[app])
-    scheduler.add_job(scheduled_thumbtack_check,  "cron", day_of_week="mon", hour=9,  minute=20, args=[app])
     scheduler.add_job(scheduled_purge_pending,    "cron", hour=3,  minute=0,  args=[app])
     scheduler.add_job(scheduled_reverify_executed_actions, "interval", hours=4, args=[app])
     scheduler.add_job(scheduled_anomaly_check, "interval", hours=4, args=[app])
-    scheduler.add_job(scheduled_weekly_strategy, "cron", day_of_week="mon", hour=8, minute=45, args=[app])
     if _gbp_available and globals().get("gbp_client_inst"):
         scheduler.add_job(scheduled_gbp_reviews, "cron", hour=9, minute=30, args=[app])
         scheduler.add_job(scheduled_gbp_profile_check, "cron",
-                          day_of_week="mon", hour=9, minute=45, args=[app])
+                          day_of_week="thu", hour=8, minute=50, args=[app])
     if _email_available:
         scheduler.add_job(scheduled_weekly_email, "cron",
                           day_of_week="sun", hour=12, minute=0, args=[app])
