@@ -5452,6 +5452,31 @@ async def _build_weekly_strategy() -> str:
             strategy_ctx = await strategy_memory.build_context_for_agent()
         except Exception:
             pass
+
+    # ДОБАВЛЕНО 05.10.2026 (найдено по факту): эта функция раньше вообще не
+    # запрашивала ключевые слова и поисковые запросы за неделю — только
+    # агрегированный spend/conversions по аккаунтам. Из-за этого недельная
+    # стратегия НИКОГДА не могла дать точечную рекомендацию по конкретному
+    # ключу (например, "appliance repair NYC" с низким QS) и каждую неделю
+    # честно, но бесполезно писала "недостаточно данных по keywords/
+    # search_terms". Остальные функции в этом файле (аудит, /ads чат,
+    # анализ эффекта изменений — см. get_keywords_analysis/get_search_terms
+    # выше по файлу) уже делают эти запросы за тот же период; здесь просто
+    # не было подключено. LSA по-прежнему не поддерживает ключевые слова
+    # (get_keywords_analysis сам возвращает понятную ошибку для account="lsa"),
+    # поэтому запрашиваем только account="ads" (Search).
+    try:
+        keywords_week = await ads_client.get_keywords_analysis(
+            account="ads", date_from=week_from, date_to=week_to
+        )
+        search_terms_week = await ads_client.get_search_terms(
+            account="ads", date_from=week_from, date_to=week_to
+        )
+    except Exception as _e_kw_strat:
+        log.warning(f"weekly_strategy: ошибка загрузки keywords/search_terms: {_e_kw_strat}")
+        keywords_week = {"error": str(_e_kw_strat), "keywords": []}
+        search_terms_week = {"error": str(_e_kw_strat), "terms": []}
+
     context = {
         "_period": {"date_from": week_from, "date_to": week_to},
         "google_ads_week": {
@@ -5464,6 +5489,8 @@ async def _build_weekly_strategy() -> str:
             "lsa_conv": lsa.get("total_conversions", 0),
         },
         "strategy_context": strategy_ctx,
+        "keywords": {"ads": keywords_week},
+        "search_terms": {"ads": search_terms_week},
         "thumbtack_budget": config.THUMBTACK_WEEKLY_BUDGET,
         "search_cpa_target": 30,
     }
@@ -5514,6 +5541,11 @@ async def _build_weekly_strategy() -> str:
             "(например, '$35-55' или старую цель '$80') — используй именно $30. "
             "Если ссылаешься на другие числовые показатели (расход, конверсии, "
             "CPA по факту) — бери их ТОЛЬКО из переданных данных, не изобретай. "
+            "context_data['keywords']['ads'] и context_data['search_terms']['ads'] "
+            "теперь содержат реальные ключевые слова и поисковые запросы за эту "
+            "неделю (добавлено 05.10.2026) — используй их, чтобы давать "
+            "ТОЧЕЧНЫЕ рекомендации по конкретным ключам (низкий QS, высокий CPC, "
+            "конкретные минус-слова), а не писать общую фразу про нехватку данных. "
             "ПЕРЕД любой рекомендацией про LSA (бюджет, биддинг) — обязательно "
             "проверь context_data['agent_memory'] и context_data['recent_changes'] "
             "на предмет недавних решений по LSA (например, переключение стратегии "
