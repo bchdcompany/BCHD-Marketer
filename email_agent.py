@@ -4,6 +4,20 @@ v2 — ask_campaign_topic() исправлена: была sync-функцией
      bot.send_message (async) без await — сообщение никогда реально не
      уходило в Telegram (подтверждено RuntimeWarning в логах Railway
      20.09.2026). Теперь функция async, вызывающий код должен её await'ить.
+v3 — 11.10.2026, по просьбе владельца: в праздничные дни баннер должен
+     выглядеть как открытка с коротким благопожеланием, а не как обычное
+     рекламное письмо. Раньше CONTENT_PROMPT уже просил модель писать
+     "тепло и искренне, фокус на благодарности, не на продажах" для
+     праздников — но единственный HTML-шаблон (_build_html) жёстко
+     требовал offer_text (скидку) на самом видном месте в hero-блоке и
+     4 карточки с "почему мы" — то есть любое праздничное письмо всё
+     равно превращалось в обычную продающую рассылку со скидкой в
+     заголовке (как вышло с Columbus Day: "10% OFF" крупным шрифтом
+     вместо поздравления). Теперь праздничные запросы определяются
+     отдельно (_is_holiday_request), получают свой контент-промпт
+     (HOLIDAY_CONTENT_PROMPT — короткое тёплое пожелание, без скидки
+     в фокусе) и рендерятся отдельным шаблоном-открыткой
+     (_build_postcard_html) — простой, без карточек и агрессивного CTA.
 """
 import os
 import re
@@ -52,25 +66,38 @@ def handle_campaign_request(user_text: str, bot) -> None:
     bot.send_message(chat_id=OWNER_CHAT_ID, text="⏳ Генерирую баннер, подожди 30–60 секунд...")
     try:
         campaign_data = _generate_campaign_content(user_text)
-        image_url = _generate_ideogram_image(campaign_data["ideogram_prompt"])
+        image_url = _generate_ideogram_image(campaign_data.get("ideogram_prompt", ""))
         html = _build_html(campaign_data, image_url)
         global _pending_campaign
         _pending_campaign = {
             "html": html,
-            "subject": campaign_data["email_subject"],
-            "preview_text": campaign_data["preview_text"],
+            "subject": campaign_data.get("email_subject", ""),
+            "preview_text": campaign_data.get("preview_text", ""),
             "generated_at": datetime.now().isoformat()
         }
-        preview_msg = (
-            f"✅ *Баннер готов!*\n\n"
-            f"📌 *Тема:* {campaign_data['campaign_title']}\n"
-            f"📧 *Subject:* {campaign_data['email_subject']}\n"
-            f"💬 *Оффер:* {campaign_data['offer_text']}\n\n"
-            f"*Тезисы:*\n"
-            + "\n".join([f"• {t['title']}: {t['text']}" for t in campaign_data["cards"]])
-            + f"\n\n📨 *Получат:* ~958 клиентов\n\n"
-            f"Напиши *отправляй* или что исправить"
-        )
+        # ИСПРАВЛЕНО 11.10.2026: для праздничной открытки (is_holiday=True) в
+        # campaign_data нет полей offer_text/cards — раньше это упало бы с
+        # KeyError. Теперь превью для открытки показывает текст поздравления.
+        if campaign_data.get("is_holiday"):
+            preview_msg = (
+                f"✅ *Открытка готова!* ({campaign_data.get('holiday_name', '')})\n\n"
+                f"📌 *Тема:* {campaign_data.get('campaign_title', '')}\n"
+                f"📧 *Subject:* {campaign_data.get('email_subject', '')}\n\n"
+                f"💌 *Пожелание:*\n{campaign_data.get('greeting_message', '')}\n\n"
+                f"📨 *Получат:* ~958 клиентов\n\n"
+                f"Напиши *отправляй* или что исправить"
+            )
+        else:
+            preview_msg = (
+                f"✅ *Баннер готов!*\n\n"
+                f"📌 *Тема:* {campaign_data.get('campaign_title', '')}\n"
+                f"📧 *Subject:* {campaign_data.get('email_subject', '')}\n"
+                f"💬 *Оффер:* {campaign_data.get('offer_text', '')}\n\n"
+                f"*Тезисы:*\n"
+                + "\n".join([f"• {t.get('title','')}: {t.get('text','')}" for t in campaign_data.get("cards", [])])
+                + f"\n\n📨 *Получат:* ~958 клиентов\n\n"
+                f"Напиши *отправляй* или что исправить"
+            )
         bot.send_message(chat_id=OWNER_CHAT_ID, text=preview_msg, parse_mode="Markdown")
         html_bytes = html.encode("utf-8")
         bot.send_document(
@@ -145,12 +172,79 @@ Rules:
 - If user mentions specific colors, visuals, or style — use them in ideogram_prompt
 """
 
+# ДОБАВЛЕНО 11.10.2026: список для определения "это праздничный запрос"
+# (не рекламная акция под видом праздника, а именно открытка-поздравление).
+# Включает триггерные слова из напоминания в bot.py (scheduled_holiday_banner_
+# reminder шлёт "сделай праздничную рассылку про {holiday_name}") и основные
+# федеральные/календарные праздники US, которые бот умеет напоминать.
+_HOLIDAY_TRIGGER_WORDS = [
+    "праздник", "праздничн", "поздравлен", "поздрав", "открытк",
+    "greeting card", "holiday card", "season's greetings",
+]
+_HOLIDAY_NAMES = [
+    "columbus day", "thanksgiving", "christmas", "рождество", "new year",
+    "новый год", "independence day", "4th of july", "july 4", "labor day",
+    "memorial day", "veterans day", "presidents day", "martin luther king",
+    "mlk day", "halloween", "хэллоуин", "easter", "пасха", "juneteenth",
+]
+
+def _is_holiday_request(user_input: str) -> bool:
+    """
+    True, если запрос — про поздравление/открытку к празднику, а не про
+    обычную рекламную акцию (даже если акция приурочена к празднику,
+    например "скидка 20% на Хэллоуин" — это НЕ открытка, а продающее
+    письмо, его product-focused тон остаётся прежним). Срабатывает по
+    прямому упоминанию "поздравление"/"открытка"/"праздник" ИЛИ по
+    названию конкретного праздника БЕЗ слов, явно указывающих на акцию
+    (скидка/акция/discount/off/sale/promo) — если упомянут и праздник, и
+    скидка, считаем это обычной акционной рассылкой, не открыткой.
+    """
+    text = (user_input or "").lower()
+    has_sale_words = any(w in text for w in [
+        "скидк", "акци", "discount", "% off", "sale", "promo", "deal",
+    ])
+    if any(w in text for w in _HOLIDAY_TRIGGER_WORDS):
+        return not has_sale_words
+    if any(name in text for name in _HOLIDAY_NAMES):
+        return not has_sale_words
+    return False
+
+HOLIDAY_CONTENT_PROMPT = """You are writing a short, warm holiday greeting card (postcard-style)
+on behalf of BCHD Appliance Repair & HVAC, a licensed appliance repair company in NYC
+(Brooklyn, Queens, Manhattan), to send to their clients.
+The user's request: "{user_input}"
+This is NOT a sales email. Do not mention discounts, offers, or promotions. The goal is
+simply to warmly wish clients well for the holiday and thank them for their trust.
+Respond ONLY with valid JSON, no markdown, no extra text.
+JSON structure:
+{{
+  "campaign_title": "Short internal campaign name (3-5 words)",
+  "email_subject": "Warm email subject line (max 50 chars), e.g. 'Happy Thanksgiving from BCHD!'",
+  "preview_text": "Preview text shown in inbox (max 90 chars), warm tone",
+  "color_mood": "One of: red_urgent / blue_cold / gold_festive / green_fresh / dark_professional — pick what fits the holiday (e.g. gold_festive for Thanksgiving/Christmas, red_urgent for Christmas red theme, green_fresh for spring holidays)",
+  "holiday_name": "Name of the holiday, e.g. 'Columbus Day'",
+  "greeting_eyebrow": "Small label above the title with emoji, e.g. '🎉 Happy Columbus Day'",
+  "greeting_title": "Short warm headline (2-5 words), e.g. 'Wishing You a Wonderful Columbus Day'",
+  "greeting_message": "The well-wish itself: 2-4 short sentences, warm and sincere, thanking clients for their trust this year. NO mention of discounts, services, or sales. Pure gratitude and good wishes.",
+  "signoff": "Warm closing line, e.g. 'With gratitude, The BCHD Family' or 'Warmly, Your BCHD Team'",
+  "soft_note": "One short, soft, non-pushy line people can read if they want to reach out, e.g. 'If you ever need us, we are just a call away.' (NOT a discount offer, NOT urgent)",
+  "ideogram_prompt": "Ideogram prompt for a warm, festive postcard background image matching the holiday and color_mood. STRICT RULES: (1) Describe ONLY: cozy/festive interior or seasonal scene, natural light, color palette, photography style fitting the holiday. (2) NEVER include: people, text, logos, appliances, tools, pipes. (3) Always end with: photorealistic, commercial photography, no people, no text, high quality. Max 250 chars."
+}}
+Rules:
+- All content in English
+- Tone: warm, sincere, gratitude-first — this is a greeting card, not an advertisement
+- Keep greeting_message SHORT — a postcard, not a letter
+- ideogram_prompt must be unique and match the specific holiday
+"""
+
 def _generate_campaign_content(user_input: str) -> dict:
+    is_holiday = _is_holiday_request(user_input)
+    prompt_template = HOLIDAY_CONTENT_PROMPT if is_holiday else CONTENT_PROMPT
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=2500,
-        messages=[{"role": "user", "content": CONTENT_PROMPT.format(user_input=user_input)}]
+        messages=[{"role": "user", "content": prompt_template.format(user_input=user_input)}]
     )
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```json\s*", "", raw)
@@ -167,9 +261,11 @@ def _generate_campaign_content(user_input: str) -> dict:
         except Exception:
             # Минимальный fallback
             data = {"email_subject": "BCHD Recommendation", "preview_text": "", "hero_headline": "Special Offer", "hero_subline": "", "cards": [], "cta_headline": "Contact Us", "cta_subtext": "", "cta_button": "Learn More", "color_mood": "blue_trust", "ideogram_prompt": "Professional blue water purification banner", "partner": {}}
+            is_holiday = False
     # Убеждаемся что partner есть
     if "partner" not in data:
         data["partner"] = {}
+    data["is_holiday"] = is_holiday
     return data
 
 def _generate_ideogram_image(prompt: str) -> str:
@@ -207,7 +303,77 @@ def _svg_icon(name: str, color: str) -> str:
     path = ICONS.get(name, ICONS["star"])
     return (f'<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;flex-shrink:0">{path}</svg>')
 
+def _build_postcard_html(data: dict, image_url: str) -> str:
+    """
+    ДОБАВЛЕНО 11.10.2026: праздничная "открытка" — короткое тёплое
+    пожелание на полноэкранном фоне, БЕЗ карточек "почему мы" и без
+    агрессивного CTA-блока со скидкой (в отличие от _build_html). Вызывается
+    из _build_html автоматически, когда data["is_holiday"] = True
+    (см. _is_holiday_request/_generate_campaign_content).
+    """
+    c = COLOR_SCHEMES.get(data.get("color_mood", "gold_festive"), COLOR_SCHEMES["gold_festive"])
+    hero_img = (
+        f'<img src="{image_url}" alt="" style="position:absolute;top:0;left:0;'
+        f'width:100%;height:100%;object-fit:cover;opacity:0.55;display:block;" />'
+    ) if image_url else ''
+    soft_note = data.get("soft_note", "").strip()
+    soft_note_html = (
+        f'<p style="font-size:13px;color:rgba(255,255,255,0.65);margin-top:28px;'
+        f'max-width:360px;margin-left:auto;margin-right:auto;">{soft_note}</p>'
+    ) if soft_note else ''
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{data.get('email_subject', data.get('holiday_name', 'Happy Holidays'))}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Georgia,'Times New Roman',serif;background:#f0f0f0;">
+<div style="max-width:560px;margin:0 auto;background:#ffffff;">
+  <!-- HEADER -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#111111;padding:16px 24px;">
+    <tr>
+      <td align="center">
+        <img src="{LOGO_URL}" alt="BCHD" style="height:56px;width:56px;display:inline-block;object-fit:contain;vertical-align:middle;" />
+        <span style="font-size:16px;font-weight:700;color:#ffffff;letter-spacing:1px;vertical-align:middle;padding-left:10px;">BCHD Appliance Repair &amp; HVAC</span>
+      </td>
+    </tr>
+  </table>
+  <!-- POSTCARD -->
+  <div style="position:relative;background:{c['hero_bg']};min-height:460px;overflow:hidden;">
+    {hero_img}
+    <div style="position:relative;z-index:2;padding:56px 32px;text-align:center;">
+      <span style="display:inline-block;background:{c['eyebrow_bg']};color:{c['eyebrow_color']};font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:6px 14px;border-radius:3px;margin-bottom:22px;">
+        {data.get('greeting_eyebrow', data.get('holiday_name', ''))}
+      </span>
+      <div style="font-size:36px;font-weight:700;color:#ffffff;line-height:1.25;margin-bottom:22px;text-shadow:0 2px 10px rgba(0,0,0,0.6);">
+        {data.get('greeting_title', '')}
+      </div>
+      <p style="font-size:17px;color:#f0f0f0;line-height:1.7;max-width:400px;margin:0 auto;text-shadow:0 1px 6px rgba(0,0,0,0.5);">
+        {data.get('greeting_message', '')}
+      </p>
+      <div style="font-size:16px;color:{c['accent_light']};font-style:italic;margin-top:28px;">
+        {data.get('signoff', '')}
+      </div>
+      {soft_note_html}
+    </div>
+  </div>
+  <!-- FOOTER -->
+  <div style="background:#0f0f0f;padding:18px 28px;text-align:center;">
+    <p style="font-size:11px;color:#555;line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+      BCHD Appliance Repair &amp; HVAC · 501A Surf Ave, Brooklyn, NY 11224<br>
+      <a href="https://www.bchdcompany.com" style="color:#777;text-decoration:none;">bchdcompany.com</a> ·
+      <a href="tel:9179354553" style="color:#777;text-decoration:none;">(917) 935-4553</a><br>
+      <a href="#" style="color:#777;text-decoration:none;">Unsubscribe</a>
+    </p>
+  </div>
+</div>
+</body>
+</html>"""
+
 def _build_html(data: dict, image_url: str) -> str:
+    if data.get("is_holiday"):
+        return _build_postcard_html(data, image_url)
     c = COLOR_SCHEMES.get(data.get("color_mood", "red_urgent"), COLOR_SCHEMES["red_urgent"])
     # Partner data
     p_name    = data.get("partner_name", "").strip()
