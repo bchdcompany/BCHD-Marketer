@@ -775,6 +775,25 @@ async def cmd_auditnow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await scheduled_campaign_audit(ctx.application)
 
 
+async def cmd_insightnow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ команда для ручного немедленного запуска проактивной
+    проверки аномалий (scheduled_anomaly_check), не дожидаясь следующего
+    4-часового интервала. Добавлена 11.10.2026 — повод: баланс Anthropic
+    API закончился, проверка в 10:15 упала с ошибкой API, а дедуп-кэш
+    (12 часов на тип аномалии) из-за бага помечал её как "уже отправленную"
+    даже при сбое — следующая попытка реально случилась бы только через
+    много часов. Теперь это исправлено (кэш ставится только при успехе),
+    но эта команда всё равно полезна, чтобы не ждать следующий интервал
+    после починки баланса/бага. Можно удалить после тестирования."""
+    if not _is_owner(update):
+        return
+    if not config.google_ads_configured:
+        await update.message.reply_text("⚠️ Google Ads API не настроен.")
+        return
+    await update.message.reply_text("🔍 Запускаю проверку аномалий (scheduled_anomaly_check) прямо сейчас...")
+    await scheduled_anomaly_check(ctx.application)
+
+
 async def cmd_purgenow(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """ВРЕМЕННАЯ команда для ручного тестового запуска очистки очереди
     одобрения (scheduled_purge_pending), не дожидаясь 03:00 — добавлена
@@ -1548,15 +1567,25 @@ async def scheduled_anomaly_check(app):
         if not alerts:
             log.info("anomaly_check: аномалий не найдено")
             return
+        # ИСПРАВЛЕНО 11.10.2026: раньше _anomaly_alert_cache[alert_type]
+        # проставлялся ЗДЕСЬ, до попытки реального анализа/отправки — если
+        # ai_analyst.chat_action дальше падал (например, "credit balance is
+        # too low"), аномалия всё равно считалась "уже отправленной" и
+        # следующие 12 часов проверка её молча пропускала, хотя владелец
+        # получил только текст ошибки, а не настоящий анализ. Теперь кэш
+        # помечается только после подтверждённо успешной отправки (см. ниже,
+        # после проверки result.get("_error")) — alert_types вычисляются
+        # здесь, но отмечаются как отправленные только при успехе.
         now_ts = today.timestamp()
         new_alerts = []
+        new_alert_types = []
         for alert in alerts:
             import re as _re
             alert_type = _re.sub(r'[0-9$+%.]+', '', alert[:60]).strip()[:40]
             last_sent = _anomaly_alert_cache.get(alert_type, 0)
             if now_ts - last_sent > _ANOMALY_COOLDOWN_HOURS * 3600:
                 new_alerts.append(alert)
-                _anomaly_alert_cache[alert_type] = now_ts
+                new_alert_types.append(alert_type)
         if not new_alerts:
             log.info("anomaly_check: все аномалии уже отправлены недавно")
             return
@@ -1608,6 +1637,15 @@ async def scheduled_anomaly_check(app):
             reply = result.get("reply", "")
             header = f"Проактивный инсайт — {today.strftime('%d.%m %H:%M')}\n\n"
             await _send_long_message(app.bot, config.OWNER_CHAT_ID, header + reply)
+            if not result.get("_error"):
+                # Отмечаем как отправленные только при подтверждённом успехе —
+                # при ошибке API (result["_error"] есть) НЕ ставим кэш, чтобы
+                # следующая проверка (через 4ч, или вручную /insightnow) могла
+                # реально повторить анализ, а не молча пропустить его 12 часов.
+                for _at in new_alert_types:
+                    _anomaly_alert_cache[_at] = now_ts
+            else:
+                log.warning(f"anomaly_check: ai_analyst вернул ошибку, кэш не помечаю: {result['_error']}")
 
             # Сохраняем deferred_reviews ("подождём ещё N дней по этому ключу"),
             # чтобы следующая проактивная проверка не противоречила сама себе.
@@ -6990,6 +7028,7 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("auditnow", cmd_auditnow))  # ВРЕМЕННО — для теста фикса, можно убрать после проверки
+    app.add_handler(CommandHandler("insightnow", cmd_insightnow))  # ВРЕМЕННО — ручной запуск anomaly_check без ожидания 4ч, можно убрать после проверки
     app.add_handler(CommandHandler("purgenow", cmd_purgenow))  # ВРЕМЕННО — для теста фикса purge_stale, можно убрать после проверки
     app.add_handler(CommandHandler("workizjob", cmd_workizjob))  # ВРЕМЕННО — диагностика реальных полей платежей Workiz, можно убрать после проверки
     app.add_handler(CommandHandler("agentmemory", cmd_agentmemory))  # ВРЕМЕННО — диагностика agent_memory (проверить устаревший таргет $80), можно убрать после проверки
