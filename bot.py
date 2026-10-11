@@ -882,6 +882,40 @@ async def cmd_agentmemory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text[i:i + 3500])
 
 
+async def cmd_memfix(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """ВРЕМЕННАЯ разовая команда: /memfix — заменяет в agent_memory устаревшую
+    цель Search CPA $80 на актуальную $30 (установлена владельцем 20.09.2026).
+    Затрагивает [strategy] cpa_targets, [ads] budget_rules, [ads] rules.
+    Идемпотентна. Можно удалить после выполнения."""
+    if not _is_owner(update):
+        return
+    pool = await _get_db_pool()
+    if not pool:
+        await update.message.reply_text("❌ База данных недоступна")
+        return
+    targets = [("strategy", "cpa_targets"), ("ads", "budget_rules"), ("ads", "rules")]
+    out = []
+    async with pool.acquire() as conn:
+        for cat, key in targets:
+            val = await conn.fetchval(
+                "SELECT value FROM agent_memory WHERE category = $1 AND key = $2", cat, key)
+            if val is None:
+                out.append(f"[{cat}] {key}: нет записи")
+                continue
+            new = val
+            new = new.replace("Search цель $80 (временно, пока QS низкий)",
+                              "Search цель $30 (установлена владельцем 20.09.2026)")
+            new = new.replace("пока CPA выше $80", "пока CPA выше $30")
+            new = new.replace("при CPA>$80", "при CPA>$30")
+            if new == val:
+                out.append(f"[{cat}] {key}: без изменений")
+                continue
+            await conn.execute(
+                "UPDATE agent_memory SET value = $1 WHERE category = $2 AND key = $3", new, cat, key)
+            out.append(f"[{cat}] {key}: ✅ обновлено\n   {new}")
+    await update.message.reply_text("\n".join(out)[:3900])
+
+
 async def cmd_showcard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/showcard <id> — заново присылает карточку одобрения по её ID.
     Нужна для восстановления: раньше кнопка "Уточнить" стирала исходное
@@ -7031,6 +7065,7 @@ def main():
     app.add_handler(CommandHandler("insightnow", cmd_insightnow))  # ВРЕМЕННО — ручной запуск anomaly_check без ожидания 4ч, можно убрать после проверки
     app.add_handler(CommandHandler("purgenow", cmd_purgenow))  # ВРЕМЕННО — для теста фикса purge_stale, можно убрать после проверки
     app.add_handler(CommandHandler("workizjob", cmd_workizjob))  # ВРЕМЕННО — диагностика реальных полей платежей Workiz, можно убрать после проверки
+    app.add_handler(CommandHandler("memfix", cmd_memfix))  # ВРЕМЕННО — разовая замена цели $80→$30 в agent_memory
     app.add_handler(CommandHandler("agentmemory", cmd_agentmemory))  # ВРЕМЕННО — диагностика agent_memory (проверить устаревший таргет $80), можно убрать после проверки
     app.add_handler(CommandHandler("showcard", cmd_showcard))
     app.add_handler(CommandHandler("budget", cmd_budget))
