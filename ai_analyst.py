@@ -1726,7 +1726,17 @@ send_email_campaign, show_changes_log
             required_keys=["reply", "proposed_actions"],
         )
         if "_error" in result:
-            return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": []}
+            # ИСПРАВЛЕНО 11.10.2026: раньше "_error" терялся при переходе в
+            # пользовательский reply — вызывающий код (например
+            # scheduled_anomaly_check в bot.py) не мог отличить настоящий
+            # успешный ответ от текста с описанием сбоя API (например,
+            # "credit balance is too low") и считал его обычным инсайтом —
+            # из-за чего аномалия помечалась как "уже отправлена" (дедуп-кэш
+            # на 12 часов) несмотря на то что анализ реально не прошёл.
+            # Теперь "_error" передаётся наружу вместе с reply, чтобы
+            # вызывающий код мог проверить result.get("_error") и не считать
+            # это успешной отправкой.
+            return {"reply": f"❌ Ошибка анализа: {result['_error']}", "proposed_actions": [], "_error": result["_error"]}
         return result
 
     # ── АУКЦИОННЫЙ АНАЛИЗ ──────────────────────────
