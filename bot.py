@@ -905,6 +905,9 @@ async def cmd_memfix(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             new = val
             new = new.replace("Search цель $80 (временно, пока QS низкий)",
                               "Search цель $30 (установлена владельцем 20.09.2026)")
+            # Просроченные запреты (срок 05.09.2026 истёк) — владелец подтвердил 11.10, что неактуальны
+            new = new.replace("НЕ снижать ставку appliance repair NYC ниже $0.80 до 05.09.2026 — ждём эффекта от обновления заголовков. ", "")
+            new = new.replace("НЕ снижать ставку refrigerator repair near me ниже $8 до 05.09.2026. ", "")
             new = new.replace("пока CPA выше $80", "пока CPA выше $30")
             new = new.replace("при CPA>$80", "при CPA>$30")
             if new == val:
