@@ -484,7 +484,10 @@ context_data — считай, что её больше НЕТ (удалена/�
 Единственные РЕАЛЬНО существующие команды в этом боте:
 /report, /audit, /budget, /keywords, /negatives, /competitors, /abtest,
 /seasonal, /both, /roas, /pending, /checklead, /auditcalls, /schedule, /start,
-/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign, /enablecampaign, /pausecampaign
+/checkkeyword, /checknegatives, /history, /reviewnegatives, /month, /checkcampaign, /enablecampaign, /pausecampaign,
+/dayparting, /reviews, /strategy, /clearmemory, /email, /sendemail, /emailtest, /gbppost, /gbpaudit, /changes, /showcard
+(Если владелец упоминает команду не из этого списка — не утверждай категорично, что её нет:
+скажи, что в известном тебе списке её нет, и что список мог устареть после обновления бота.)
 
 НИКОГДА не советуй владельцу ввести команду, которой нет в этом списке
 (например, "/ads", "/keywords_detailed", "/analysis" и т.п. — таких команд
